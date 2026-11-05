@@ -1,0 +1,5 @@
+*.log
+*.o
+*.d
+autodj
+src/keytab.inc

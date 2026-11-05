@@ -1,0 +1,26 @@
+#ifndef AUTODJ_DECODE_H
+#define AUTODJ_DECODE_H
+
+#include <stddef.h>
+
+typedef struct Track {
+    float *pcm; /* interleaved stereo at `rate` */
+    size_t frames;
+    size_t start; /* first audible frame */
+    size_t end;   /* one past the last audible frame */
+    unsigned rate;
+    char name[256];
+} Track;
+
+int decode_init(void);
+void decode_shutdown(void);
+
+/* Decode path to stereo PCM at `rate`. Silence outside [start, end) is
+ * trimmed when trim is non-zero. Returns NULL on failure. */
+Track *track_decode(const char *path, unsigned rate, int trim);
+void track_free(Track *track);
+
+int trim_self_test(void);
+int decode_self_test(const char *path);
+
+#endif
