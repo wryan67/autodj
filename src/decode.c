@@ -2,9 +2,11 @@
 
 #include "log.h"
 
+#include <ebur128.h>
 #include <mpg123.h>
 #include <soxr.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,6 +130,56 @@ static void apply_trim(Track *track, int enabled)
     track->end = end;
 }
 
+/* EBU R128 integrated loudness of every sample, then one linear gain.
+ * The gain is reduced if it would push the sample peak past full scale. */
+static void apply_loudness(Track *track, int target_lufs)
+{
+    ebur128_state *st;
+    double lufs = 0;
+    double peak = 0;
+    double gain;
+    double applied_db;
+    size_t i;
+    int limited = 0;
+
+    if (!track->pcm || track->frames == 0) {
+        return;
+    }
+    st = ebur128_init(2, track->rate, EBUR128_MODE_I);
+    if (!st) {
+        log_warn("decode", "loudness meter unavailable for %s", track->name);
+        return;
+    }
+    if (ebur128_add_frames_float(st, track->pcm, track->frames) != EBUR128_SUCCESS ||
+        ebur128_loudness_global(st, &lufs) != EBUR128_SUCCESS || !isfinite(lufs)) {
+        log_warn("decode", "no integrated loudness for %s", track->name);
+        ebur128_destroy(&st);
+        return;
+    }
+    ebur128_destroy(&st);
+
+    for (i = 0; i < track->frames * 2; i++) {
+        float a = track->pcm[i];
+        if (a < 0) {
+            a = -a;
+        }
+        if (a > peak) {
+            peak = a;
+        }
+    }
+    gain = pow(10.0, ((double)target_lufs - lufs) / 20.0);
+    if (peak > 0.0 && gain * peak > 0.99) {
+        gain = 0.99 / peak;
+        limited = 1;
+    }
+    for (i = 0; i < track->frames * 2; i++) {
+        track->pcm[i] = (float)((double)track->pcm[i] * gain);
+    }
+    applied_db = 20.0 * log10(gain);
+    log_info("decode", "loudness %s %.1f LUFS, gain %+.1f dB%s",
+             track->name, lufs, applied_db, limited ? ", peak limited" : "");
+}
+
 static float *resample(const float *in, size_t in_frames, unsigned in_rate,
                        unsigned out_rate, size_t *out_frames)
 {
@@ -181,7 +233,7 @@ static float *resample(const float *in, size_t in_frames, unsigned in_rate,
     return out;
 }
 
-Track *track_decode(const char *path, unsigned rate, int trim)
+Track *track_decode(const char *path, unsigned rate, int trim, int loudness, int loudness_lufs)
 {
     mpg123_handle *mh;
     int err = MPG123_OK;
@@ -286,6 +338,9 @@ Track *track_decode(const char *path, unsigned rate, int trim)
     }
     track->rate = rate;
     track_name(track, path);
+    if (loudness) {
+        apply_loudness(track, loudness_lufs);
+    }
     apply_trim(track, trim);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -349,11 +404,84 @@ int trim_self_test(void)
     return rc;
 }
 
+int loudness_self_test(void)
+{
+    Track track;
+    ebur128_state *st;
+    size_t i;
+    const unsigned rate = 48000;
+    const size_t frames = (size_t)rate * 3;
+    const double amp = pow(10.0, -23.0 / 20.0);
+    double lufs = 0;
+    double peak = 0;
+
+    memset(&track, 0, sizeof track);
+    track.rate = rate;
+    track.frames = frames;
+    snprintf(track.name, sizeof track.name, "1 kHz");
+    track.pcm = malloc(frames * 2 * sizeof(float));
+    if (!track.pcm) {
+        log_error("decode", "loudness test out of memory");
+        return -1;
+    }
+    for (i = 0; i < frames; i++) {
+        float s = (float)(amp * sin(2.0 * M_PI * 1000.0 * (double)i / (double)rate));
+        track.pcm[i * 2] = s;
+        track.pcm[i * 2 + 1] = s;
+    }
+
+    st = ebur128_init(2, rate, EBUR128_MODE_I);
+    if (!st || ebur128_add_frames_float(st, track.pcm, frames) != EBUR128_SUCCESS ||
+        ebur128_loudness_global(st, &lufs) != EBUR128_SUCCESS) {
+        log_error("decode", "loudness test could not measure the sine");
+        if (st) {
+            ebur128_destroy(&st);
+        }
+        free(track.pcm);
+        return -1;
+    }
+    ebur128_destroy(&st);
+    if (lufs < -23.2 || lufs > -22.8) {
+        log_error("decode", "loudness sine test got %.2f LUFS, expected -23", lufs);
+        free(track.pcm);
+        return -1;
+    }
+
+    apply_loudness(&track, -18);
+    st = ebur128_init(2, rate, EBUR128_MODE_I);
+    lufs = 0;
+    if (!st || ebur128_add_frames_float(st, track.pcm, frames) != EBUR128_SUCCESS ||
+        ebur128_loudness_global(st, &lufs) != EBUR128_SUCCESS) {
+        log_error("decode", "loudness test could not remeasure the sine");
+        if (st) {
+            ebur128_destroy(&st);
+        }
+        free(track.pcm);
+        return -1;
+    }
+    ebur128_destroy(&st);
+    for (i = 0; i < frames * 2; i++) {
+        float a = track.pcm[i];
+        if (a < 0) {
+            a = -a;
+        }
+        if (a > peak) {
+            peak = a;
+        }
+    }
+    free(track.pcm);
+    if (lufs < -18.3 || lufs > -17.7 || peak >= 1.0) {
+        log_error("decode", "loudness gain test got %.2f LUFS, peak %.3f", lufs, peak);
+        return -1;
+    }
+    return 0;
+}
+
 int decode_self_test(const char *path)
 {
     Track *track;
 
-    track = track_decode(path, 44100, 1);
+    track = track_decode(path, 44100, 1, 1, -18);
     if (!track) {
         return -1;
     }

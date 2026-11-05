@@ -46,6 +46,9 @@ static int run_checks(const Config *cfg, Playlist *pl)
     if (trim_self_test() != 0) {
         failed = 1;
     }
+    if (loudness_self_test() != 0) {
+        failed = 1;
+    }
     if (player_self_test() != 0) {
         failed = 1;
     }
@@ -131,6 +134,11 @@ int main(int argc, char **argv)
     log_info("autodj", "overlap %ds, trim silence %s, pause %ds, resume %ds, volume %d%%",
              cfg.overlap_sec, cfg.trim_silence ? "on" : "off", cfg.pause_sec, cfg.resume_sec,
              cfg.volume);
+    if (cfg.loudness) {
+        log_info("autodj", "loudness on, target %d LUFS", cfg.loudness_lufs);
+    } else {
+        log_info("autodj", "loudness off");
+    }
     if (!cfg.volume_set) {
         if (config_save_volume(path, cfg.volume) == 0) {
             cfg.volume_set = 1;
@@ -176,6 +184,8 @@ int main(int argc, char **argv)
     settings.pause_sec = cfg.pause_sec;
     settings.resume_sec = cfg.resume_sec;
     settings.trim = cfg.trim_silence;
+    settings.loudness = cfg.loudness;
+    settings.loudness_lufs = cfg.loudness_lufs;
     settings.rate = rate;
     if (player_start(&settings, pl) != 0) {
         keys_close();

@@ -135,6 +135,20 @@ static void apply(Config *cfg, const char *section, const char *key, const char 
                 cfg->volume = percent;
                 cfg->volume_set = 1;
             }
+        } else if (eq_ci(key, "loudness")) {
+            if (parse_bool(val, &cfg->loudness) != 0) {
+                log_warn("autodj", "loudness must be true or false, got %s", val);
+            }
+        } else if (eq_ci(key, "loudness_lufs")) {
+            char *end = NULL;
+            long v;
+
+            v = strtol(val, &end, 10);
+            if (!val[0] || !end || *end != '\0' || v < -30 || v > -5) {
+                log_warn("autodj", "loudness_lufs must be from -30 to -5, got %s", val);
+            } else {
+                cfg->loudness_lufs = (int)v;
+            }
         } else {
             log_warn("autodj", "unknown setting %s", key);
         }
@@ -161,6 +175,8 @@ int config_load(const char *path, Config *cfg)
     cfg->resume_sec = 5;
     cfg->volume = 100;
     cfg->volume_set = 0;
+    cfg->loudness = 1;
+    cfg->loudness_lufs = -18;
     cfg->key_pause = -1;
     cfg->key_skip = -1;
     cfg->key_vol_up = -1;
@@ -520,6 +536,7 @@ int config_self_test(void)
     } else if (strcmp(cfg.folder, "/tmp/music folder") != 0 || cfg.shuffle != 0 ||
                cfg.overlap_sec != 3 || cfg.trim_silence != 1 || cfg.pause_sec != 2 ||
                cfg.resume_sec != 4 || cfg.volume != 100 || cfg.volume_set != 0 ||
+               cfg.loudness != 1 || cfg.loudness_lufs != -18 ||
                cfg.key_pause != 82 || cfg.key_skip != 83 ||
                cfg.key_vol_up != 78 || cfg.key_vol_dn != 74) {
         log_error("autodj", "config test parsed unexpected values");

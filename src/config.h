@@ -12,6 +12,8 @@ typedef struct Config {
     int resume_sec;
     int volume;     /* percent, 0-100 */
     int volume_set; /* 1 when the file contained volume */
+    int loudness;      /* 1 to normalize each track */
+    int loudness_lufs; /* target integrated loudness */
     int key_pause;
     int key_skip;
     int key_vol_up;

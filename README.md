@@ -69,6 +69,8 @@ trim_silence=true
 pause_time=3
 resume_time=3
 volume=100
+loudness=true
+loudness_lufs=-18
 
 [Keys]
 pause_resume=KEY_KP0
@@ -105,6 +107,12 @@ Seconds. Default `5`. Resume brings the song back up to full speed over this man
 
 `volume`  
 Percent from 0 to 100. Default `100`. The volume keys change it in steps of 5. Each change is written back into this file, so the next boot starts at the last volume.
+
+`loudness`  
+`true` or `false`. Default `true`. Each file is measured from start to finish and then played at one steady gain so tracks match each other. This is a level change only. It does not compress the song.
+
+`loudness_lufs`  
+Target integrated loudness, from `-30` to `-5`. Default `-18`, which is the ReplayGain 2.0 reference. A quieter track is turned up and a louder track is turned down. The gain is held back if it would clip the loudest sample.
 
 ### [Keys]
 

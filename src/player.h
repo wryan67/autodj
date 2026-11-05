@@ -8,6 +8,8 @@ typedef struct PlayerSettings {
     int pause_sec;
     int resume_sec;
     int trim;
+    int loudness;
+    int loudness_lufs;
     unsigned rate;
 } PlayerSettings;
 

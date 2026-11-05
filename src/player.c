@@ -451,7 +451,7 @@ static void *decode_main(void *arg)
             log_error("decode", "playlist has no next track");
             continue;
         }
-        track = track_decode(path, g_set.rate, g_set.trim);
+        track = track_decode(path, g_set.rate, g_set.trim, g_set.loudness, g_set.loudness_lufs);
         pthread_mutex_lock(&g_mu);
         if (atomic_load(&g_stop)) {
             pthread_mutex_unlock(&g_mu);
@@ -486,7 +486,7 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
     if (playlist_next(g_pl, path, sizeof path) != 0) {
         return -1;
     }
-    first = track_decode(path, g_set.rate, g_set.trim);
+    first = track_decode(path, g_set.rate, g_set.trim, g_set.loudness, g_set.loudness_lufs);
     if (!first) {
         return -1;
     }
