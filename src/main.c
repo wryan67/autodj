@@ -44,6 +44,9 @@ static int run_checks(const Config *cfg, Playlist *pl)
     if (config_self_test() != 0) {
         failed = 1;
     }
+    if (cfgedit_self_test() != 0) {
+        failed = 1;
+    }
     if (trim_self_test() != 0) {
         failed = 1;
     }

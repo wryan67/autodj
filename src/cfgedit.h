@@ -4,4 +4,6 @@
 /* Edit the config at path. Returns 0 on save or cancel, -1 on error. */
 int config_edit(const char *path);
 
+int cfgedit_self_test(void);
+
 #endif

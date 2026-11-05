@@ -1,6 +1,7 @@
 #include "cfgedit.h"
 
 #include "config.h"
+#include "keys.h"
 #include "log.h"
 
 #include <ctype.h>
@@ -18,7 +19,9 @@
 /*
  * Full-screen editor for master.cfg. Tab and the arrow keys move between
  * fields. Left and right move the cursor in a text field, and step to the
- * next field at either end. Esc cancels. Save validates before it writes.
+ * next field at either end. A key binding is captured from the keypad, or
+ * from another keyboard if the press is not on the keypad. Esc cancels.
+ * Save validates before it writes.
  */
 
 enum {
@@ -50,8 +53,7 @@ enum {
     MIN_ROWS = 22,
     MIN_COLS = 68,
     SAVE_W = 8,
-    CANCEL_W = 10,
-    OK_W = 6
+    CANCEL_W = 10
 };
 
 enum {
@@ -71,7 +73,8 @@ enum {
     EV_ESC,
     EV_MOUSE,
     EV_RESIZE,
-    EV_QUIT
+    EV_QUIT,
+    EV_HWKEY
 };
 
 struct Event {
@@ -79,6 +82,7 @@ struct Event {
     char text[8];
     int x;
     int y;
+    int code;
 };
 
 struct Ui {
@@ -101,6 +105,7 @@ struct Ui {
     int ok_on;
     int ok_r;
     int ok_c;
+    int ok_w;
 };
 
 struct Editor {
@@ -110,7 +115,10 @@ struct Editor {
     int focus;
     int cursor;
     int dialog;
+    int capture;
+    int capture_id;
     int saved;
+    char dialog_title[64];
     char err[1024];
 };
 
@@ -124,6 +132,10 @@ static struct sigaction g_old_winch;
 static struct sigaction g_old_term;
 static struct sigaction g_old_hup;
 static struct sigaction g_old_int;
+static int g_key_fds[32];
+static int g_key_n;
+static int g_keypad;
+static int g_keypad_grabbed;
 
 static const char *field_label(int id)
 {
@@ -201,6 +213,12 @@ static int is_number_field(int id)
 {
     return id == FE_OVERLAP || id == FE_PAUSE || id == FE_RESUME ||
            id == FE_VOLUME || id == FE_LUFS;
+}
+
+static int is_key_field(int id)
+{
+    return id == FE_KEY_PAUSE || id == FE_KEY_SKIP || id == FE_KEY_UP ||
+           id == FE_KEY_DN;
 }
 
 static int is_check_field(const ConfigEdit *edit, int id)
@@ -487,7 +505,7 @@ static void shorten_path(const char *path, int width, char *dest, size_t dest_n)
 }
 
 static void draw_text_box(FILE *fp, int row, int col, int width, const char *text,
-                          int cursor, int focused)
+                          int cursor, int focused, int caret)
 {
     int interior = width - 2;
     int scroll;
@@ -515,7 +533,7 @@ static void draw_text_box(FILE *fp, int row, int col, int width, const char *tex
     for (i = 0; i < interior; i++) {
         char cp[8];
         int n = 0;
-        int at_cursor = focused && scroll + i == cur_col;
+        int at_cursor = caret && focused && scroll + i == cur_col;
 
         if (text[byte] == '\0') {
             cp[0] = ' ';
@@ -620,7 +638,8 @@ static int wrap_lines(const char *msg, int width, char lines[][96], int max_line
     return n;
 }
 
-static void draw_dialog(FILE *fp, struct Ui *ui, const char *msg)
+static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *msg,
+                        const char *button)
 {
     char lines[16][96];
     int max_lines = ui->rows - 8;
@@ -644,6 +663,12 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *msg)
     }
     if (text_w < 20) {
         text_w = 20;
+    }
+    if (!title || !title[0]) {
+        title = "Cannot save";
+    }
+    if (!button || !button[0]) {
+        button = "[ OK ]";
     }
     if (!msg || !msg[0]) {
         msg = "Cannot save.";
@@ -684,22 +709,28 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *msg)
         fputc('|', fp);
     }
     cup(fp, box_r + 1, box_c + 2);
-    fputs("\033[1mCannot save\033[0m", fp);
+    fputs("\033[1m", fp);
+    fputs(title, fp);
+    fputs("\033[0m", fp);
     for (i = 0; i < nlines; i++) {
         cup(fp, box_r + 3 + i, box_c + 2);
         fputs(lines[i], fp);
     }
     ui->ok_on = 1;
+    ui->ok_w = (int)strlen(button);
     ui->ok_r = box_r + nlines + 4;
-    ui->ok_c = box_c + (box_w - OK_W) / 2;
-    draw_button(fp, ui->ok_r, ui->ok_c, "[ OK ]", 1);
+    ui->ok_c = box_c + (box_w - ui->ok_w) / 2;
+    if (ui->ok_c < box_c + 1) {
+        ui->ok_c = box_c + 1;
+    }
+    draw_button(fp, ui->ok_r, ui->ok_c, button, 1);
 }
 
 static void draw_screen(struct Editor *ed, FILE *fp)
 {
     struct Ui *ui = &ed->ui;
     int i;
-    const char *hint = "Tab/arrows move   Space toggles   Mouse selects   Esc cancels";
+    const char *hint = "Tab moves   Space toggles   Enter sets a key   Esc cancels";
     int hint_len = (int)strlen(hint);
     int hint_c;
 
@@ -742,11 +773,14 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         if (is_check_field(&ed->edit, i)) {
             config_parse_bool(text, &on);
             draw_check(fp, ui->field_r[i], ui->box_c, on, focused);
+        } else if (is_key_field(i)) {
+            draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i],
+                          text ? text : "", 0, focused, 0);
         } else {
             int cursor = focused ? ed->cursor : 0;
 
             draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i],
-                          text ? text : "", cursor, focused);
+                          text ? text : "", cursor, focused, 1);
         }
     }
     draw_button(fp, ui->save_r, ui->save_c, "[ Save ]", ed->focus == FE_SAVE);
@@ -759,8 +793,11 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         cup(fp, ui->hint_r, hint_c);
         fputs(hint, fp);
     }
-    if (ed->dialog) {
-        draw_dialog(fp, ui, ed->err);
+    if (ed->capture) {
+        draw_dialog(fp, ui, "Select a key",
+                    ed->err[0] ? ed->err : "Press a new key.", "[ Cancel ]");
+    } else if (ed->dialog) {
+        draw_dialog(fp, ui, ed->dialog_title, ed->err, "[ OK ]");
     }
 }
 
@@ -898,8 +935,20 @@ static int enter_tty(void)
     return 0;
 }
 
+static void release_keys(void)
+{
+    if (g_keypad_grabbed && g_key_n > 0) {
+        keys_ungrab(g_key_fds[0]);
+    }
+    g_keypad_grabbed = 0;
+    g_keypad = 0;
+    keys_close_capture(g_key_fds, g_key_n);
+    g_key_n = 0;
+}
+
 static void leave_tty(void)
 {
+    release_keys();
     restore_tty();
     if (g_tty >= 0) {
         sigaction(SIGWINCH, &g_old_winch, NULL);
@@ -990,27 +1039,11 @@ static int csi_param(const char *buf)
     return v;
 }
 
-static int next_event(struct Event *ev)
+static int event_from_byte(struct Event *ev, unsigned char c)
 {
-    unsigned char c;
     int rc;
 
     memset(ev, 0, sizeof *ev);
-    if (g_winch) {
-        g_winch = 0;
-        ev->kind = EV_RESIZE;
-        return 0;
-    }
-    rc = read_byte(g_tty, -1, &c);
-    if (rc == 0 && g_winch) {
-        g_winch = 0;
-        ev->kind = EV_RESIZE;
-        return 0;
-    }
-    if (rc != 1) {
-        ev->kind = EV_QUIT;
-        return 0;
-    }
     if (c == 3) {
         ev->kind = EV_QUIT;
         return 0;
@@ -1151,9 +1184,169 @@ static int next_event(struct Event *ev)
     return 0;
 }
 
+static void drain_tty(void)
+{
+    unsigned char b;
+
+    g_unget = -1;
+    for (;;) {
+        struct pollfd pfd;
+        int pr;
+
+        pfd.fd = g_tty;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        pr = poll(&pfd, 1, 30);
+        if (pr <= 0 || !(pfd.revents & POLLIN)) {
+            break;
+        }
+        if (read(g_tty, &b, 1) != 1) {
+            break;
+        }
+    }
+}
+
+static void compact_key_fds(void)
+{
+    int r;
+    int w = 0;
+
+    for (r = 0; r < g_key_n; r++) {
+        if (g_key_fds[r] < 0) {
+            if (r == 0) {
+                g_keypad = 0;
+                g_keypad_grabbed = 0;
+            }
+            continue;
+        }
+        g_key_fds[w++] = g_key_fds[r];
+    }
+    g_key_n = w;
+}
+
+static int next_capture_event(struct Event *ev)
+{
+    for (;;) {
+        struct pollfd pfds[33];
+        int nfd;
+        int i;
+        int found = -1;
+        int pr;
+
+        if (g_winch) {
+            g_winch = 0;
+            memset(ev, 0, sizeof *ev);
+            ev->kind = EV_RESIZE;
+            return 0;
+        }
+        if (g_unget >= 0) {
+            unsigned char c = (unsigned char)g_unget;
+
+            g_unget = -1;
+            return event_from_byte(ev, c);
+        }
+        nfd = 1 + g_key_n;
+        if (nfd > (int)(sizeof pfds / sizeof pfds[0])) {
+            nfd = (int)(sizeof pfds / sizeof pfds[0]);
+        }
+        memset(pfds, 0, sizeof pfds);
+        pfds[0].fd = g_tty;
+        pfds[0].events = POLLIN;
+        for (i = 0; i < g_key_n && i + 1 < nfd; i++) {
+            pfds[1 + i].fd = g_key_fds[i];
+            pfds[1 + i].events = POLLIN;
+        }
+        pr = poll(pfds, (nfds_t)nfd, -1);
+        if (pr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            memset(ev, 0, sizeof *ev);
+            ev->kind = EV_QUIT;
+            return 0;
+        }
+        for (i = 0; i < g_key_n && i + 1 < nfd; i++) {
+            short rev = pfds[1 + i].revents;
+            int code;
+
+            if (!(rev & (POLLIN | POLLERR | POLLHUP | POLLNVAL))) {
+                continue;
+            }
+            if ((rev & (POLLERR | POLLHUP | POLLNVAL)) && !(rev & POLLIN)) {
+                if (i == 0 && g_keypad_grabbed) {
+                    keys_ungrab(g_key_fds[i]);
+                    g_keypad_grabbed = 0;
+                }
+                close(g_key_fds[i]);
+                g_key_fds[i] = -1;
+                continue;
+            }
+            code = keys_read_press(g_key_fds[i]);
+            if (found < 0 && code >= 0) {
+                found = code;
+            }
+        }
+        compact_key_fds();
+        if (found >= 0) {
+            drain_tty();
+            memset(ev, 0, sizeof *ev);
+            ev->kind = EV_HWKEY;
+            ev->code = found;
+            return 0;
+        }
+        if (pfds[0].revents & POLLIN) {
+            unsigned char c;
+            ssize_t n = read(g_tty, &c, 1);
+
+            if (n == 1) {
+                return event_from_byte(ev, c);
+            }
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            memset(ev, 0, sizeof *ev);
+            ev->kind = EV_QUIT;
+            return 0;
+        }
+        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            memset(ev, 0, sizeof *ev);
+            ev->kind = EV_QUIT;
+            return 0;
+        }
+    }
+}
+
+static int next_event(struct Event *ev, int capture)
+{
+    unsigned char c;
+    int rc;
+
+    if (capture && g_key_n > 0) {
+        return next_capture_event(ev);
+    }
+    memset(ev, 0, sizeof *ev);
+    if (g_winch) {
+        g_winch = 0;
+        ev->kind = EV_RESIZE;
+        return 0;
+    }
+    rc = read_byte(g_tty, -1, &c);
+    if (rc == 0 && g_winch) {
+        g_winch = 0;
+        ev->kind = EV_RESIZE;
+        return 0;
+    }
+    if (rc != 1) {
+        ev->kind = EV_QUIT;
+        return 0;
+    }
+    return event_from_byte(ev, c);
+}
+
 static int hit_ok(const struct Ui *ui, int x, int y)
 {
-    return ui->ok_on && y == ui->ok_r && x >= ui->ok_c && x < ui->ok_c + OK_W;
+    return ui->ok_on && ui->ok_w > 0 && y == ui->ok_r &&
+           x >= ui->ok_c && x < ui->ok_c + ui->ok_w;
 }
 
 static int hit_focus(const struct Ui *ui, int x, int y)
@@ -1189,7 +1382,7 @@ static void place_cursor(struct Editor *ed, int id, int x)
     if (!text) {
         return;
     }
-    if (is_check_field(&ed->edit, id)) {
+    if (is_check_field(&ed->edit, id) || is_key_field(id)) {
         return;
     }
     interior = box_w - 2;
@@ -1210,6 +1403,7 @@ static void try_save(struct Editor *ed)
     Config cfg;
 
     if (config_validate_edit(&ed->edit, &cfg, ed->err, sizeof ed->err) != 0) {
+        snprintf(ed->dialog_title, sizeof ed->dialog_title, "Cannot save");
         ed->dialog = 1;
         return;
     }
@@ -1217,6 +1411,7 @@ static void try_save(struct Editor *ed)
         if (!ed->err[0]) {
             snprintf(ed->err, sizeof ed->err, "Could not save.");
         }
+        snprintf(ed->dialog_title, sizeof ed->dialog_title, "Cannot save");
         ed->dialog = 1;
         return;
     }
@@ -1225,7 +1420,113 @@ static void try_save(struct Editor *ed)
 
 static int editing_text(const struct Editor *ed)
 {
-    return ed->focus < FE_FIELD_COUNT && !is_check_field(&ed->edit, ed->focus);
+    return ed->focus < FE_FIELD_COUNT && !is_check_field(&ed->edit, ed->focus) &&
+           !is_key_field(ed->focus);
+}
+
+static void trim_copy(char *dest, size_t n, const char *src)
+{
+    size_t len;
+
+    while (*src && isspace((unsigned char)*src)) {
+        src++;
+    }
+    snprintf(dest, n, "%s", src ? src : "");
+    len = strlen(dest);
+    while (len > 0 && isspace((unsigned char)dest[len - 1])) {
+        dest[--len] = '\0';
+    }
+}
+
+static const char *key_field_value(const ConfigEdit *edit, int id)
+{
+    switch (id) {
+    case FE_KEY_PAUSE:
+        return edit->key_pause;
+    case FE_KEY_SKIP:
+        return edit->key_skip;
+    case FE_KEY_UP:
+        return edit->key_vol_up;
+    case FE_KEY_DN:
+        return edit->key_vol_dn;
+    default:
+        return "";
+    }
+}
+
+static int key_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
+{
+    static const int ids[4] = {FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_UP, FE_KEY_DN};
+    int i;
+
+    if (who) {
+        *who = "";
+    }
+    if (!edit || !name || !name[0]) {
+        return 0;
+    }
+    for (i = 0; i < 4; i++) {
+        char got[64];
+
+        if (ids[i] == self) {
+            continue;
+        }
+        trim_copy(got, sizeof got, key_field_value(edit, ids[i]));
+        if (got[0] && strcmp(got, name) == 0) {
+            if (who) {
+                *who = field_label(ids[i]);
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void stop_capture(struct Editor *ed)
+{
+    release_keys();
+    if (ed) {
+        ed->capture = 0;
+    }
+}
+
+static void begin_capture(struct Editor *ed, int id)
+{
+    int pad = 0;
+    int busy = 0;
+
+    ed->focus = id;
+    ed->capture_id = id;
+    ed->dialog = 0;
+    release_keys();
+    g_key_n = keys_open_capture(g_key_fds, (int)(sizeof g_key_fds / sizeof g_key_fds[0]), &pad);
+    if (g_key_n < 0) {
+        g_key_n = 0;
+    }
+    g_keypad = pad && g_key_n > 0;
+    if (g_keypad) {
+        if (keys_grab(g_key_fds[0]) == 0) {
+            g_keypad_grabbed = 1;
+        } else if (errno == EBUSY) {
+            busy = 1;
+        }
+    }
+    if (g_key_n == 0) {
+        snprintf(ed->err, sizeof ed->err,
+                 "Press a new key.\nNo keypad or keyboard was found.");
+    } else if (busy) {
+        snprintf(ed->err, sizeof ed->err,
+                 "Press a new key.\nKeypad is in use by playback. Use another keyboard, or cancel.");
+    } else {
+        snprintf(ed->err, sizeof ed->err, "Press a new key.");
+    }
+    ed->capture = 1;
+}
+
+static int activate_key(const struct Event *ev)
+{
+    return ev->kind == EV_ENTER ||
+           (ev->kind == EV_CHAR && ev->text[0] == ' ' && ev->text[1] == '\0');
 }
 
 static int handle_event(struct Editor *ed, const struct Event *ev)
@@ -1245,6 +1546,41 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
             ed->saved = 0;
             return 1;
         }
+        return 0;
+    }
+    if (ed->capture) {
+        const char *name;
+        const char *who = NULL;
+
+        if (ev->kind == EV_ESC ||
+            (ev->kind == EV_HWKEY && key_name(ev->code) &&
+             strcmp(key_name(ev->code), "KEY_ESC") == 0) ||
+            (ev->kind == EV_MOUSE && hit_ok(&ed->ui, ev->x, ev->y))) {
+            stop_capture(ed);
+            ed->err[0] = '\0';
+            return 0;
+        }
+        if (ev->kind != EV_HWKEY) {
+            return 0;
+        }
+        name = key_name(ev->code);
+        if (!name || strcmp(name, "KEY_NUMLOCK") == 0) {
+            return 0;
+        }
+        if (key_conflict(&ed->edit, ed->capture_id, name, &who)) {
+            stop_capture(ed);
+            snprintf(ed->err, sizeof ed->err, "%s is already used for %s.", name,
+                     who ? who : "another action");
+            snprintf(ed->dialog_title, sizeof ed->dialog_title, "Key in use");
+            ed->dialog = 1;
+            return 0;
+        }
+        text = field_text(&ed->edit, ed->capture_id, &cap);
+        if (text) {
+            snprintf(text, cap, "%s", name);
+        }
+        stop_capture(ed);
+        ed->err[0] = '\0';
         return 0;
     }
     if (ed->dialog) {
@@ -1287,6 +1623,10 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
             toggle_check(ed, id);
             return 0;
         }
+        if (is_key_field(id)) {
+            begin_capture(ed, id);
+            return 0;
+        }
         place_cursor(ed, id, ev->x);
         ed->focus = id;
         return 0;
@@ -1312,6 +1652,18 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
     if (is_check_field(&ed->edit, ed->focus)) {
         if (ev->kind == EV_ENTER || (ev->kind == EV_CHAR && ev->text[0] == ' ')) {
             toggle_check(ed, ed->focus);
+            return 0;
+        }
+        if (ev->kind == EV_LEFT) {
+            move_focus(ed, -1);
+        } else if (ev->kind == EV_RIGHT) {
+            move_focus(ed, 1);
+        }
+        return 0;
+    }
+    if (is_key_field(ed->focus)) {
+        if (activate_key(ev)) {
+            begin_capture(ed, ed->focus);
             return 0;
         }
         if (ev->kind == EV_LEFT) {
@@ -1403,7 +1755,7 @@ int config_edit(const char *path)
             log_error("autodj", "cannot draw the config screen");
             return -1;
         }
-        if (next_event(&ev) != 0) {
+        if (next_event(&ev, ed.capture) != 0) {
             break;
         }
         if (handle_event(&ed, &ev)) {
@@ -1413,6 +1765,40 @@ int config_edit(const char *path)
     leave_tty();
     if (ed.saved) {
         log_info("autodj", "saved %s", path);
+    }
+    return 0;
+}
+
+int cfgedit_self_test(void)
+{
+    ConfigEdit edit;
+    const char *who = "x";
+
+    memset(&edit, 0, sizeof edit);
+    snprintf(edit.key_pause, sizeof edit.key_pause, "KEY_KP0");
+    snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KPDOT");
+    snprintf(edit.key_vol_up, sizeof edit.key_vol_up, " KEY_KPPLUS ");
+    if (key_conflict(&edit, FE_KEY_SKIP, "KEY_KP0", &who) != 1 ||
+        !who || strcmp(who, "Pause/resume") != 0) {
+        log_error("cfgedit", "duplicate pause key was not reported");
+        return -1;
+    }
+    if (key_conflict(&edit, FE_KEY_PAUSE, "KEY_KP0", &who) != 0 || !who || who[0] != '\0') {
+        log_error("cfgedit", "the same field was treated as a duplicate");
+        return -1;
+    }
+    if (key_conflict(&edit, FE_KEY_DN, "KEY_KPPLUS", &who) != 1 ||
+        !who || strcmp(who, "Volume up") != 0) {
+        log_error("cfgedit", "trimmed duplicate was not reported");
+        return -1;
+    }
+    if (key_conflict(&edit, FE_KEY_DN, "KEY_KPASTERISK", &who) != 0) {
+        log_error("cfgedit", "a free key was rejected");
+        return -1;
+    }
+    if (key_conflict(&edit, FE_KEY_DN, "", &who) != 0) {
+        log_error("cfgedit", "an empty key was treated as a duplicate");
+        return -1;
     }
     return 0;
 }
