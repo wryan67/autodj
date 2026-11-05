@@ -122,7 +122,7 @@ Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_
 Press once to pause. Press again to resume.
 
 `skip`  
-Press to skip to the next track.
+Press to skip to the next track. While a song is playing, skip starts the overlap crossfade. If the music is paused, or still slowing to a pause, skip moves to the next track and resumes playback. A full stop cuts straight to the next track, then brings it back up to speed over `resume_time`.
 
 `volume_up`  
 Press or hold to raise the volume. The name `brake_delayvolume_up` is accepted as this same action.

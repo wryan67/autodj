@@ -19,7 +19,9 @@
  *
  * Overlap plays the last N seconds of the current song against the first N
  * seconds of the next one. The outgoing volume falls while the incoming
- * volume rises. Skip starts that same crossfade immediately.
+ * volume rises. Skip starts that same crossfade immediately. A skip while
+ * paused or still braking resumes on the next track. A full stop cuts
+ * straight to that track, because there is nothing left to crossfade.
  */
 
 static atomic_int g_pause_gen;
@@ -184,6 +186,16 @@ static void promote(void)
     log_playing(g_a);
 }
 
+static void begin_ramp(int pausing);
+
+/* A skip during pause or the brake should leave the next track playing. */
+static void resume_if_paused(void)
+{
+    if (g_paused) {
+        begin_ramp(0);
+    }
+}
+
 static void start_fade(size_t span)
 {
     Track *next = take_pending();
@@ -215,6 +227,7 @@ static void do_skip(void)
         if (g_fading && g_b) {
             log_info("audio", "skip");
             promote();
+            resume_if_paused();
             return;
         }
         if (!pending_ready(&blen)) {
@@ -223,11 +236,13 @@ static void do_skip(void)
         }
         log_info("audio", "skip");
         become(take_pending());
+        resume_if_paused();
         return;
     }
     if (g_fading && g_b) {
         log_info("audio", "skip");
         promote();
+        resume_if_paused();
         return;
     }
     if (!pending_ready(&blen)) {
@@ -245,10 +260,14 @@ static void do_skip(void)
     if (span == 0) {
         log_info("audio", "skip");
         become(take_pending());
+        resume_if_paused();
         return;
     }
     log_info("audio", "skip");
     start_fade(span);
+    if (g_fading) {
+        resume_if_paused();
+    }
 }
 
 static void begin_ramp(int pausing)
