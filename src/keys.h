@@ -25,7 +25,8 @@ void keys_close_capture(int *fds, int n);
 /* First new key press pending on fd, or -1. Repeats and KEY_NUMLOCK are skipped. */
 int keys_read_press(int fd);
 
-/* Drain pending events and dispatch the actions in cfg. */
+/* Drain pending events and dispatch the actions in cfg.
+ * A press within 30 ms of the previous press is ignored. */
 void keys_poll(const struct Config *cfg);
 
 int keys_self_test(void);

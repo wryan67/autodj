@@ -25,6 +25,10 @@ static const struct {
 
 static int g_fd = -1;
 static struct timespec g_vol_time;
+static struct timeval g_press_time;
+static int g_press_seen;
+
+enum { KEY_DEBOUNCE_MS = 30 };
 
 int key_from_name(const char *name, int *code)
 {
@@ -287,6 +291,33 @@ static int volume_due(void)
     return 1;
 }
 
+/* Milliseconds from earlier to later. Negative when later comes first. */
+static long timeval_delta_ms(const struct timeval *later, const struct timeval *earlier)
+{
+    long sec = (long)later->tv_sec - (long)earlier->tv_sec;
+    long usec = (long)later->tv_usec - (long)earlier->tv_usec;
+
+    if (usec < 0) {
+        sec -= 1;
+        usec += 1000000;
+    }
+    return sec * 1000 + usec / 1000;
+}
+
+/* Presses closer than 30 ms are ignored. The gap is measured from the
+ * previous press, including one that was itself ignored. */
+static int press_accepted(const struct timeval *when)
+{
+    long ms = 1000;
+
+    if (g_press_seen) {
+        ms = timeval_delta_ms(when, &g_press_time);
+    }
+    g_press_time = *when;
+    g_press_seen = 1;
+    return ms >= KEY_DEBOUNCE_MS;
+}
+
 void keys_poll(const struct Config *cfg)
 {
     struct input_event ev;
@@ -297,7 +328,11 @@ void keys_poll(const struct Config *cfg)
     while (read(g_fd, &ev, sizeof ev) == (ssize_t)sizeof ev) {
         const char *name;
 
-        if (ev.type != EV_KEY) {
+        if (ev.type != EV_KEY || ev.code == KEY_NUMLOCK) {
+            continue;
+        }
+        /* Value 1 is a press. Repeats stay on the volume hold path. */
+        if (ev.value == 1 && !press_accepted(&ev.time)) {
             continue;
         }
         if (ev.code == cfg->key_pause && ev.value == 1) {
@@ -316,14 +351,134 @@ void keys_poll(const struct Config *cfg)
             continue;
         }
         if (ev.value == 1) {
-            /* USB keypads emit NumLock beside every key. It is not a binding. */
-            if (ev.code == KEY_NUMLOCK) {
-                continue;
-            }
             name = key_name(ev.code);
             log_info("keys", "key %s is not mapped", name ? name : "unknown");
         }
     }
+}
+
+static int put_key(int fd, long ms, unsigned short code, int value)
+{
+    struct input_event ev;
+
+    memset(&ev, 0, sizeof ev);
+    ev.time.tv_sec = ms / 1000;
+    ev.time.tv_usec = (ms % 1000) * 1000;
+    ev.type = EV_KEY;
+    ev.code = code;
+    ev.value = value;
+    if (write(fd, &ev, sizeof ev) != (ssize_t)sizeof ev) {
+        return -1;
+    }
+    return 0;
+}
+
+static int debounce_self_test(void)
+{
+    int pipefd[2];
+    Config cfg;
+    int rc = -1;
+
+    if (pipe(pipefd) != 0) {
+        log_error("keys", "cannot create a debounce pipe");
+        return -1;
+    }
+    if (fcntl(pipefd[0], F_SETFL, O_NONBLOCK) != 0) {
+        log_error("keys", "cannot set the debounce pipe nonblocking");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    memset(&cfg, 0, sizeof cfg);
+    cfg.key_pause = KEY_A;
+    cfg.key_skip = KEY_B;
+    cfg.key_vol_up = KEY_KPPLUS;
+    cfg.key_vol_dn = KEY_KPMINUS;
+    player_set_volume_percent(50);
+    g_press_seen = 0;
+    memset(&g_press_time, 0, sizeof g_press_time);
+    memset(&g_vol_time, 0, sizeof g_vol_time);
+    g_fd = pipefd[0];
+
+    /* NumLock is not a press, so the keypad key beside it still counts. */
+    if (put_key(pipefd[1], 10000, KEY_NUMLOCK, 1) != 0 ||
+        put_key(pipefd[1], 10010, KEY_KPPLUS, 1) != 0) {
+        log_error("keys", "cannot write debounce events");
+        goto out;
+    }
+    keys_poll(&cfg);
+    if (player_volume_percent() != 55) {
+        log_error("keys", "first press left volume %d, expected 55",
+                  player_volume_percent());
+        goto out;
+    }
+
+    /* 20 ms later is inside the gap. Clear the hold timer so only the
+     * press gap can reject this event. */
+    memset(&g_vol_time, 0, sizeof g_vol_time);
+    if (put_key(pipefd[1], 10030, KEY_KPPLUS, 1) != 0) {
+        log_error("keys", "cannot write a close press");
+        goto out;
+    }
+    keys_poll(&cfg);
+    if (player_volume_percent() != 55) {
+        log_error("keys", "close press left volume %d, expected 55",
+                  player_volume_percent());
+        goto out;
+    }
+
+    /* Another key starts the gap again. */
+    if (put_key(pipefd[1], 10070, KEY_A, 1) != 0 ||
+        put_key(pipefd[1], 10090, KEY_KPPLUS, 1) != 0) {
+        log_error("keys", "cannot write a pause press");
+        goto out;
+    }
+    memset(&g_vol_time, 0, sizeof g_vol_time);
+    keys_poll(&cfg);
+    if (player_volume_percent() != 55) {
+        log_error("keys", "press after pause left volume %d, expected 55",
+                  player_volume_percent());
+        goto out;
+    }
+
+    /* 30 ms after the previous press is accepted. */
+    memset(&g_vol_time, 0, sizeof g_vol_time);
+    if (put_key(pipefd[1], 10120, KEY_KPPLUS, 1) != 0) {
+        log_error("keys", "cannot write a later press");
+        goto out;
+    }
+    keys_poll(&cfg);
+    if (player_volume_percent() != 60) {
+        log_error("keys", "press at 30 ms left volume %d, expected 60",
+                  player_volume_percent());
+        goto out;
+    }
+
+    /* A repeat inside the press gap still changes volume. A press does not. */
+    memset(&g_vol_time, 0, sizeof g_vol_time);
+    if (put_key(pipefd[1], 10140, KEY_KPPLUS, 2) != 0 ||
+        put_key(pipefd[1], 10145, KEY_KPPLUS, 1) != 0) {
+        log_error("keys", "cannot write a volume repeat");
+        goto out;
+    }
+    keys_poll(&cfg);
+    if (player_volume_percent() != 65) {
+        log_error("keys", "repeat during debounce left volume %d, expected 65",
+                  player_volume_percent());
+        goto out;
+    }
+    rc = 0;
+out:
+    if (g_fd == pipefd[0]) {
+        g_fd = -1;
+    }
+    close(pipefd[0]);
+    close(pipefd[1]);
+    g_press_seen = 0;
+    memset(&g_press_time, 0, sizeof g_press_time);
+    memset(&g_vol_time, 0, sizeof g_vol_time);
+    player_set_volume_percent(100);
+    return rc;
 }
 
 int keys_self_test(void)
@@ -435,6 +590,9 @@ int keys_self_test(void)
             log_error("keys", "key press read returned %d", code);
             return -1;
         }
+    }
+    if (debounce_self_test() != 0) {
+        return -1;
     }
     return 0;
 }

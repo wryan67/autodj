@@ -119,7 +119,7 @@ Target integrated loudness, from `-30` to `-5`. Default `-18`, which is the Repl
 
 ### [Keys]
 
-Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. An action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored.
+Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. An action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored. Holding a volume key still repeats.
 
 `pause_resume`  
 Press once to pause. Press again to resume.
