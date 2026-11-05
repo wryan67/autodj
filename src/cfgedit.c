@@ -36,6 +36,10 @@ enum {
     FE_LUFS,
     FE_KEY_PAUSE,
     FE_KEY_SKIP,
+    FE_KEY_PREV,
+    FE_KEY_REW05,
+    FE_KEY_REW10,
+    FE_KEY_REW15,
     FE_KEY_UP,
     FE_KEY_DN,
     FE_FIELD_COUNT,
@@ -47,10 +51,10 @@ enum {
 enum {
     LABEL_W = 16,
     NUM_W = 8,
-    FRAME_H = 20,
-    ROW_FIELD0 = 3,
-    ROW_BUTTONS = 17,
-    MIN_ROWS = 22,
+    ROW_FIELD0 = 2,
+    ROW_BUTTONS = ROW_FIELD0 + FE_FIELD_COUNT,
+    FRAME_H = ROW_BUTTONS + 2,
+    MIN_ROWS = FRAME_H + 1,
     MIN_COLS = 68,
     SAVE_W = 8,
     CANCEL_W = 10
@@ -151,6 +155,10 @@ static const char *field_label(int id)
         "Target LUFS",
         "Pause/resume",
         "Skip",
+        "Previous",
+        "Rewind 0.5s",
+        "Rewind 1s",
+        "Rewind 1.5s",
         "Volume up",
         "Volume down"
     };
@@ -197,6 +205,18 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_SKIP:
         *cap = sizeof edit->key_skip;
         return edit->key_skip;
+    case FE_KEY_PREV:
+        *cap = sizeof edit->key_prev;
+        return edit->key_prev;
+    case FE_KEY_REW05:
+        *cap = sizeof edit->key_rew05;
+        return edit->key_rew05;
+    case FE_KEY_REW10:
+        *cap = sizeof edit->key_rew10;
+        return edit->key_rew10;
+    case FE_KEY_REW15:
+        *cap = sizeof edit->key_rew15;
+        return edit->key_rew15;
     case FE_KEY_UP:
         *cap = sizeof edit->key_vol_up;
         return edit->key_vol_up;
@@ -217,8 +237,7 @@ static int is_number_field(int id)
 
 static int is_key_field(int id)
 {
-    return id == FE_KEY_PAUSE || id == FE_KEY_SKIP || id == FE_KEY_UP ||
-           id == FE_KEY_DN;
+    return id >= FE_KEY_PAUSE && id <= FE_KEY_DN;
 }
 
 static int is_check_field(const ConfigEdit *edit, int id)
@@ -1445,6 +1464,14 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
         return edit->key_pause;
     case FE_KEY_SKIP:
         return edit->key_skip;
+    case FE_KEY_PREV:
+        return edit->key_prev;
+    case FE_KEY_REW05:
+        return edit->key_rew05;
+    case FE_KEY_REW10:
+        return edit->key_rew10;
+    case FE_KEY_REW15:
+        return edit->key_rew15;
     case FE_KEY_UP:
         return edit->key_vol_up;
     case FE_KEY_DN:
@@ -1456,7 +1483,10 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
 
 static int key_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
 {
-    static const int ids[4] = {FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_UP, FE_KEY_DN};
+    static const int ids[] = {
+        FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
+        FE_KEY_REW10, FE_KEY_REW15, FE_KEY_UP, FE_KEY_DN
+    };
     int i;
 
     if (who) {
@@ -1465,7 +1495,7 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
     if (!edit || !name || !name[0]) {
         return 0;
     }
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < (int)(sizeof ids / sizeof ids[0]); i++) {
         char got[64];
 
         if (ids[i] == self) {
@@ -1798,6 +1828,13 @@ int cfgedit_self_test(void)
     }
     if (key_conflict(&edit, FE_KEY_DN, "", &who) != 0) {
         log_error("cfgedit", "an empty key was treated as a duplicate");
+        return -1;
+    }
+    snprintf(edit.key_rew05, sizeof edit.key_rew05, "KEY_KP1");
+    snprintf(edit.key_rew10, sizeof edit.key_rew10, "KEY_KP1");
+    if (key_conflict(&edit, FE_KEY_REW10, "KEY_KP1", &who) != 1 ||
+        !who || strcmp(who, "Rewind 0.5s") != 0) {
+        log_error("cfgedit", "duplicate rewind key was not reported");
         return -1;
     }
     return 0;

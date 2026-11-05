@@ -162,11 +162,16 @@ int main(int argc, char **argv)
         }
     }
     player_set_volume_percent(cfg.volume);
-    log_info("autodj", "keys pause/resume %s, skip %s, volume up %s, volume down %s",
+    log_info("autodj", "keys pause/resume %s, skip %s, previous %s, volume up %s, volume down %s",
              cfg.key_pause_name[0] ? cfg.key_pause_name : "(none)",
              cfg.key_skip_name[0] ? cfg.key_skip_name : "(none)",
+             cfg.key_prev_name[0] ? cfg.key_prev_name : "(none)",
              cfg.key_vol_up_name[0] ? cfg.key_vol_up_name : "(none)",
              cfg.key_vol_dn_name[0] ? cfg.key_vol_dn_name : "(none)");
+    log_info("autodj", "keys rewind 0.5s %s, rewind 1s %s, rewind 1.5s %s",
+             cfg.key_rew05_name[0] ? cfg.key_rew05_name : "(none)",
+             cfg.key_rew10_name[0] ? cfg.key_rew10_name : "(none)",
+             cfg.key_rew15_name[0] ? cfg.key_rew15_name : "(none)");
 
     pl = playlist_load(cfg.folder, cfg.shuffle);
     if (!pl) {

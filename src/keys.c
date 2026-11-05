@@ -343,6 +343,22 @@ void keys_poll(const struct Config *cfg)
             player_skip();
             continue;
         }
+        if (ev.code == cfg->key_prev && ev.value == 1) {
+            player_previous();
+            continue;
+        }
+        if (ev.code == cfg->key_rew05 && ev.value == 1) {
+            player_rewind(500);
+            continue;
+        }
+        if (ev.code == cfg->key_rew10 && ev.value == 1) {
+            player_rewind(1000);
+            continue;
+        }
+        if (ev.code == cfg->key_rew15 && ev.value == 1) {
+            player_rewind(1500);
+            continue;
+        }
         if ((ev.code == cfg->key_vol_up || ev.code == cfg->key_vol_dn) &&
             (ev.value == 1 || ev.value == 2)) {
             if (volume_due()) {
@@ -392,6 +408,10 @@ static int debounce_self_test(void)
     memset(&cfg, 0, sizeof cfg);
     cfg.key_pause = KEY_A;
     cfg.key_skip = KEY_B;
+    cfg.key_prev = -1;
+    cfg.key_rew05 = -1;
+    cfg.key_rew10 = -1;
+    cfg.key_rew15 = -1;
     cfg.key_vol_up = KEY_KPPLUS;
     cfg.key_vol_dn = KEY_KPMINUS;
     player_set_volume_percent(50);

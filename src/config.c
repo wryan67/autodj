@@ -12,6 +12,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+enum {
+    KEYID_PAUSE = 0,
+    KEYID_SKIP,
+    KEYID_PREV,
+    KEYID_REW05,
+    KEYID_REW10,
+    KEYID_REW15,
+    KEYID_UP,
+    KEYID_DN,
+    KEYID_COUNT
+};
+
 static void trim(char *s)
 {
     char *start;
@@ -96,6 +108,18 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     } else if (eq_ci(action, "skip")) {
         cfg->key_skip = code;
         snprintf(cfg->key_skip_name, sizeof cfg->key_skip_name, "%s", keyname);
+    } else if (eq_ci(action, "previous")) {
+        cfg->key_prev = code;
+        snprintf(cfg->key_prev_name, sizeof cfg->key_prev_name, "%s", keyname);
+    } else if (eq_ci(action, "rewind_0_5")) {
+        cfg->key_rew05 = code;
+        snprintf(cfg->key_rew05_name, sizeof cfg->key_rew05_name, "%s", keyname);
+    } else if (eq_ci(action, "rewind_1")) {
+        cfg->key_rew10 = code;
+        snprintf(cfg->key_rew10_name, sizeof cfg->key_rew10_name, "%s", keyname);
+    } else if (eq_ci(action, "rewind_1_5")) {
+        cfg->key_rew15 = code;
+        snprintf(cfg->key_rew15_name, sizeof cfg->key_rew15_name, "%s", keyname);
     } else if (eq_ci(action, "volume_up") || eq_ci(action, "brake_delayvolume_up")) {
         /* brake_delayvolume_up is the mashed name from the sample config. */
         if (eq_ci(action, "brake_delayvolume_up")) {
@@ -109,6 +133,31 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     } else {
         log_warn("autodj", "unknown key action %s", action);
     }
+}
+
+static int key_code_used(const Config *cfg, int code)
+{
+    if (code < 0) {
+        return 0;
+    }
+    return cfg->key_pause == code || cfg->key_skip == code || cfg->key_prev == code ||
+           cfg->key_rew05 == code || cfg->key_rew10 == code || cfg->key_rew15 == code ||
+           cfg->key_vol_up == code || cfg->key_vol_dn == code;
+}
+
+/* A missing previous or rewind binding takes the keypad default, unless
+ * that key is already used by another action. */
+static void bind_default(Config *cfg, int *slot, const char *action, const char *keyname)
+{
+    int code = -1;
+
+    if (!slot || *slot >= 0) {
+        return;
+    }
+    if (key_from_name(keyname, &code) != 0 || key_code_used(cfg, code)) {
+        return;
+    }
+    set_key(cfg, action, keyname);
 }
 
 static void apply(Config *cfg, const char *section, const char *key, const char *val)
@@ -188,6 +237,10 @@ int config_load(const char *path, Config *cfg)
     cfg->loudness_lufs = -18;
     cfg->key_pause = -1;
     cfg->key_skip = -1;
+    cfg->key_prev = -1;
+    cfg->key_rew05 = -1;
+    cfg->key_rew10 = -1;
+    cfg->key_rew15 = -1;
     cfg->key_vol_up = -1;
     cfg->key_vol_dn = -1;
     section[0] = '\0';
@@ -239,6 +292,10 @@ int config_load(const char *path, Config *cfg)
         log_error("autodj", "config %s has no Folder", path);
         return -1;
     }
+    bind_default(cfg, &cfg->key_prev, "previous", "KEY_KPSLASH");
+    bind_default(cfg, &cfg->key_rew05, "rewind_0_5", "KEY_KP1");
+    bind_default(cfg, &cfg->key_rew10, "rewind_1", "KEY_KP2");
+    bind_default(cfg, &cfg->key_rew15, "rewind_1_5", "KEY_KP3");
     return 0;
 }
 
@@ -522,6 +579,10 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->volume, sizeof edit->volume, "100");
     snprintf(edit->loudness, sizeof edit->loudness, "true");
     snprintf(edit->loudness_lufs, sizeof edit->loudness_lufs, "-18");
+    snprintf(edit->key_prev, sizeof edit->key_prev, "KEY_KPSLASH");
+    snprintf(edit->key_rew05, sizeof edit->key_rew05, "KEY_KP1");
+    snprintf(edit->key_rew10, sizeof edit->key_rew10, "KEY_KP2");
+    snprintf(edit->key_rew15, sizeof edit->key_rew15, "KEY_KP3");
 }
 
 static void copy_raw(char *dest, size_t n, const char *val)
@@ -558,12 +619,56 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_pause, sizeof edit->key_pause, val);
         } else if (eq_ci(key, "skip")) {
             copy_raw(edit->key_skip, sizeof edit->key_skip, val);
+        } else if (eq_ci(key, "previous")) {
+            copy_raw(edit->key_prev, sizeof edit->key_prev, val);
+        } else if (eq_ci(key, "rewind_0_5")) {
+            copy_raw(edit->key_rew05, sizeof edit->key_rew05, val);
+        } else if (eq_ci(key, "rewind_1")) {
+            copy_raw(edit->key_rew10, sizeof edit->key_rew10, val);
+        } else if (eq_ci(key, "rewind_1_5")) {
+            copy_raw(edit->key_rew15, sizeof edit->key_rew15, val);
         } else if (eq_ci(key, "volume_up") || eq_ci(key, "brake_delayvolume_up")) {
             copy_raw(edit->key_vol_up, sizeof edit->key_vol_up, val);
         } else if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
             copy_raw(edit->key_vol_dn, sizeof edit->key_vol_dn, val);
         }
     }
+}
+
+/* Drop a keypad default when the file already gave that key to another action. */
+static void release_taken_default(ConfigEdit *edit, char *field, const char *defname)
+{
+    char *fields[8];
+    int i;
+    int hits = 0;
+
+    if (strcmp(field, defname) != 0) {
+        return;
+    }
+    fields[0] = edit->key_pause;
+    fields[1] = edit->key_skip;
+    fields[2] = edit->key_prev;
+    fields[3] = edit->key_rew05;
+    fields[4] = edit->key_rew10;
+    fields[5] = edit->key_rew15;
+    fields[6] = edit->key_vol_up;
+    fields[7] = edit->key_vol_dn;
+    for (i = 0; i < 8; i++) {
+        if (strcmp(fields[i], defname) == 0) {
+            hits++;
+        }
+    }
+    if (hits > 1) {
+        field[0] = '\0';
+    }
+}
+
+static void release_key_defaults(ConfigEdit *edit)
+{
+    release_taken_default(edit, edit->key_prev, "KEY_KPSLASH");
+    release_taken_default(edit, edit->key_rew05, "KEY_KP1");
+    release_taken_default(edit, edit->key_rew10, "KEY_KP2");
+    release_taken_default(edit, edit->key_rew15, "KEY_KP3");
 }
 
 int config_load_edit(const char *path, ConfigEdit *edit)
@@ -579,6 +684,7 @@ int config_load_edit(const char *path, ConfigEdit *edit)
     fp = fopen(path, "r");
     if (!fp) {
         if (errno == ENOENT) {
+            release_key_defaults(edit);
             return 0;
         }
         log_error("autodj", "cannot open config %s: %s", path, strerror(errno));
@@ -624,6 +730,7 @@ int config_load_edit(const char *path, ConfigEdit *edit)
         return -1;
     }
     fclose(fp);
+    release_key_defaults(edit);
     return 0;
 }
 
@@ -704,9 +811,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     ConfigEdit in;
     Config out;
     struct stat st;
-    const char *keys[4];
-    const char *labels[4];
-    int key_ok[4];
+    const char *keys[KEYID_COUNT];
+    const char *labels[KEYID_COUNT];
+    int key_ok[KEYID_COUNT];
     int i;
     int j;
     int failed = 0;
@@ -729,12 +836,20 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.loudness_lufs);
     trim(in.key_pause);
     trim(in.key_skip);
+    trim(in.key_prev);
+    trim(in.key_rew05);
+    trim(in.key_rew10);
+    trim(in.key_rew15);
     trim(in.key_vol_up);
     trim(in.key_vol_dn);
 
     memset(&out, 0, sizeof out);
     out.key_pause = -1;
     out.key_skip = -1;
+    out.key_prev = -1;
+    out.key_rew05 = -1;
+    out.key_rew10 = -1;
+    out.key_rew15 = -1;
     out.key_vol_up = -1;
     out.key_vol_dn = -1;
     out.volume_set = 1;
@@ -786,29 +901,53 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     if (take_int(err, err_n, in.loudness_lufs, -30, -5, "Loudness LUFS", &out.loudness_lufs) != 0) {
         failed = 1;
     }
-    key_ok[0] = take_key(err, err_n, in.key_pause, "Pause/resume",
-                         &out.key_pause, out.key_pause_name, sizeof out.key_pause_name) == 0;
-    key_ok[1] = take_key(err, err_n, in.key_skip, "Skip",
-                         &out.key_skip, out.key_skip_name, sizeof out.key_skip_name) == 0;
-    key_ok[2] = take_key(err, err_n, in.key_vol_up, "Volume up",
-                         &out.key_vol_up, out.key_vol_up_name, sizeof out.key_vol_up_name) == 0;
-    key_ok[3] = take_key(err, err_n, in.key_vol_dn, "Volume down",
-                         &out.key_vol_dn, out.key_vol_dn_name, sizeof out.key_vol_dn_name) == 0;
-    keys[0] = in.key_pause;
-    keys[1] = in.key_skip;
-    keys[2] = in.key_vol_up;
-    keys[3] = in.key_vol_dn;
-    labels[0] = "pause/resume";
-    labels[1] = "skip";
-    labels[2] = "volume up";
-    labels[3] = "volume down";
-    for (i = 0; i < 4; i++) {
+    key_ok[KEYID_PAUSE] = take_key(err, err_n, in.key_pause, "Pause/resume",
+                                   &out.key_pause, out.key_pause_name,
+                                   sizeof out.key_pause_name) == 0;
+    key_ok[KEYID_SKIP] = take_key(err, err_n, in.key_skip, "Skip",
+                                  &out.key_skip, out.key_skip_name,
+                                  sizeof out.key_skip_name) == 0;
+    key_ok[KEYID_PREV] = take_key(err, err_n, in.key_prev, "Previous",
+                                  &out.key_prev, out.key_prev_name,
+                                  sizeof out.key_prev_name) == 0;
+    key_ok[KEYID_REW05] = take_key(err, err_n, in.key_rew05, "Rewind 0.5s",
+                                   &out.key_rew05, out.key_rew05_name,
+                                   sizeof out.key_rew05_name) == 0;
+    key_ok[KEYID_REW10] = take_key(err, err_n, in.key_rew10, "Rewind 1s",
+                                   &out.key_rew10, out.key_rew10_name,
+                                   sizeof out.key_rew10_name) == 0;
+    key_ok[KEYID_REW15] = take_key(err, err_n, in.key_rew15, "Rewind 1.5s",
+                                   &out.key_rew15, out.key_rew15_name,
+                                   sizeof out.key_rew15_name) == 0;
+    key_ok[KEYID_UP] = take_key(err, err_n, in.key_vol_up, "Volume up",
+                                &out.key_vol_up, out.key_vol_up_name,
+                                sizeof out.key_vol_up_name) == 0;
+    key_ok[KEYID_DN] = take_key(err, err_n, in.key_vol_dn, "Volume down",
+                                &out.key_vol_dn, out.key_vol_dn_name,
+                                sizeof out.key_vol_dn_name) == 0;
+    keys[KEYID_PAUSE] = in.key_pause;
+    keys[KEYID_SKIP] = in.key_skip;
+    keys[KEYID_PREV] = in.key_prev;
+    keys[KEYID_REW05] = in.key_rew05;
+    keys[KEYID_REW10] = in.key_rew10;
+    keys[KEYID_REW15] = in.key_rew15;
+    keys[KEYID_UP] = in.key_vol_up;
+    keys[KEYID_DN] = in.key_vol_dn;
+    labels[KEYID_PAUSE] = "pause/resume";
+    labels[KEYID_SKIP] = "skip";
+    labels[KEYID_PREV] = "previous";
+    labels[KEYID_REW05] = "rewind 0.5s";
+    labels[KEYID_REW10] = "rewind 1s";
+    labels[KEYID_REW15] = "rewind 1.5s";
+    labels[KEYID_UP] = "volume up";
+    labels[KEYID_DN] = "volume down";
+    for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
             failed = 1;
         }
     }
-    for (i = 0; i < 4; i++) {
-        for (j = i + 1; j < 4; j++) {
+    for (i = 0; i < KEYID_COUNT; i++) {
+        for (j = i + 1; j < KEYID_COUNT; j++) {
             char msg[192];
 
             if (!key_ok[i] || !key_ok[j] || !keys[i][0] || strcmp(keys[i], keys[j]) != 0) {
@@ -893,16 +1032,28 @@ static int main_id(const char *key)
 static int keys_id(const char *key)
 {
     if (eq_ci(key, "pause_resume")) {
-        return 0;
+        return KEYID_PAUSE;
     }
     if (eq_ci(key, "skip")) {
-        return 1;
+        return KEYID_SKIP;
+    }
+    if (eq_ci(key, "previous")) {
+        return KEYID_PREV;
+    }
+    if (eq_ci(key, "rewind_0_5")) {
+        return KEYID_REW05;
+    }
+    if (eq_ci(key, "rewind_1")) {
+        return KEYID_REW10;
+    }
+    if (eq_ci(key, "rewind_1_5")) {
+        return KEYID_REW15;
     }
     if (eq_ci(key, "volume_up") || eq_ci(key, "brake_delayvolume_up")) {
-        return 2;
+        return KEYID_UP;
     }
     if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
-        return 3;
+        return KEYID_DN;
     }
     return -1;
 }
@@ -945,17 +1096,31 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
     const char *s = "";
 
     switch (id) {
-    case 0:
+    case KEYID_PAUSE:
         s = cfg->key_pause_name;
         break;
-    case 1:
+    case KEYID_SKIP:
         s = cfg->key_skip_name;
         break;
-    case 2:
+    case KEYID_PREV:
+        s = cfg->key_prev_name;
+        break;
+    case KEYID_REW05:
+        s = cfg->key_rew05_name;
+        break;
+    case KEYID_REW10:
+        s = cfg->key_rew10_name;
+        break;
+    case KEYID_REW15:
+        s = cfg->key_rew15_name;
+        break;
+    case KEYID_UP:
         s = cfg->key_vol_up_name;
         break;
-    default:
+    case KEYID_DN:
         s = cfg->key_vol_dn_name;
+        break;
+    default:
         break;
     }
     snprintf(dest, n, "%s", s ? s : "");
@@ -1154,7 +1319,8 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
         "resume_time", "volume", "loudness", "loudness_lufs"
     };
     static const char *key_names[] = {
-        "pause_resume", "skip", "volume_up", "volume_dn"
+        "pause_resume", "skip", "previous", "rewind_0_5", "rewind_1",
+        "rewind_1_5", "volume_up", "volume_dn"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -1176,7 +1342,7 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
     int in_main = 0;
     int in_keys = 0;
     int main_seen[9] = {0};
-    int keys_seen[4] = {0};
+    int keys_seen[KEYID_COUNT] = {0};
     int id;
     int rc = -1;
 
@@ -1280,18 +1446,18 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
     }
 
     id = 0;
-    for (id = 0; id < 4; id++) {
+    for (id = 0; id < KEYID_COUNT; id++) {
         key_value(cfg, id, value, sizeof value);
         if (!keys_seen[id] && value[0]) {
             break;
         }
     }
-    if (id < 4) {
+    if (id < KEYID_COUNT) {
         if (ensure_section(&head, "Keys", &keys_header, &keys_last) != 0) {
             set_err(err, err_n, "out of memory updating %s", path);
             goto done;
         }
-        for (id = 0; id < 4; id++) {
+        for (id = 0; id < KEYID_COUNT; id++) {
             char text[160];
 
             if (keys_seen[id]) {
@@ -1508,7 +1674,12 @@ static int edit_self_test(void)
 
     if (rc == 0 && (config_load_edit("/tmp/autodj-no-such-config.cfg", &edit) != 0 ||
                     edit.folder[0] != '\0' || strcmp(edit.overlap, "10") != 0 ||
-                    strcmp(edit.loudness_lufs, "-18") != 0 || edit.key_skip[0] != '\0')) {
+                    strcmp(edit.loudness_lufs, "-18") != 0 || edit.key_skip[0] != '\0' ||
+                    edit.key_pause[0] != '\0' ||
+                    strcmp(edit.key_prev, "KEY_KPSLASH") != 0 ||
+                    strcmp(edit.key_rew05, "KEY_KP1") != 0 ||
+                    strcmp(edit.key_rew10, "KEY_KP2") != 0 ||
+                    strcmp(edit.key_rew15, "KEY_KP3") != 0)) {
         log_error("autodj", "config editor test rejected a missing file");
         rc = -1;
     }
@@ -1527,7 +1698,9 @@ static int edit_self_test(void)
     snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KPDOT");
     if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) != 0 ||
                     strcmp(cfg.folder, "/tmp") != 0 || cfg.volume != 40 ||
-                    cfg.key_pause != 82 || cfg.key_vol_up != -1)) {
+                    cfg.key_pause != 82 || cfg.key_vol_up != -1 ||
+                    cfg.key_prev != -1 || cfg.key_rew05 != -1 ||
+                    cfg.key_rew10 != -1 || cfg.key_rew15 != -1)) {
         log_error("autodj", "config editor test rejected a valid form: %s", err);
         rc = -1;
     }
@@ -1541,6 +1714,35 @@ static int edit_self_test(void)
                     strstr(err, "Volume must be a whole number from 0 to 100.") == NULL ||
                     strstr(err, "KEY_KP0 is used for pause/resume and skip.") == NULL)) {
         log_error("autodj", "config editor test missed a bad form: %s", err);
+        rc = -1;
+    }
+
+    memset(&edit, 0, sizeof edit);
+    snprintf(edit.folder, sizeof edit.folder, "/tmp");
+    snprintf(edit.shuffle, sizeof edit.shuffle, "true");
+    snprintf(edit.overlap, sizeof edit.overlap, "8");
+    snprintf(edit.trim_silence, sizeof edit.trim_silence, "true");
+    snprintf(edit.pause_time, sizeof edit.pause_time, "3");
+    snprintf(edit.resume_time, sizeof edit.resume_time, "4");
+    snprintf(edit.volume, sizeof edit.volume, "40");
+    snprintf(edit.loudness, sizeof edit.loudness, "true");
+    snprintf(edit.loudness_lufs, sizeof edit.loudness_lufs, "-18");
+    snprintf(edit.key_pause, sizeof edit.key_pause, "KEY_KP0");
+    snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KPDOT");
+    snprintf(edit.key_prev, sizeof edit.key_prev, "KEY_KPSLASH");
+    snprintf(edit.key_rew05, sizeof edit.key_rew05, "KEY_KP1");
+    snprintf(edit.key_rew10, sizeof edit.key_rew10, "KEY_KP1");
+    snprintf(edit.key_rew15, sizeof edit.key_rew15, "KEY_KP3");
+    if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) == 0 ||
+                    strstr(err, "KEY_KP1 is used for rewind 0.5s and rewind 1s.") == NULL)) {
+        log_error("autodj", "config editor test missed a rewind conflict: %s", err);
+        rc = -1;
+    }
+    snprintf(edit.key_rew10, sizeof edit.key_rew10, "KEY_KP2");
+    if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) != 0 ||
+                    cfg.key_pause != 82 || cfg.key_prev < 0 || cfg.key_rew05 < 0 ||
+                    cfg.key_rew05 == cfg.key_rew10 || cfg.key_rew15 < 0)) {
+        log_error("autodj", "config editor test rejected separate rewind keys: %s", err);
         rc = -1;
     }
 
@@ -1578,7 +1780,19 @@ int config_self_test(void)
     int fd;
     FILE *fp;
     Config cfg;
+    int slash = -1;
+    int kp1 = -1;
+    int kp2 = -1;
+    int kp3 = -1;
+    int key_a = -1;
     int rc = 0;
+
+    if (key_from_name("KEY_KPSLASH", &slash) != 0 || key_from_name("KEY_KP1", &kp1) != 0 ||
+        key_from_name("KEY_KP2", &kp2) != 0 || key_from_name("KEY_KP3", &kp3) != 0 ||
+        key_from_name("KEY_A", &key_a) != 0) {
+        log_error("autodj", "config test could not resolve default key names");
+        return -1;
+    }
 
     fd = mkstemp(path);
     if (fd < 0) {
@@ -1613,7 +1827,9 @@ int config_self_test(void)
                cfg.resume_sec != 4 || cfg.volume != 100 || cfg.volume_set != 0 ||
                cfg.loudness != 1 || cfg.loudness_lufs != -18 ||
                cfg.key_pause != 82 || cfg.key_skip != 83 ||
-               cfg.key_vol_up != 78 || cfg.key_vol_dn != 74) {
+               cfg.key_vol_up != 78 || cfg.key_vol_dn != 74 ||
+               cfg.key_prev != slash || cfg.key_rew05 != kp1 ||
+               cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3) {
         log_error("autodj", "config test parsed unexpected values");
         rc = -1;
     } else if (config_save_volume(path, 15) != 0 ||
@@ -1667,6 +1883,54 @@ int config_self_test(void)
             rc = -1;
         }
         remove(path2);
+    }
+    if (rc == 0) {
+        char path3[] = "/tmp/autodj-cfg-XXXXXX";
+
+        fd = mkstemp(path3);
+        if (fd < 0) {
+            log_error("autodj", "config test could not create a temp file");
+            return -1;
+        }
+        fp = fdopen(fd, "w");
+        if (!fp) {
+            log_error("autodj", "config test could not write a temp file");
+            close(fd);
+            remove(path3);
+            return -1;
+        }
+        fputs("[Main]\n"
+              "Folder=/tmp\n"
+              "[Keys]\n"
+              "skip=KEY_KPSLASH\n"
+              "previous=KEY_A\n",
+              fp);
+        fclose(fp);
+        if (config_load(path3, &cfg) != 0 || cfg.key_skip != slash ||
+            cfg.key_prev != key_a || cfg.key_rew05 != kp1 ||
+            cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3) {
+            log_error("autodj", "config test did not keep an explicit previous key");
+            rc = -1;
+        }
+        fp = fopen(path3, "w");
+        if (!fp) {
+            log_error("autodj", "config test could not rewrite a temp file");
+            remove(path3);
+            return -1;
+        }
+        fputs("[Main]\n"
+              "Folder=/tmp\n"
+              "[Keys]\n"
+              "skip=KEY_KPSLASH\n",
+              fp);
+        fclose(fp);
+        if (rc == 0 && (config_load(path3, &cfg) != 0 || cfg.key_skip != slash ||
+                        cfg.key_prev != -1 || cfg.key_rew05 != kp1 ||
+                        cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3)) {
+            log_error("autodj", "config test applied a previous key that was already used");
+            rc = -1;
+        }
+        remove(path3);
     }
     if (rc == 0 && edit_self_test() != 0) {
         rc = -1;

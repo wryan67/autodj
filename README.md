@@ -1,6 +1,6 @@
 # autodj
 
-Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad pauses, skips, and sets the volume. The volume is stored in the config file and restored on the next start.
+Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad pauses, skips, replays an earlier song, rewinds a few seconds, and sets the volume. The volume is stored in the config file and restored on the next start.
 
 ## Compile
 
@@ -78,6 +78,10 @@ loudness_lufs=-18
 [Keys]
 pause_resume=KEY_KP0
 skip=KEY_KPDOT
+previous=KEY_KPSLASH
+rewind_0_5=KEY_KP1
+rewind_1=KEY_KP2
+rewind_1_5=KEY_KP3
 volume_up=KEY_KPPLUS
 volume_dn=KEY_KPMINUS
 ```
@@ -97,7 +101,7 @@ Directory of MP3 files. Required.
 `true` or `false`. Also accepts `yes`/`no`, `on`/`off`, and `1`/`0`. Default `true`. The list is shuffled again each time it wraps. With more than one track, the same file is not played twice in a row.
 
 `overlap`  
-Seconds. Default `10`. The last N seconds of the current song play together with the first N seconds of the next song. The outgoing song fades down while the incoming song fades up. Skip starts that same crossfade immediately.
+Seconds. Default `10`. The last N seconds of the current song play together with the first N seconds of the next song. The outgoing song fades down while the incoming song fades up. Skip and previous start that same crossfade immediately.
 
 `trim_silence`  
 `true` or `false`. Default `true`. Leading and trailing silence is skipped so the crossfade lands on the music.
@@ -119,13 +123,25 @@ Target integrated loudness, from `-30` to `-5`. Default `-18`, which is the Repl
 
 ### [Keys]
 
-Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. An action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored. Holding a volume key still repeats.
+Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored. Holding a volume key still repeats.
 
 `pause_resume`  
 Press once to pause. Press again to resume.
 
 `skip`  
 Press to skip to the next track. While a song is playing, skip starts the overlap crossfade. If the music is paused, or still slowing to a pause, skip moves to the next track and resumes playback. A full stop cuts straight to the next track, then brings it back up to speed over `resume_time`.
+
+`previous`  
+Press to replay a song that already started. It uses the same crossfade, pause, and full-stop rules as skip. Up to 20 earlier songs are kept. Another press past that does nothing.
+
+`rewind_0_5`  
+Press to jump back 0.5 seconds inside the current song. The position stops at the start of the song. Holding the key does not repeat.
+
+`rewind_1`  
+Press to jump back 1 second. The position stops at the start of the song.
+
+`rewind_1_5`  
+Press to jump back 1.5 seconds. The position stops at the start of the song.
 
 `volume_up`  
 Press or hold to raise the volume. The name `brake_delayvolume_up` is accepted as this same action.

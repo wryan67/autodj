@@ -18,10 +18,18 @@ typedef struct Config {
     int loudness_lufs; /* target integrated loudness */
     int key_pause;
     int key_skip;
+    int key_prev;
+    int key_rew05;
+    int key_rew10;
+    int key_rew15;
     int key_vol_up;
     int key_vol_dn;
     char key_pause_name[64];
     char key_skip_name[64];
+    char key_prev_name[64];
+    char key_rew05_name[64];
+    char key_rew10_name[64];
+    char key_rew15_name[64];
     char key_vol_up_name[64];
     char key_vol_dn_name[64];
 } Config;
@@ -48,6 +56,10 @@ typedef struct ConfigEdit {
     char loudness_lufs[32];
     char key_pause[64];
     char key_skip[64];
+    char key_prev[64];
+    char key_rew05[64];
+    char key_rew10[64];
+    char key_rew15[64];
     char key_vol_up[64];
     char key_vol_dn[64];
 } ConfigEdit;

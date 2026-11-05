@@ -10,6 +10,7 @@ typedef struct Track {
     size_t end;   /* one past the last audible frame */
     unsigned rate;
     char name[256];
+    char path[4096];
 } Track;
 
 int decode_init(void);

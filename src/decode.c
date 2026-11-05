@@ -338,6 +338,7 @@ Track *track_decode(const char *path, unsigned rate, int trim, int loudness, int
     }
     track->rate = rate;
     track_name(track, path);
+    snprintf(track->path, sizeof track->path, "%s", path ? path : "");
     if (loudness) {
         apply_loudness(track, loudness_lufs);
     }
