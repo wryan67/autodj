@@ -1,0 +1,28 @@
+create app named autodj with binary of same name
+project folder:
+/home/pi/projects/autodj
+
+sample config file:
+/home/pi/.config/autodj/master.cfg
+
+* some features are described in the config file
+* overlap means to take the last x seconds of the first song and 
+overlap with the first x seconds of the next song.  volume
+of first song is decreased while volume of next song is increased
+* pause/resume - slow current song by reducing the tempo over the number of seconds 
+identified by the variable until the song is stoped.  do the opposite when resuming
+
+keys were identified using evtest, I'm not sure I like how that progam works,
+but the identification is correct, I am using a keypad with those keys.
+
+My initial thoughts were to use aplay, but not sure if you can have two of those running
+at the same time or not.  or do fade in/fade out, or do temp changes on the fly.  
+aplay does currently work, reads mp3 and plays correctly, so the basic mechanics are there
+
+do some extensive research before deciding on a path to take.  I think I remember a
+c program library that did everything I want, but can't remember the name.
+
+I prever a console app with log4j style logging:
+[] ccyy-mm-dd hh:mm:ss.sss info  Messages
+
+
