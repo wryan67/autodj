@@ -39,12 +39,15 @@ This copies the binary to `/home/pi/bin/autodj`. `PREFIX` in the Makefile is tha
 ```
 autodj
 autodj --check
+autodj --config
 autodj /path/to/master.cfg
 ```
 
 With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
+
+`--config` opens a full-screen editor for that file. The folder is a text field. Bool settings are checkboxes, and the other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields. Left and right move the cursor inside a text field, and leave the field at either end. The mouse selects a field or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start.
 
 The keypad device must be named `USB Keypad` and must report `KEY_KP0`. autodj grabs that device so the keys are not also typed into the console. The process needs read access to `/dev/input/event*`, which on Raspberry Pi OS means the user is in the `input` group. If no keypad is found, playback still runs.
 

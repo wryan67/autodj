@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "cfgedit.h"
 #include "config.h"
 #include "decode.h"
 #include "keys.h"
@@ -90,6 +91,7 @@ static void usage(void)
 {
     fprintf(stderr,
             "usage: autodj [--check] [config]\n"
+            "       autodj --config [config]\n"
             "  config defaults to ~/.config/autodj/master.cfg\n");
 }
 
@@ -98,6 +100,7 @@ int main(int argc, char **argv)
     char path_buf[4096];
     const char *path = NULL;
     int check = 0;
+    int edit = 0;
     int i;
     Config cfg;
     Playlist *pl;
@@ -114,15 +117,26 @@ int main(int argc, char **argv)
             check = 1;
             continue;
         }
+        if (strcmp(argv[i], "--config") == 0) {
+            edit = 1;
+            continue;
+        }
         if (path) {
             usage();
             return 2;
         }
         path = argv[i];
     }
+    if (edit && check) {
+        usage();
+        return 2;
+    }
     if (!path) {
         default_config_path(path_buf, sizeof path_buf);
         path = path_buf;
+    }
+    if (edit) {
+        return config_edit(path) == 0 ? 0 : 1;
     }
 
     log_info("autodj", "starting");
