@@ -218,16 +218,19 @@ int main(int argc, char **argv)
     }
 
     while (!g_sig && player_alive()) {
-        struct pollfd pfd;
-        int nfds = 0;
+        struct pollfd pfd[8];
+        int fds[8];
+        int nfds;
+        int i;
         int pr;
 
-        if (keys_fd() >= 0) {
-            pfd.fd = keys_fd();
-            pfd.events = POLLIN;
-            nfds = 1;
+        nfds = keys_fds(fds, 8);
+        for (i = 0; i < nfds; i++) {
+            pfd[i].fd = fds[i];
+            pfd[i].events = POLLIN;
+            pfd[i].revents = 0;
         }
-        pr = poll(nfds ? &pfd : NULL, (nfds_t)nfds, 200);
+        pr = poll(nfds ? pfd : NULL, (nfds_t)nfds, 200);
         if (pr < 0 && errno == EINTR) {
             continue;
         }

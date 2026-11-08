@@ -1,6 +1,6 @@
 # autodj
 
-Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad pauses, skips, replays an earlier song, rewinds a few seconds, and sets the volume. The volume is stored in the config file and restored on the next start.
+Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad or an XP-Pen ACK05 Shortcut Remote pauses, skips, replays an earlier song, rewinds a few seconds, and sets the volume. The volume is stored in the config file and restored on the next start.
 
 ## Compile
 
@@ -47,9 +47,9 @@ With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
 
-`--config` opens a full-screen editor for that file. The folder is a text field. Bool settings are checkboxes. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The USB keypad is read first, then any other keyboard. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad grabbed, so the editor reads that keypad after playback stops.
+`--config` opens a full-screen editor for that file. The folder is a text field. Bool settings are checkboxes. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops.
 
-The keypad device must be named `USB Keypad` and must report `KEY_KP0`. autodj grabs that device so the keys are not also typed into the console. The process needs read access to `/dev/input/event*`, which on Raspberry Pi OS means the user is in the `input` group. If no keypad is found, playback still runs.
+The keypad device must be named `USB Keypad` and must report `KEY_KP0`. The XP-Pen ACK05 Shortcut Remote (USB `28bd:0202`, shown as `Hanvon Ugee Shortcut Remote Keyboard`) is also used. Its buttons send keyboard shortcuts such as `CTRL+KEY_Z`, `KEY_SPACE`, or a bare `KEY_LEFTCTRL`. The dial sends `CTRL+KEY_KPPLUS` and `CTRL+KEY_KPMINUS`. Both devices can be connected at once. autodj grabs them so the keys are not also typed into the console, and Ctrl+Z from the remote does not suspend the shell. The process needs read access to `/dev/input/event*`, which on Raspberry Pi OS means the user is in the `input` group. If neither device is found, playback still runs.
 
 Stop autodj with Ctrl-C or SIGTERM.
 
@@ -123,7 +123,7 @@ Target integrated loudness, from `-30` to `-5`. Default `-18`, which is the Repl
 
 ### [Keys]
 
-Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored. Holding a volume key still repeats.
+Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. The name can have `CTRL+`, `SHIFT+`, `ALT+`, or `META+` in front of it, for example `CTRL+SHIFT+KEY_Z`. These prefixes are not case-sensitive. Left and right modifiers are treated the same. A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored. Holding a volume key still repeats.
 
 `pause_resume`  
 Press once to pause. Press again to resume.

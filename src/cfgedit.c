@@ -138,8 +138,7 @@ static struct sigaction g_old_hup;
 static struct sigaction g_old_int;
 static int g_key_fds[32];
 static int g_key_n;
-static int g_keypad;
-static int g_keypad_grabbed;
+static int g_key_grabbed[32];
 
 static const char *field_label(int id)
 {
@@ -956,11 +955,14 @@ static int enter_tty(void)
 
 static void release_keys(void)
 {
-    if (g_keypad_grabbed && g_key_n > 0) {
-        keys_ungrab(g_key_fds[0]);
+    int i;
+
+    for (i = 0; i < g_key_n; i++) {
+        if (g_key_grabbed[i]) {
+            keys_ungrab(g_key_fds[i]);
+        }
+        g_key_grabbed[i] = 0;
     }
-    g_keypad_grabbed = 0;
-    g_keypad = 0;
     keys_close_capture(g_key_fds, g_key_n);
     g_key_n = 0;
 }
@@ -1232,12 +1234,10 @@ static void compact_key_fds(void)
 
     for (r = 0; r < g_key_n; r++) {
         if (g_key_fds[r] < 0) {
-            if (r == 0) {
-                g_keypad = 0;
-                g_keypad_grabbed = 0;
-            }
+            g_key_grabbed[r] = 0;
             continue;
         }
+        g_key_grabbed[w] = g_key_grabbed[r];
         g_key_fds[w++] = g_key_fds[r];
     }
     g_key_n = w;
@@ -1292,9 +1292,9 @@ static int next_capture_event(struct Event *ev)
                 continue;
             }
             if ((rev & (POLLERR | POLLHUP | POLLNVAL)) && !(rev & POLLIN)) {
-                if (i == 0 && g_keypad_grabbed) {
+                if (g_key_grabbed[i]) {
                     keys_ungrab(g_key_fds[i]);
-                    g_keypad_grabbed = 0;
+                    g_key_grabbed[i] = 0;
                 }
                 close(g_key_fds[i]);
                 g_key_fds[i] = -1;
@@ -1524,6 +1524,7 @@ static void begin_capture(struct Editor *ed, int id)
 {
     int pad = 0;
     int busy = 0;
+    int i;
 
     ed->focus = id;
     ed->capture_id = id;
@@ -1533,10 +1534,9 @@ static void begin_capture(struct Editor *ed, int id)
     if (g_key_n < 0) {
         g_key_n = 0;
     }
-    g_keypad = pad && g_key_n > 0;
-    if (g_keypad) {
-        if (keys_grab(g_key_fds[0]) == 0) {
-            g_keypad_grabbed = 1;
+    for (i = 0; i < pad && i < g_key_n; i++) {
+        if (keys_grab(g_key_fds[i]) == 0) {
+            g_key_grabbed[i] = 1;
         } else if (errno == EBUSY) {
             busy = 1;
         }
