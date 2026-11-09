@@ -23,12 +23,23 @@
 #include <sys/ioctl.h>
 
 /*
- * Full-screen editor for master.cfg. Tab and the arrow keys move between
- * fields. Left and right move the cursor in a text field, and step to the
- * next field at either end. A key binding is captured from the keypad, or
- * from another keyboard if the press is not on the keypad. Esc cancels.
- * Save validates before it writes.
+ * Full-screen editor for master.cfg. The screen has tabs: Main, Buttons,
+ * Reverb, Pitch, and Phaser. Tab and the arrow keys move between the fields
+ * on the current tab. Up from the first field reaches the tabs, and left
+ * and right there switch tabs. Left and right move the cursor in a text
+ * field, and step to the next field at either end. A key binding is captured
+ * from the keypad, or from another keyboard if the press is not on the
+ * keypad. Esc cancels. Save validates before it writes.
  */
+
+enum {
+    TAB_MAIN = 0,
+    TAB_BUTTONS,
+    TAB_REVERB,
+    TAB_PITCH,
+    TAB_PHASER,
+    TAB_COUNT
+};
 
 enum {
     FE_FOLDER = 0,
@@ -41,28 +52,61 @@ enum {
     FE_LOUDNESS,
     FE_LUFS,
     FE_DIAL_DEFAULT,
-    FE_KEY_PAUSE,
+    FE_MAIN_END,
+
+    FE_KEY_PAUSE = FE_MAIN_END,
     FE_KEY_SKIP,
     FE_KEY_PREV,
     FE_KEY_REW05,
     FE_KEY_REW10,
     FE_KEY_REW15,
-    FE_KEY_UP,
-    FE_KEY_DN,
     FE_KEY_DIAL_FWD,
     FE_KEY_DIAL_BACK,
     FE_KEY_DIAL_MODE,
+    FE_KEY_REVERB,
+    FE_KEY_PITCH,
+    FE_KEY_PHASER,
+    FE_BUTTON_END,
+
+    FE_RV_ON = FE_BUTTON_END,
+    FE_RV_DECAY,
+    FE_RV_BW,
+    FE_RV_DAMP,
+    FE_RV_SEND,
+    FE_RV_END,
+
+    FE_PS_ON = FE_RV_END,
+    FE_PS_SEMI,
+    FE_PS_FORMANT,
+    FE_PS_PITCH,
+    FE_PS_RANGE,
+    FE_PS_END,
+
+    FE_PH_ON = FE_PS_END,
+    FE_PH_TRIP,
+    FE_PH_STEREO,
+    FE_PH_PERIOD,
+    FE_PH_FB,
+    FE_PH_RANGE,
+    FE_PH_STAGES,
+    FE_PH_DEPTH,
     FE_FIELD_COUNT,
-    FE_SAVE = FE_FIELD_COUNT,
+
+    FE_TABS = FE_FIELD_COUNT,
+    FE_SAVE,
     FE_CANCEL,
     FE_COUNT
 };
 
 enum {
     LABEL_W = 16,
-    NUM_W = 8,
-    ROW_FIELD0 = 1,
-    ROW_BUTTONS = ROW_FIELD0 + FE_FIELD_COUNT,
+    NUM_W = 10,
+    /* Tallest tab is Buttons, with 12 fields. */
+    TAB_FIELDS = FE_BUTTON_END - FE_KEY_PAUSE,
+    ROW_TABS = 1,
+    ROW_NOTE = 2,
+    ROW_FIELD0 = 3,
+    ROW_BUTTONS = ROW_FIELD0 + TAB_FIELDS,
     FRAME_H = ROW_BUTTONS + 2,
     /* The hint line below the frame is left out when it does not fit. */
     MIN_ROWS = FRAME_H,
@@ -110,6 +154,10 @@ struct Ui {
     int frame_h;
     int label_c;
     int box_c;
+    int tab_r;
+    int tab_c[TAB_COUNT];
+    int tab_w[TAB_COUNT];
+    int note_r;
     int field_r[FE_FIELD_COUNT];
     int box_w[FE_FIELD_COUNT];
     int save_r;
@@ -132,6 +180,7 @@ struct Editor {
     int dialog;
     int capture;
     int capture_id;
+    int tab;
     int saved;
     char dialog_title[64];
     char err[1024];
@@ -170,11 +219,30 @@ static const char *field_label(int id)
         "Rewind 0.5s",
         "Rewind 1s",
         "Rewind 1.5s",
-        "Volume up",
-        "Volume down",
         "Dial forward",
         "Dial back",
-        "Dial mode"
+        "Dial mode",
+        "Reverb",
+        "Pitch shift",
+        "Phaser",
+        "On",
+        "Decay",
+        "BW",
+        "Damping",
+        "Send",
+        "On",
+        "Semitones",
+        "Formant",
+        "Pitch",
+        "Range",
+        "On",
+        "Triplets",
+        "Stereo",
+        "Period",
+        "Feedback",
+        "Range",
+        "Stages",
+        "Depth"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -234,12 +302,6 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_REW15:
         *cap = sizeof edit->key_rew15;
         return edit->key_rew15;
-    case FE_KEY_UP:
-        *cap = sizeof edit->key_vol_up;
-        return edit->key_vol_up;
-    case FE_KEY_DN:
-        *cap = sizeof edit->key_vol_dn;
-        return edit->key_vol_dn;
     case FE_KEY_DIAL_FWD:
         *cap = sizeof edit->key_dial_fwd;
         return edit->key_dial_fwd;
@@ -249,6 +311,69 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_DIAL_MODE:
         *cap = sizeof edit->key_dial_mode;
         return edit->key_dial_mode;
+    case FE_KEY_REVERB:
+        *cap = sizeof edit->key_reverb;
+        return edit->key_reverb;
+    case FE_KEY_PITCH:
+        *cap = sizeof edit->key_pitch;
+        return edit->key_pitch;
+    case FE_KEY_PHASER:
+        *cap = sizeof edit->key_phaser;
+        return edit->key_phaser;
+    case FE_RV_ON:
+        *cap = sizeof edit->rv_on;
+        return edit->rv_on;
+    case FE_RV_DECAY:
+        *cap = sizeof edit->rv_decay;
+        return edit->rv_decay;
+    case FE_RV_BW:
+        *cap = sizeof edit->rv_bw;
+        return edit->rv_bw;
+    case FE_RV_DAMP:
+        *cap = sizeof edit->rv_damp;
+        return edit->rv_damp;
+    case FE_RV_SEND:
+        *cap = sizeof edit->rv_send;
+        return edit->rv_send;
+    case FE_PS_ON:
+        *cap = sizeof edit->ps_on;
+        return edit->ps_on;
+    case FE_PS_SEMI:
+        *cap = sizeof edit->ps_semi;
+        return edit->ps_semi;
+    case FE_PS_FORMANT:
+        *cap = sizeof edit->ps_formant;
+        return edit->ps_formant;
+    case FE_PS_PITCH:
+        *cap = sizeof edit->ps_pitch;
+        return edit->ps_pitch;
+    case FE_PS_RANGE:
+        *cap = sizeof edit->ps_range;
+        return edit->ps_range;
+    case FE_PH_ON:
+        *cap = sizeof edit->ph_on;
+        return edit->ph_on;
+    case FE_PH_TRIP:
+        *cap = sizeof edit->ph_triplets;
+        return edit->ph_triplets;
+    case FE_PH_STEREO:
+        *cap = sizeof edit->ph_stereo;
+        return edit->ph_stereo;
+    case FE_PH_PERIOD:
+        *cap = sizeof edit->ph_period;
+        return edit->ph_period;
+    case FE_PH_FB:
+        *cap = sizeof edit->ph_feedback;
+        return edit->ph_feedback;
+    case FE_PH_RANGE:
+        *cap = sizeof edit->ph_range;
+        return edit->ph_range;
+    case FE_PH_STAGES:
+        *cap = sizeof edit->ph_stages;
+        return edit->ph_stages;
+    case FE_PH_DEPTH:
+        *cap = sizeof edit->ph_depth;
+        return edit->ph_depth;
     default:
         *cap = 0;
         return NULL;
@@ -258,12 +383,16 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
 static int is_number_field(int id)
 {
     return id == FE_OVERLAP || id == FE_PAUSE || id == FE_RESUME ||
-           id == FE_VOLUME || id == FE_LUFS;
+           id == FE_VOLUME || id == FE_LUFS || id == FE_RV_DECAY ||
+           id == FE_RV_BW || id == FE_RV_DAMP || id == FE_RV_SEND ||
+           id == FE_PS_PITCH || id == FE_PS_RANGE || id == FE_PH_PERIOD ||
+           id == FE_PH_FB || id == FE_PH_RANGE || id == FE_PH_STAGES ||
+           id == FE_PH_DEPTH;
 }
 
 static int is_key_field(int id)
 {
-    return id >= FE_KEY_PAUSE && id <= FE_KEY_DIAL_MODE;
+    return id >= FE_KEY_PAUSE && id < FE_BUTTON_END;
 }
 
 static int is_check_field(const ConfigEdit *edit, int id)
@@ -272,7 +401,10 @@ static int is_check_field(const ConfigEdit *edit, int id)
     int on = 0;
     char *text;
 
-    if (id != FE_SHUFFLE && id != FE_TRIM && id != FE_LOUDNESS) {
+    if (id != FE_SHUFFLE && id != FE_TRIM && id != FE_LOUDNESS &&
+        id != FE_RV_ON && id != FE_PS_ON && id != FE_PS_SEMI &&
+        id != FE_PS_FORMANT && id != FE_PH_ON && id != FE_PH_TRIP &&
+        id != FE_PH_STEREO) {
         return 0;
     }
     text = field_text((ConfigEdit *)edit, id, &cap);
@@ -437,22 +569,94 @@ static void toggle_check(struct Editor *ed, int id)
     snprintf(text, cap, "%s", on ? "false" : "true");
 }
 
+static int tab_first(int tab)
+{
+    static const int first[] = {
+        FE_FOLDER, FE_KEY_PAUSE, FE_RV_ON, FE_PS_ON, FE_PH_ON
+    };
+
+    if (tab < 0 || tab >= TAB_COUNT) {
+        return FE_FOLDER;
+    }
+    return first[tab];
+}
+
+static int tab_last(int tab)
+{
+    static const int last[] = {
+        FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_RV_END - 1, FE_PS_END - 1,
+        FE_FIELD_COUNT - 1
+    };
+
+    if (tab < 0 || tab >= TAB_COUNT) {
+        return FE_DIAL_DEFAULT;
+    }
+    return last[tab];
+}
+
+static void focus_field(struct Editor *ed, int id)
+{
+    size_t cap;
+    char *text;
+
+    ed->focus = id;
+    text = field_text(&ed->edit, id, &cap);
+    ed->cursor = text ? (int)strlen(text) : 0;
+}
+
+static void change_tab(struct Editor *ed, int tab)
+{
+    if (tab < 0) {
+        tab = TAB_COUNT - 1;
+    }
+    if (tab >= TAB_COUNT) {
+        tab = 0;
+    }
+    ed->tab = tab;
+}
+
 static void move_focus(struct Editor *ed, int delta)
 {
-    int id = ed->focus + delta;
+    int id = ed->focus;
 
-    if (id < 0) {
-        id = FE_COUNT - 1;
+    if (id == FE_TABS) {
+        if (delta > 0) {
+            focus_field(ed, tab_first(ed->tab));
+        } else {
+            ed->focus = FE_CANCEL;
+        }
+        return;
     }
-    if (id >= FE_COUNT) {
-        id = 0;
+    if (id == FE_SAVE) {
+        if (delta > 0) {
+            ed->focus = FE_CANCEL;
+        } else {
+            focus_field(ed, tab_last(ed->tab));
+        }
+        return;
     }
-    ed->focus = id;
-    if (id < FE_FIELD_COUNT) {
-        size_t cap;
-        char *text = field_text(&ed->edit, id, &cap);
-
-        ed->cursor = text ? (int)strlen(text) : 0;
+    if (id == FE_CANCEL) {
+        if (delta > 0) {
+            ed->focus = FE_TABS;
+        } else {
+            ed->focus = FE_SAVE;
+        }
+        return;
+    }
+    if (id < tab_first(ed->tab) || id > tab_last(ed->tab)) {
+        focus_field(ed, tab_first(ed->tab));
+        return;
+    }
+    if (delta > 0) {
+        if (id >= tab_last(ed->tab)) {
+            ed->focus = FE_SAVE;
+        } else {
+            focus_field(ed, id + 1);
+        }
+    } else if (id <= tab_first(ed->tab)) {
+        ed->focus = FE_TABS;
+    } else {
+        focus_field(ed, id - 1);
     }
 }
 
@@ -470,10 +674,16 @@ static int field_scroll(const char *text, int cursor, int interior)
     return col - interior + 1;
 }
 
-static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols)
+static int field_on_tab(int id, int tab)
+{
+    return id >= tab_first(tab) && id <= tab_last(tab);
+}
+
+static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols, int tab)
 {
     int avail;
     int i;
+    int row;
     int total;
     int start;
 
@@ -496,13 +706,22 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols)
     ui->frame_c = (cols - ui->frame_w) / 2 + 1;
     ui->label_c = ui->frame_c + 2;
     ui->box_c = ui->label_c + LABEL_W + 1;
+    ui->tab_r = ui->frame_r + ROW_TABS;
+    ui->note_r = ui->frame_r + ROW_NOTE;
     avail = ui->frame_w - 4 - LABEL_W - 1;
     if (avail < NUM_W) {
         ui->too_small = 1;
         return;
     }
+    row = 0;
     for (i = 0; i < FE_FIELD_COUNT; i++) {
-        ui->field_r[i] = ui->frame_r + ROW_FIELD0 + i;
+        if (!field_on_tab(i, tab)) {
+            ui->field_r[i] = -1;
+            ui->box_w[i] = 0;
+            continue;
+        }
+        ui->field_r[i] = ui->frame_r + ROW_FIELD0 + row;
+        row++;
         if (is_check_field(edit, i)) {
             ui->box_w[i] = 3;
         } else if (is_number_field(i) || i == FE_DIAL_DEFAULT) {
@@ -795,11 +1014,54 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
     draw_button(fp, ui->ok_r, ui->ok_c, button, 1);
 }
 
+static const char *tab_title(int tab)
+{
+    static const char *names[] = {"Main", "Buttons", "Reverb", "Pitch", "Phaser"};
+
+    if (tab < 0 || tab >= TAB_COUNT) {
+        return "";
+    }
+    return names[tab];
+}
+
+static const char *tab_note(int tab)
+{
+    static const char *notes[] = {
+        "Folder, loudness, and the dial.",
+        "Buttons. Volume is on the dial.",
+        "Room. Send is how much reverb is added.",
+        "Pitch 1 is an octave up. 0 is unchanged.",
+        "Sweeping notches. Period is seconds."
+    };
+
+    if (tab < 0 || tab >= TAB_COUNT) {
+        return "";
+    }
+    return notes[tab];
+}
+
+static void draw_tabs(struct Editor *ed, FILE *fp)
+{
+    struct Ui *ui = &ed->ui;
+    int c = ui->label_c;
+    int i;
+
+    for (i = 0; i < TAB_COUNT; i++) {
+        char label[24];
+
+        snprintf(label, sizeof label, "[ %s ]", tab_title(i));
+        ui->tab_c[i] = c;
+        ui->tab_w[i] = (int)strlen(label);
+        draw_button(fp, ui->tab_r, c, label, ed->tab == i);
+        c += ui->tab_w[i] + 1;
+    }
+}
+
 static void draw_screen(struct Editor *ed, FILE *fp)
 {
     struct Ui *ui = &ed->ui;
     int i;
-    const char *hint = "Tab moves   Space toggles   Enter sets a key   Esc cancels";
+    const char *hint = "Tab moves   Up for tabs, left and right switch   Esc cancels";
     int hint_len = (int)strlen(hint);
     int hint_c;
 
@@ -827,12 +1089,18 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         cup(fp, ui->frame_r + i, ui->frame_c + ui->frame_w - 1);
         fputc('|', fp);
     }
+    draw_tabs(ed, fp);
+    cup(fp, ui->note_r, ui->label_c);
+    fputs(tab_note(ed->tab), fp);
     for (i = 0; i < FE_FIELD_COUNT; i++) {
         size_t cap;
         char *text = field_text(&ed->edit, i, &cap);
         int focused = ed->focus == i;
         int on = 0;
 
+        if (ui->field_r[i] < 0) {
+            continue;
+        }
         cup(fp, ui->field_r[i], ui->label_c);
         if (focused) {
             fputs("\033[1m", fp);
@@ -894,7 +1162,7 @@ static int render(struct Editor *ed)
     int rc;
 
     tty_size(g_tty, &rows, &cols);
-    layout_ui(&ed->ui, &ed->edit, rows, cols);
+    layout_ui(&ed->ui, &ed->edit, rows, cols, ed->tab);
     fp = open_memstream(&buf, &n);
     if (!fp) {
         return -1;
@@ -1419,13 +1687,32 @@ static int hit_ok(const struct Ui *ui, int x, int y)
            x >= ui->ok_c && x < ui->ok_c + ui->ok_w;
 }
 
+static int hit_tab(const struct Ui *ui, int x, int y)
+{
+    int i;
+
+    if (y != ui->tab_r) {
+        return -1;
+    }
+    for (i = 0; i < TAB_COUNT; i++) {
+        if (x >= ui->tab_c[i] && x < ui->tab_c[i] + ui->tab_w[i]) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static int hit_focus(const struct Ui *ui, int x, int y)
 {
     int i;
 
     for (i = 0; i < FE_FIELD_COUNT; i++) {
-        int right = ui->box_c + ui->box_w[i] - 1;
+        int right;
 
+        if (ui->field_r[i] < 0) {
+            continue;
+        }
+        right = ui->box_c + ui->box_w[i] - 1;
         if (y == ui->field_r[i] && x >= ui->label_c && x <= right) {
             return i;
         }
@@ -1523,16 +1810,18 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
         return edit->key_rew10;
     case FE_KEY_REW15:
         return edit->key_rew15;
-    case FE_KEY_UP:
-        return edit->key_vol_up;
-    case FE_KEY_DN:
-        return edit->key_vol_dn;
     case FE_KEY_DIAL_FWD:
         return edit->key_dial_fwd;
     case FE_KEY_DIAL_BACK:
         return edit->key_dial_back;
     case FE_KEY_DIAL_MODE:
         return edit->key_dial_mode;
+    case FE_KEY_REVERB:
+        return edit->key_reverb;
+    case FE_KEY_PITCH:
+        return edit->key_pitch;
+    case FE_KEY_PHASER:
+        return edit->key_phaser;
     default:
         return "";
     }
@@ -1542,8 +1831,8 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
 {
     static const int ids[] = {
         FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
-        FE_KEY_REW10, FE_KEY_REW15, FE_KEY_UP, FE_KEY_DN,
-        FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK, FE_KEY_DIAL_MODE
+        FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
+        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_PHASER
     };
     int i;
 
@@ -1692,8 +1981,15 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
         return 0;
     }
     if (ev->kind == EV_MOUSE) {
-        int id = hit_focus(&ed->ui, ev->x, ev->y);
+        int tab = hit_tab(&ed->ui, ev->x, ev->y);
+        int id;
 
+        if (tab >= 0) {
+            change_tab(ed, tab);
+            focus_field(ed, tab_first(tab));
+            return 0;
+        }
+        id = hit_focus(&ed->ui, ev->x, ev->y);
         if (id < 0) {
             return 0;
         }
@@ -1728,6 +2024,14 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
                                    (ev->kind == EV_CHAR && ev->text[0] == ' '))) {
         ed->saved = 0;
         return 1;
+    }
+    if (ed->focus == FE_TABS) {
+        if (ev->kind == EV_LEFT) {
+            change_tab(ed, ed->tab - 1);
+        } else if (ev->kind == EV_RIGHT) {
+            change_tab(ed, ed->tab + 1);
+        }
+        return 0;
     }
     if (ed->focus >= FE_FIELD_COUNT) {
         if (ev->kind == EV_LEFT || ev->kind == EV_UP) {
@@ -1828,6 +2132,8 @@ int config_edit(const char *path)
     if (config_load_edit(path, &ed.edit) != 0) {
         return -1;
     }
+    ed.tab = TAB_MAIN;
+    ed.focus = FE_TABS;
     text = field_text(&ed.edit, FE_FOLDER, &cap);
     ed.cursor = text ? (int)strlen(text) : 0;
     g_unget = -1;
@@ -2717,7 +3023,7 @@ int cfgedit_self_test(void)
     memset(&edit, 0, sizeof edit);
     snprintf(edit.key_pause, sizeof edit.key_pause, "KEY_KP0");
     snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KPDOT");
-    snprintf(edit.key_vol_up, sizeof edit.key_vol_up, " KEY_KPPLUS ");
+    snprintf(edit.key_reverb, sizeof edit.key_reverb, " KEY_KPPLUS ");
     if (key_conflict(&edit, FE_KEY_SKIP, "KEY_KP0", &who) != 1 ||
         !who || strcmp(who, "Pause/resume") != 0) {
         log_error("cfgedit", "duplicate pause key was not reported");
@@ -2727,16 +3033,16 @@ int cfgedit_self_test(void)
         log_error("cfgedit", "the same field was treated as a duplicate");
         return -1;
     }
-    if (key_conflict(&edit, FE_KEY_DN, "KEY_KPPLUS", &who) != 1 ||
-        !who || strcmp(who, "Volume up") != 0) {
+    if (key_conflict(&edit, FE_KEY_PHASER, "KEY_KPPLUS", &who) != 1 ||
+        !who || strcmp(who, "Reverb") != 0) {
         log_error("cfgedit", "trimmed duplicate was not reported");
         return -1;
     }
-    if (key_conflict(&edit, FE_KEY_DN, "KEY_KPASTERISK", &who) != 0) {
+    if (key_conflict(&edit, FE_KEY_PHASER, "KEY_KPASTERISK", &who) != 0) {
         log_error("cfgedit", "a free key was rejected");
         return -1;
     }
-    if (key_conflict(&edit, FE_KEY_DN, "", &who) != 0) {
+    if (key_conflict(&edit, FE_KEY_PHASER, "", &who) != 0) {
         log_error("cfgedit", "an empty key was treated as a duplicate");
         return -1;
     }

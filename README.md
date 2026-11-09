@@ -1,6 +1,6 @@
 # autodj
 
-Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad or an XP-Pen ACK05 Shortcut Remote pauses, skips, replays an earlier song, rewinds a few seconds, and sets the volume. The volume is stored in the config file and restored on the next start.
+Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad or an XP-Pen ACK05 Shortcut Remote pauses, skips, replays an earlier song, rewinds a few seconds, and turns reverb, pitch shift, and phaser on or off. The shortcut remote's dial sets the volume, or jogs the song. The volume and the effect buttons are stored in the config file and restored on the next start.
 
 ## Compile
 
@@ -54,7 +54,7 @@ With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
 
-`--config` opens a full-screen editor for that file. The folder is a text field. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops.
+`--config` opens a full-screen editor for that file. The editor has five tabs: Main, Buttons, Reverb, Pitch, and Phaser. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, loudness, and where the dial starts. Buttons holds the key bindings, including one button each for reverb, pitch shift, and phaser. The other three tabs hold that effect's settings. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing and are written back, the same way the volume is.
 
 `--calibrate` opens a full-screen view of the `[Jog]` dial settings, with a short note beside each one about what it changes in the sound. Calibrate measures the dial in two steps. First, turn the dial exactly one full turn and press Enter; the click count becomes `clicks_per_turn`. Then spin the dial as fast as you can; timing starts at the first click and runs for 3 seconds. `max_speed` becomes the fastest measured speed plus 25%. Test plays a random song from `Folder`, so you can turn the dial and hear the result. A change to a setting takes effect in the test at once. Stop test ends playback. Save writes only the `[Jog]` section. Close or Esc leaves without writing; with unsaved changes, it asks you to press Close again. The view needs the remote, so stop a running autodj first.
 
@@ -92,11 +92,33 @@ previous=KEY_KPSLASH
 rewind_0_5=KEY_KP1
 rewind_1=KEY_KP2
 rewind_1_5=KEY_KP3
-volume_up=KEY_KPPLUS
-volume_dn=KEY_KPMINUS
 dial_forward=REMOTE_DIAL_CW
 dial_back=REMOTE_DIAL_CCW
 dial_mode=REMOTE_BTN4
+
+[Reverb]
+on=false
+decay=0.5
+bw=1
+damping=0
+send=0.5
+
+[Pitch Shift]
+on=false
+pitch=1
+range=1
+semitones=true
+formant=false
+
+[Phaser]
+on=false
+period=1
+feedback=0
+range=1
+stages=7
+depth=0.5
+triplets=false
+stereo=false
 
 [Jog]
 seconds_per_turn=1.8
@@ -134,7 +156,7 @@ Seconds. Default `5`. Pause slows the current song to a stop over this many seco
 Seconds. Default `5`. Resume brings the song back up to full speed over this many seconds.
 
 `volume`  
-Percent from 0 to 100. Default `100`. The volume keys change it in steps of 5. Each change is written back into this file, so the next boot starts at the last volume.
+Percent from 0 to 100. Default `100`. In volume mode the dial changes it in steps of 5. Each change is written back into this file, so the next boot starts at the last volume.
 
 `loudness`  
 `true` or `false`. Default `true`. Each file is measured from start to finish and then played at one steady gain so tracks match each other. This is a level change only. It does not compress the song.
@@ -158,7 +180,7 @@ Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_
 | `REMOTE_CENTER` | Button in the center of the dial |
 | `REMOTE_DIAL_CW`, `REMOTE_DIAL_CCW` | Dial clockwise, counterclockwise |
 
- A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for dial clicks. Holding a volume key still repeats.
+ A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for dial clicks. Holding a button does not repeat it. Old `volume_up` and `volume_dn` lines are ignored. The dial sets the volume.
 
 `pause_resume`  
 Press once to pause. Press again to resume.
@@ -178,11 +200,8 @@ Press to jump back 1 second. The position stops at the start of the song.
 `rewind_1_5`  
 Press to jump back 1.5 seconds. The position stops at the start of the song.
 
-`volume_up`  
-Press or hold to raise the volume. The name `brake_delayvolume_up` is accepted as this same action.
-
-`volume_dn`  
-Press or hold to lower the volume. `volume_down` is the same action.
+`reverb`, `pitch_shift`, `phaser`  
+Press to turn that effect on or off. The new state is written into the effect's `on` setting, so the next start keeps it. Each effect starts off unless its `on` line says `true`.
 
 `dial_forward`, `dial_back`  
 The shortcut remote's dial: `REMOTE_DIAL_CW` and `REMOTE_DIAL_CCW` in raw mode, or `CTRL+KEY_KPPLUS` and `CTRL+KEY_KPMINUS` with the factory shortcuts. The dial works like a hand on a record. With the default `[Jog]` settings, each click moves the song 90 ms, so one turn of 20 clicks moves it 1.8 seconds, which is one turn of a 33⅓ RPM record. The time between clicks sets the speed. A slow turn plays slowly, a fast spin plays up to 4 times as fast, and turning back plays the song backward. While the dial turns, normal playback is held. When the dial stops, the song spins back up to normal speed within 0.3 seconds. See `[Jog]` to change these numbers. If the music is paused, the dial still moves the song and you can hear it, but the song stays paused when the dial stops. The position stops at the start of the song.
@@ -190,7 +209,64 @@ The shortcut remote's dial: `REMOTE_DIAL_CW` and `REMOTE_DIAL_CCW` in raw mode, 
 The old names `jog_forward` and `jog_back` are still read. `autodj --config` writes them back under the new names.
 
 `dial_mode`  
-Press to switch the dial between jog and volume. In volume mode each click of the dial raises or lowers the volume by one step of 5, the same as a volume key. autodj starts in the mode set by `dial_default`, and the log shows the mode after each switch.
+Press to switch the dial between jog and volume. In volume mode each click of the dial raises or lowers the volume by one step of 5. autodj starts in the mode set by `dial_default`, and the log shows the mode after each switch.
+
+### [Reverb]
+
+A plate reverb added on top of the song. The tail lasts about two seconds at the default decay. The knob names and the default numbers match Mixxx. The processing is autodj's own. `on` is the power button. Default `false`.
+
+`decay`  
+`0` to `1`. Default `0.5`. Lower values fade out sooner.
+
+`bw`  
+`0` to `1`. Default `1`. Bandwidth of the low pass at the input. Higher values keep more of the high frequencies.
+
+`damping`  
+`0` to `1`. Default `0`. Higher values make the high frequencies die out sooner than the low ones.
+
+`send`  
+`0` to `1`. Default `0.5`. How much of the song is sent into the reverb. `0` adds nothing.
+
+### [Pitch Shift]
+
+Raises or lowers the pitch. `on` defaults to `false`. The default pitch is one octave up, which is the chipmunk sound. `0` leaves the song unchanged. The shift is spectral, like Mixxx, so the beat and tempo stay put; it adds about 40 ms of delay while on.
+
+`pitch`  
+`-1` to `1`. Default `1`. `0` is the original pitch. The ends of the knob are `range` octaves down and up.
+
+`range`  
+`0` to `2`. Default `1`. Octaves from the middle of Pitch to either end. `1` is one octave each way. `0` leaves the pitch unchanged.
+
+`semitones`  
+`true` or `false`. Default `true`. Pitch moves in semitone steps. `false` moves it continuously.
+
+`formant`  
+`true` or `false`. Default `false`. Keeps the tone color of voices and instruments while the pitch moves, so an octave up sounds less like a chipmunk.
+
+### [Phaser]
+
+Mixes the song with a copy sent through a row of all-pass filters, so notches sweep across the sound. `on` defaults to `false`. Period is a number of seconds. autodj has no beat tracker, so it does not follow the tempo.
+
+`period`  
+`0.25` to `4` seconds. Default `1`. How long one sweep takes.
+
+`feedback`  
+`-1` to `1`. Default `0`. How much of the filtered sound is sent back through.
+
+`range`  
+`0.05` to `1`. Default `1`. How wide a frequency span the notches sweep.
+
+`stages`  
+A whole number from `1` to `12`. Default `7`. More stages add more notches.
+
+`depth`  
+`0.5` to `1`. Default `0.5`. How strong the effect is. `0.5` is an even mix.
+
+`triplets`  
+`true` or `false`. Default `false`. Divides Period by 3.
+
+`stereo`  
+`true` or `false`. Default `false`. The right channel sweeps out of phase with the left.
 
 
 ### [Jog]

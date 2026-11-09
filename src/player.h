@@ -1,6 +1,7 @@
 #ifndef AUTODJ_PLAYER_H
 #define AUTODJ_PLAYER_H
 
+#include "fx.h"
 #include "playlist.h"
 
 typedef struct PlayerSettings {
@@ -44,6 +45,19 @@ void player_now_playing(char *dest, size_t n);
 void player_set_volume_percent(int percent);
 int player_volume_percent(void);
 void player_volume_step(int direction);
+
+enum {
+    PLAYER_FX_REVERB = 0,
+    PLAYER_FX_PITCH = 1,
+    PLAYER_FX_PHASER = 2
+};
+
+/* Copy the effect settings. Call this before player_start. The power
+ * buttons can change while a song plays. */
+void player_set_fx(const FxParams *fx);
+int player_fx_enabled(int which);
+/* Returns the new state, 1 on and 0 off. */
+int player_fx_toggle(int which);
 
 int player_self_test(void);
 

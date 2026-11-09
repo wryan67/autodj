@@ -13,7 +13,7 @@ LDLIBS  := /usr/lib/aarch64-linux-gnu/libmpg123.so.0 \
 
 PREFIX  := /home/pi/bin
 SRC     := src/main.c src/log.c src/config.c src/playlist.c src/decode.c \
-           src/player.c src/audio.c src/keys.c src/cfgedit.c
+           src/player.c src/audio.c src/keys.c src/cfgedit.c src/fx.c
 OBJ     := $(SRC:.c=.o)
 EBUR    := third_party/ebur128/ebur128.o
 DEP     := $(OBJ:.o=.d) third_party/ebur128/ebur128.d

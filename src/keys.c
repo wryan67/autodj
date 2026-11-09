@@ -104,7 +104,6 @@ static struct timespec g_raw_repeat;  /* last repeat sent */
 static struct timespec g_raw_retry;   /* last attempt to open the raw channel */
 static int g_raw_wanted;              /* keys_open looks for the raw channel */
 static struct timespec g_raw_kick;    /* last raw-mode request */
-static struct timespec g_vol_time;
 static struct timeval g_press_time;
 static int g_press_seen;
 
@@ -723,23 +722,6 @@ int keys_fds(int *fds, int max)
     return i;
 }
 
-static int volume_due(void)
-{
-    struct timespec now;
-    long ms;
-
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    ms = (now.tv_sec - g_vol_time.tv_sec) * 1000 + (now.tv_nsec - g_vol_time.tv_nsec) / 1000000;
-    if (g_vol_time.tv_sec == 0 && g_vol_time.tv_nsec == 0) {
-        ms = 1000;
-    }
-    if (ms < 80) {
-        return 0;
-    }
-    g_vol_time = now;
-    return 1;
-}
-
 /* Milliseconds from earlier to later. Negative when later comes first. */
 static long timeval_delta_ms(const struct timeval *later, const struct timeval *earlier)
 {
@@ -793,7 +775,7 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
         }
         return;
     }
-    /* Value 1 is a press. Repeats stay on the volume hold path. */
+    /* Value 1 is a press. Key repeat (value 2) does not fire an action. */
     if (value == 1 && !press_accepted(when)) {
         return;
     }
@@ -826,10 +808,16 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
         player_rewind(1500);
         return;
     }
-    if (key == cfg->key_vol_up || key == cfg->key_vol_dn) {
-        if (volume_due()) {
-            player_volume_step(key == cfg->key_vol_up ? 1 : -1);
-        }
+    if (key == cfg->key_reverb && value == 1) {
+        player_fx_toggle(PLAYER_FX_REVERB);
+        return;
+    }
+    if (key == cfg->key_pitch && value == 1) {
+        player_fx_toggle(PLAYER_FX_PITCH);
+        return;
+    }
+    if (key == cfg->key_phaser && value == 1) {
+        player_fx_toggle(PLAYER_FX_PHASER);
         return;
     }
     if (value == 1) {
@@ -989,15 +977,16 @@ static int debounce_self_test(void)
     cfg.key_rew05 = -1;
     cfg.key_rew10 = -1;
     cfg.key_rew15 = -1;
-    cfg.key_vol_up = KEY_KPPLUS;
-    cfg.key_vol_dn = KEY_KPMINUS;
     cfg.key_dial_fwd = -1;
     cfg.key_dial_back = -1;
     cfg.key_dial_mode = -1;
+    cfg.key_reverb = KEY_KPPLUS;
+    cfg.key_pitch = -1;
+    cfg.key_phaser = -1;
     player_set_volume_percent(50);
+    player_set_fx(NULL);
     g_press_seen = 0;
     memset(&g_press_time, 0, sizeof g_press_time);
-    memset(&g_vol_time, 0, sizeof g_vol_time);
     g_fds[0] = pipefd[0];
     combo_reset(&g_combo[0]);
     g_nfd = 1;
@@ -1009,23 +998,19 @@ static int debounce_self_test(void)
         goto out;
     }
     keys_poll(&cfg);
-    if (player_volume_percent() != 55) {
-        log_error("keys", "first press left volume %d, expected 55",
-                  player_volume_percent());
+    if (!player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "first press did not turn reverb on");
         goto out;
     }
 
-    /* 20 ms later is inside the gap. Clear the hold timer so only the
-     * press gap can reject this event. */
-    memset(&g_vol_time, 0, sizeof g_vol_time);
+    /* 20 ms later is inside the gap. */
     if (put_key(pipefd[1], 10030, KEY_KPPLUS, 1) != 0) {
         log_error("keys", "cannot write a close press");
         goto out;
     }
     keys_poll(&cfg);
-    if (player_volume_percent() != 55) {
-        log_error("keys", "close press left volume %d, expected 55",
-                  player_volume_percent());
+    if (!player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "close press turned reverb off");
         goto out;
     }
 
@@ -1035,38 +1020,32 @@ static int debounce_self_test(void)
         log_error("keys", "cannot write a pause press");
         goto out;
     }
-    memset(&g_vol_time, 0, sizeof g_vol_time);
     keys_poll(&cfg);
-    if (player_volume_percent() != 55) {
-        log_error("keys", "press after pause left volume %d, expected 55",
-                  player_volume_percent());
+    if (!player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "press after pause turned reverb off");
         goto out;
     }
 
     /* 30 ms after the previous press is accepted. */
-    memset(&g_vol_time, 0, sizeof g_vol_time);
     if (put_key(pipefd[1], 10120, KEY_KPPLUS, 1) != 0) {
         log_error("keys", "cannot write a later press");
         goto out;
     }
     keys_poll(&cfg);
-    if (player_volume_percent() != 60) {
-        log_error("keys", "press at 30 ms left volume %d, expected 60",
-                  player_volume_percent());
+    if (player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "press at 30 ms left reverb on");
         goto out;
     }
 
-    /* A repeat inside the press gap still changes volume. A press does not. */
-    memset(&g_vol_time, 0, sizeof g_vol_time);
+    /* A repeat is not another press, so it does not toggle the effect. */
     if (put_key(pipefd[1], 10140, KEY_KPPLUS, 2) != 0 ||
         put_key(pipefd[1], 10145, KEY_KPPLUS, 1) != 0) {
-        log_error("keys", "cannot write a volume repeat");
+        log_error("keys", "cannot write a key repeat");
         goto out;
     }
     keys_poll(&cfg);
-    if (player_volume_percent() != 65) {
-        log_error("keys", "repeat during debounce left volume %d, expected 65",
-                  player_volume_percent());
+    if (player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "a repeat turned reverb on");
         goto out;
     }
 
@@ -1083,8 +1062,8 @@ static int debounce_self_test(void)
         goto out;
     }
     keys_poll(&cfg);
-    if (!g_dial_volume || player_volume_percent() != 70) {
-        log_error("keys", "dial in volume mode left volume %d, expected 70",
+    if (!g_dial_volume || player_volume_percent() != 55) {
+        log_error("keys", "dial in volume mode left volume %d, expected 55",
                   player_volume_percent());
         goto out;
     }
@@ -1097,7 +1076,7 @@ out:
     close(pipefd[1]);
     g_press_seen = 0;
     memset(&g_press_time, 0, sizeof g_press_time);
-    memset(&g_vol_time, 0, sizeof g_vol_time);
+    player_set_fx(NULL);
     player_set_volume_percent(100);
     return rc;
 }

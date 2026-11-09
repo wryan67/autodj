@@ -19,11 +19,12 @@ enum {
     KEYID_REW05,
     KEYID_REW10,
     KEYID_REW15,
-    KEYID_UP,
-    KEYID_DN,
     KEYID_DIAL_FWD,
     KEYID_DIAL_BACK,
     KEYID_DIAL_MODE,
+    KEYID_REVERB,
+    KEYID_PITCH,
+    KEYID_PHASER,
     KEYID_COUNT
 };
 
@@ -173,6 +174,11 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
 {
     int code = -1;
 
+    if (eq_ci(action, "volume_up") || eq_ci(action, "brake_delayvolume_up") ||
+        eq_ci(action, "volume_dn") || eq_ci(action, "volume_down")) {
+        /* The dial sets the volume. Old volume keys are left unused. */
+        return;
+    }
     if (key_from_name(keyname, &code) != 0) {
         log_warn("autodj", "unknown key name %s for %s", keyname, action);
         return;
@@ -195,16 +201,15 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     } else if (eq_ci(action, "rewind_1_5")) {
         cfg->key_rew15 = code;
         snprintf(cfg->key_rew15_name, sizeof cfg->key_rew15_name, "%s", keyname);
-    } else if (eq_ci(action, "volume_up") || eq_ci(action, "brake_delayvolume_up")) {
-        /* brake_delayvolume_up is the mashed name from the sample config. */
-        if (eq_ci(action, "brake_delayvolume_up")) {
-            log_warn("autodj", "treating brake_delayvolume_up as volume_up");
-        }
-        cfg->key_vol_up = code;
-        snprintf(cfg->key_vol_up_name, sizeof cfg->key_vol_up_name, "%s", keyname);
-    } else if (eq_ci(action, "volume_dn") || eq_ci(action, "volume_down")) {
-        cfg->key_vol_dn = code;
-        snprintf(cfg->key_vol_dn_name, sizeof cfg->key_vol_dn_name, "%s", keyname);
+    } else if (eq_ci(action, "reverb")) {
+        cfg->key_reverb = code;
+        snprintf(cfg->key_reverb_name, sizeof cfg->key_reverb_name, "%s", keyname);
+    } else if (eq_ci(action, "pitch_shift")) {
+        cfg->key_pitch = code;
+        snprintf(cfg->key_pitch_name, sizeof cfg->key_pitch_name, "%s", keyname);
+    } else if (eq_ci(action, "phaser")) {
+        cfg->key_phaser = code;
+        snprintf(cfg->key_phaser_name, sizeof cfg->key_phaser_name, "%s", keyname);
     } else if (eq_ci(action, "dial_forward") || eq_ci(action, "jog_forward")) {
         cfg->key_dial_fwd = code;
         snprintf(cfg->key_dial_fwd_name, sizeof cfg->key_dial_fwd_name, "%s", keyname);
@@ -226,9 +231,9 @@ static int key_code_used(const Config *cfg, int code)
     }
     return cfg->key_pause == code || cfg->key_skip == code || cfg->key_prev == code ||
            cfg->key_rew05 == code || cfg->key_rew10 == code || cfg->key_rew15 == code ||
-           cfg->key_vol_up == code || cfg->key_vol_dn == code ||
            cfg->key_dial_fwd == code || cfg->key_dial_back == code ||
-           cfg->key_dial_mode == code;
+           cfg->key_dial_mode == code || cfg->key_reverb == code ||
+           cfg->key_pitch == code || cfg->key_phaser == code;
 }
 
 /* A missing previous or rewind binding takes the keypad default, unless
@@ -244,6 +249,123 @@ static void bind_default(Config *cfg, int *slot, const char *action, const char 
         return;
     }
     set_key(cfg, action, keyname);
+}
+
+static int fx_section(const char *section)
+{
+    if (eq_ci(section, "Reverb")) {
+        return 0;
+    }
+    if (eq_ci(section, "Pitch Shift") || eq_ci(section, "PitchShift")) {
+        return 1;
+    }
+    if (eq_ci(section, "Phaser")) {
+        return 2;
+    }
+    return -1;
+}
+
+static void apply_fx(Config *cfg, int section, const char *key, const char *val)
+{
+    double v = 0;
+    int on = 0;
+    const char *what = section == 0 ? "reverb" : section == 1 ? "pitch shift" : "phaser";
+
+    if (eq_ci(key, "on") || (section == 1 && eq_ci(key, "semitones")) ||
+        (section == 1 && eq_ci(key, "formant")) ||
+        (section == 2 && (eq_ci(key, "triplets") || eq_ci(key, "stereo")))) {
+        if (parse_bool(val, &on) != 0) {
+            log_warn("autodj", "%s %s must be true or false, got %s", what, key, val);
+            return;
+        }
+        if (eq_ci(key, "on")) {
+            if (section == 0) {
+                cfg->fx.reverb_on = on;
+            } else if (section == 1) {
+                cfg->fx.pitch_on = on;
+            } else {
+                cfg->fx.phaser_on = on;
+            }
+        } else if (eq_ci(key, "semitones")) {
+            cfg->fx.ps_semi = on;
+        } else if (eq_ci(key, "formant")) {
+            cfg->fx.ps_formant = on;
+        } else if (eq_ci(key, "triplets")) {
+            cfg->fx.ph_triplets = on;
+        } else {
+            cfg->fx.ph_stereo = on;
+        }
+        return;
+    }
+    if (section == 0 && eq_ci(key, "decay")) {
+        if (parse_real(val, 0, 1, &v) != 0) {
+            log_warn("autodj", "reverb decay must be from 0 to 1, got %s", val);
+        } else {
+            cfg->fx.rv_decay = (float)v;
+        }
+    } else if (section == 0 && (eq_ci(key, "bw") || eq_ci(key, "bandwidth"))) {
+        if (parse_real(val, 0, 1, &v) != 0) {
+            log_warn("autodj", "reverb bw must be from 0 to 1, got %s", val);
+        } else {
+            cfg->fx.rv_bw = (float)v;
+        }
+    } else if (section == 0 && eq_ci(key, "damping")) {
+        if (parse_real(val, 0, 1, &v) != 0) {
+            log_warn("autodj", "reverb damping must be from 0 to 1, got %s", val);
+        } else {
+            cfg->fx.rv_damp = (float)v;
+        }
+    } else if (section == 0 && eq_ci(key, "send")) {
+        if (parse_real(val, 0, 1, &v) != 0) {
+            log_warn("autodj", "reverb send must be from 0 to 1, got %s", val);
+        } else {
+            cfg->fx.rv_send = (float)v;
+        }
+    } else if (section == 1 && eq_ci(key, "pitch")) {
+        if (parse_real(val, -1, 1, &v) != 0) {
+            log_warn("autodj", "pitch must be from -1 to 1, got %s", val);
+        } else {
+            cfg->fx.ps_pitch = (float)v;
+        }
+    } else if (section == 1 && eq_ci(key, "range")) {
+        if (parse_real(val, 0, 2, &v) != 0) {
+            log_warn("autodj", "pitch range must be from 0 to 2, got %s", val);
+        } else {
+            cfg->fx.ps_range = (float)v;
+        }
+    } else if (section == 2 && eq_ci(key, "period")) {
+        if (parse_real(val, 0.25, 4, &v) != 0) {
+            log_warn("autodj", "phaser period must be from 0.25 to 4 seconds, got %s", val);
+        } else {
+            cfg->fx.ph_period = (float)v;
+        }
+    } else if (section == 2 && eq_ci(key, "feedback")) {
+        if (parse_real(val, -1, 1, &v) != 0) {
+            log_warn("autodj", "phaser feedback must be from -1 to 1, got %s", val);
+        } else {
+            cfg->fx.ph_feedback = (float)v;
+        }
+    } else if (section == 2 && eq_ci(key, "range")) {
+        if (parse_real(val, 0.05, 1, &v) != 0) {
+            log_warn("autodj", "phaser range must be from 0.05 to 1, got %s", val);
+        } else {
+            cfg->fx.ph_range = (float)v;
+        }
+    } else if (section == 2 && eq_ci(key, "stages")) {
+        if (parse_real(val, 1, 12, &v) != 0 || v != (int)v) {
+            log_warn("autodj", "phaser stages must be a whole number from 1 to 12, got %s", val);
+        } else {
+            cfg->fx.ph_stages = (int)v;
+        }
+    } else if (section == 2 && eq_ci(key, "depth")) {
+        if (parse_real(val, 0.5, 1, &v) != 0) {
+            log_warn("autodj", "phaser depth must be from 0.5 to 1, got %s", val);
+        } else {
+            cfg->fx.ph_depth = (float)v;
+        }
+    } else {
+        log_warn("autodj", "unknown %s setting %s", what, key);
+    }
 }
 
 static void apply(Config *cfg, const char *section, const char *key, const char *val)
@@ -310,6 +432,14 @@ static void apply(Config *cfg, const char *section, const char *key, const char 
         apply_jog(cfg, key, val);
         return;
     }
+    {
+        int fx = fx_section(section);
+
+        if (fx >= 0) {
+            apply_fx(cfg, fx, key, val);
+            return;
+        }
+    }
     log_warn("autodj", "ignoring %s in section %s", key, section[0] ? section : "(none)");
 }
 
@@ -336,12 +466,14 @@ int config_load(const char *path, Config *cfg)
     cfg->key_rew05 = -1;
     cfg->key_rew10 = -1;
     cfg->key_rew15 = -1;
-    cfg->key_vol_up = -1;
-    cfg->key_vol_dn = -1;
     cfg->key_dial_fwd = -1;
     cfg->key_dial_back = -1;
     cfg->key_dial_mode = -1;
+    cfg->key_reverb = -1;
+    cfg->key_pitch = -1;
+    cfg->key_phaser = -1;
     config_jog_defaults(cfg);
+    fx_defaults(&cfg->fx);
     section[0] = '\0';
 
     fp = fopen(path, "r");
@@ -683,6 +815,24 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->key_rew05, sizeof edit->key_rew05, "KEY_KP1");
     snprintf(edit->key_rew10, sizeof edit->key_rew10, "KEY_KP2");
     snprintf(edit->key_rew15, sizeof edit->key_rew15, "KEY_KP3");
+    snprintf(edit->rv_on, sizeof edit->rv_on, "false");
+    snprintf(edit->rv_decay, sizeof edit->rv_decay, "0.5");
+    snprintf(edit->rv_bw, sizeof edit->rv_bw, "1");
+    snprintf(edit->rv_damp, sizeof edit->rv_damp, "0");
+    snprintf(edit->rv_send, sizeof edit->rv_send, "0.5");
+    snprintf(edit->ps_on, sizeof edit->ps_on, "false");
+    snprintf(edit->ps_pitch, sizeof edit->ps_pitch, "1");
+    snprintf(edit->ps_range, sizeof edit->ps_range, "1");
+    snprintf(edit->ps_semi, sizeof edit->ps_semi, "true");
+    snprintf(edit->ps_formant, sizeof edit->ps_formant, "false");
+    snprintf(edit->ph_on, sizeof edit->ph_on, "false");
+    snprintf(edit->ph_period, sizeof edit->ph_period, "1");
+    snprintf(edit->ph_feedback, sizeof edit->ph_feedback, "0");
+    snprintf(edit->ph_range, sizeof edit->ph_range, "1");
+    snprintf(edit->ph_stages, sizeof edit->ph_stages, "7");
+    snprintf(edit->ph_depth, sizeof edit->ph_depth, "0.5");
+    snprintf(edit->ph_triplets, sizeof edit->ph_triplets, "false");
+    snprintf(edit->ph_stereo, sizeof edit->ph_stereo, "false");
 }
 
 static void copy_raw(char *dest, size_t n, const char *val)
@@ -729,16 +879,66 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_rew10, sizeof edit->key_rew10, val);
         } else if (eq_ci(key, "rewind_1_5")) {
             copy_raw(edit->key_rew15, sizeof edit->key_rew15, val);
-        } else if (eq_ci(key, "volume_up") || eq_ci(key, "brake_delayvolume_up")) {
-            copy_raw(edit->key_vol_up, sizeof edit->key_vol_up, val);
-        } else if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
-            copy_raw(edit->key_vol_dn, sizeof edit->key_vol_dn, val);
         } else if (eq_ci(key, "dial_forward") || eq_ci(key, "jog_forward")) {
             copy_raw(edit->key_dial_fwd, sizeof edit->key_dial_fwd, val);
         } else if (eq_ci(key, "dial_back") || eq_ci(key, "jog_back")) {
             copy_raw(edit->key_dial_back, sizeof edit->key_dial_back, val);
         } else if (eq_ci(key, "dial_mode")) {
             copy_raw(edit->key_dial_mode, sizeof edit->key_dial_mode, val);
+        } else if (eq_ci(key, "reverb")) {
+            copy_raw(edit->key_reverb, sizeof edit->key_reverb, val);
+        } else if (eq_ci(key, "pitch_shift")) {
+            copy_raw(edit->key_pitch, sizeof edit->key_pitch, val);
+        } else if (eq_ci(key, "phaser")) {
+            copy_raw(edit->key_phaser, sizeof edit->key_phaser, val);
+        }
+        return;
+    }
+    {
+        int fx = fx_section(section);
+
+        if (fx == 0) {
+            if (eq_ci(key, "on")) {
+                copy_raw(edit->rv_on, sizeof edit->rv_on, val);
+            } else if (eq_ci(key, "decay")) {
+                copy_raw(edit->rv_decay, sizeof edit->rv_decay, val);
+            } else if (eq_ci(key, "bw") || eq_ci(key, "bandwidth")) {
+                copy_raw(edit->rv_bw, sizeof edit->rv_bw, val);
+            } else if (eq_ci(key, "damping")) {
+                copy_raw(edit->rv_damp, sizeof edit->rv_damp, val);
+            } else if (eq_ci(key, "send")) {
+                copy_raw(edit->rv_send, sizeof edit->rv_send, val);
+            }
+        } else if (fx == 1) {
+            if (eq_ci(key, "on")) {
+                copy_raw(edit->ps_on, sizeof edit->ps_on, val);
+            } else if (eq_ci(key, "pitch")) {
+                copy_raw(edit->ps_pitch, sizeof edit->ps_pitch, val);
+            } else if (eq_ci(key, "range")) {
+                copy_raw(edit->ps_range, sizeof edit->ps_range, val);
+            } else if (eq_ci(key, "semitones")) {
+                copy_raw(edit->ps_semi, sizeof edit->ps_semi, val);
+            } else if (eq_ci(key, "formant")) {
+                copy_raw(edit->ps_formant, sizeof edit->ps_formant, val);
+            }
+        } else if (fx == 2) {
+            if (eq_ci(key, "on")) {
+                copy_raw(edit->ph_on, sizeof edit->ph_on, val);
+            } else if (eq_ci(key, "period")) {
+                copy_raw(edit->ph_period, sizeof edit->ph_period, val);
+            } else if (eq_ci(key, "feedback")) {
+                copy_raw(edit->ph_feedback, sizeof edit->ph_feedback, val);
+            } else if (eq_ci(key, "range")) {
+                copy_raw(edit->ph_range, sizeof edit->ph_range, val);
+            } else if (eq_ci(key, "stages")) {
+                copy_raw(edit->ph_stages, sizeof edit->ph_stages, val);
+            } else if (eq_ci(key, "depth")) {
+                copy_raw(edit->ph_depth, sizeof edit->ph_depth, val);
+            } else if (eq_ci(key, "triplets")) {
+                copy_raw(edit->ph_triplets, sizeof edit->ph_triplets, val);
+            } else if (eq_ci(key, "stereo")) {
+                copy_raw(edit->ph_stereo, sizeof edit->ph_stereo, val);
+            }
         }
     }
 }
@@ -746,7 +946,7 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
 /* Drop a keypad default when the file already gave that key to another action. */
 static void release_taken_default(ConfigEdit *edit, char *field, const char *defname)
 {
-    char *fields[11];
+    char *fields[12];
     int i;
     int hits = 0;
 
@@ -759,12 +959,13 @@ static void release_taken_default(ConfigEdit *edit, char *field, const char *def
     fields[3] = edit->key_rew05;
     fields[4] = edit->key_rew10;
     fields[5] = edit->key_rew15;
-    fields[6] = edit->key_vol_up;
-    fields[7] = edit->key_vol_dn;
-    fields[8] = edit->key_dial_fwd;
-    fields[9] = edit->key_dial_back;
-    fields[10] = edit->key_dial_mode;
-    for (i = 0; i < 11; i++) {
+    fields[6] = edit->key_dial_fwd;
+    fields[7] = edit->key_dial_back;
+    fields[8] = edit->key_dial_mode;
+    fields[9] = edit->key_reverb;
+    fields[10] = edit->key_pitch;
+    fields[11] = edit->key_phaser;
+    for (i = 0; i < 12; i++) {
         if (strcmp(fields[i], defname) == 0) {
             hits++;
         }
@@ -870,6 +1071,22 @@ static int parse_int_strict(const char *s, long *out)
     return 0;
 }
 
+static int take_real(char *err, size_t err_n, const char *text, double min, double max,
+                     const char *what, float *out)
+{
+    double v = 0;
+
+    if (parse_real(text, min, max, &v) != 0) {
+        char msg[160];
+
+        snprintf(msg, sizeof msg, "%s must be a number from %g to %g.", what, min, max);
+        add_err(err, err_n, msg);
+        return -1;
+    }
+    *out = (float)v;
+    return 0;
+}
+
 static int take_int(char *err, size_t err_n, const char *text, long min, long max,
                     const char *what, int *out)
 {
@@ -968,11 +1185,30 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_rew05);
     trim(in.key_rew10);
     trim(in.key_rew15);
-    trim(in.key_vol_up);
-    trim(in.key_vol_dn);
     trim(in.key_dial_fwd);
     trim(in.key_dial_back);
     trim(in.key_dial_mode);
+    trim(in.key_reverb);
+    trim(in.key_pitch);
+    trim(in.key_phaser);
+    trim(in.rv_on);
+    trim(in.rv_decay);
+    trim(in.rv_bw);
+    trim(in.rv_damp);
+    trim(in.rv_send);
+    trim(in.ps_on);
+    trim(in.ps_pitch);
+    trim(in.ps_range);
+    trim(in.ps_semi);
+    trim(in.ps_formant);
+    trim(in.ph_on);
+    trim(in.ph_period);
+    trim(in.ph_feedback);
+    trim(in.ph_range);
+    trim(in.ph_stages);
+    trim(in.ph_depth);
+    trim(in.ph_triplets);
+    trim(in.ph_stereo);
 
     memset(&out, 0, sizeof out);
     out.key_pause = -1;
@@ -981,11 +1217,13 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_rew05 = -1;
     out.key_rew10 = -1;
     out.key_rew15 = -1;
-    out.key_vol_up = -1;
-    out.key_vol_dn = -1;
     out.key_dial_fwd = -1;
     out.key_dial_back = -1;
     out.key_dial_mode = -1;
+    out.key_reverb = -1;
+    out.key_pitch = -1;
+    out.key_phaser = -1;
+    fx_defaults(&out.fx);
     out.volume_set = 1;
 
     if (!in.folder[0]) {
@@ -1058,12 +1296,6 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_REW15] = take_key(err, err_n, in.key_rew15, "Rewind 1.5s",
                                    &out.key_rew15, out.key_rew15_name,
                                    sizeof out.key_rew15_name) == 0;
-    key_ok[KEYID_UP] = take_key(err, err_n, in.key_vol_up, "Volume up",
-                                &out.key_vol_up, out.key_vol_up_name,
-                                sizeof out.key_vol_up_name) == 0;
-    key_ok[KEYID_DN] = take_key(err, err_n, in.key_vol_dn, "Volume down",
-                                &out.key_vol_dn, out.key_vol_dn_name,
-                                sizeof out.key_vol_dn_name) == 0;
     key_ok[KEYID_DIAL_FWD] = take_key(err, err_n, in.key_dial_fwd, "Dial forward",
                                      &out.key_dial_fwd, out.key_dial_fwd_name,
                                      sizeof out.key_dial_fwd_name) == 0;
@@ -1073,28 +1305,99 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_DIAL_MODE] = take_key(err, err_n, in.key_dial_mode, "Dial mode",
                                       &out.key_dial_mode, out.key_dial_mode_name,
                                       sizeof out.key_dial_mode_name) == 0;
+    key_ok[KEYID_REVERB] = take_key(err, err_n, in.key_reverb, "Reverb",
+                                    &out.key_reverb, out.key_reverb_name,
+                                    sizeof out.key_reverb_name) == 0;
+    key_ok[KEYID_PITCH] = take_key(err, err_n, in.key_pitch, "Pitch shift",
+                                   &out.key_pitch, out.key_pitch_name,
+                                   sizeof out.key_pitch_name) == 0;
+    key_ok[KEYID_PHASER] = take_key(err, err_n, in.key_phaser, "Phaser",
+                                    &out.key_phaser, out.key_phaser_name,
+                                    sizeof out.key_phaser_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
     keys[KEYID_REW05] = in.key_rew05;
     keys[KEYID_REW10] = in.key_rew10;
     keys[KEYID_REW15] = in.key_rew15;
-    keys[KEYID_UP] = in.key_vol_up;
-    keys[KEYID_DN] = in.key_vol_dn;
     keys[KEYID_DIAL_FWD] = in.key_dial_fwd;
     keys[KEYID_DIAL_BACK] = in.key_dial_back;
     keys[KEYID_DIAL_MODE] = in.key_dial_mode;
+    keys[KEYID_REVERB] = in.key_reverb;
+    keys[KEYID_PITCH] = in.key_pitch;
+    keys[KEYID_PHASER] = in.key_phaser;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
     labels[KEYID_REW05] = "rewind 0.5s";
     labels[KEYID_REW10] = "rewind 1s";
     labels[KEYID_REW15] = "rewind 1.5s";
-    labels[KEYID_UP] = "volume up";
-    labels[KEYID_DN] = "volume down";
     labels[KEYID_DIAL_FWD] = "dial forward";
     labels[KEYID_DIAL_BACK] = "dial back";
     labels[KEYID_DIAL_MODE] = "dial mode";
+    labels[KEYID_REVERB] = "reverb";
+    labels[KEYID_PITCH] = "pitch shift";
+    labels[KEYID_PHASER] = "phaser";
+    if (in.rv_on[0] && take_bool(err, err_n, in.rv_on, "Reverb", &out.fx.reverb_on) != 0) {
+        failed = 1;
+    }
+    if (in.rv_decay[0] && take_real(err, err_n, in.rv_decay, 0, 1, "Decay", &out.fx.rv_decay) != 0) {
+        failed = 1;
+    }
+    if (in.rv_bw[0] && take_real(err, err_n, in.rv_bw, 0, 1, "BW", &out.fx.rv_bw) != 0) {
+        failed = 1;
+    }
+    if (in.rv_damp[0] && take_real(err, err_n, in.rv_damp, 0, 1, "Damping", &out.fx.rv_damp) != 0) {
+        failed = 1;
+    }
+    if (in.rv_send[0] && take_real(err, err_n, in.rv_send, 0, 1, "Send", &out.fx.rv_send) != 0) {
+        failed = 1;
+    }
+    if (in.ps_on[0] && take_bool(err, err_n, in.ps_on, "Pitch shift", &out.fx.pitch_on) != 0) {
+        failed = 1;
+    }
+    if (in.ps_pitch[0] && take_real(err, err_n, in.ps_pitch, -1, 1, "Pitch", &out.fx.ps_pitch) != 0) {
+        failed = 1;
+    }
+    if (in.ps_range[0] && take_real(err, err_n, in.ps_range, 0, 2, "Pitch range", &out.fx.ps_range) != 0) {
+        failed = 1;
+    }
+    if (in.ps_semi[0] && take_bool(err, err_n, in.ps_semi, "Semitones", &out.fx.ps_semi) != 0) {
+        failed = 1;
+    }
+    if (in.ps_formant[0] && take_bool(err, err_n, in.ps_formant, "Formant", &out.fx.ps_formant) != 0) {
+        failed = 1;
+    }
+    if (in.ph_on[0] && take_bool(err, err_n, in.ph_on, "Phaser", &out.fx.phaser_on) != 0) {
+        failed = 1;
+    }
+    if (in.ph_period[0] &&
+        take_real(err, err_n, in.ph_period, 0.25, 4, "Period", &out.fx.ph_period) != 0) {
+        failed = 1;
+    }
+    if (in.ph_feedback[0] &&
+        take_real(err, err_n, in.ph_feedback, -1, 1, "Feedback", &out.fx.ph_feedback) != 0) {
+        failed = 1;
+    }
+    if (in.ph_range[0] &&
+        take_real(err, err_n, in.ph_range, 0.05, 1, "Phaser range", &out.fx.ph_range) != 0) {
+        failed = 1;
+    }
+    if (in.ph_stages[0] &&
+        take_int(err, err_n, in.ph_stages, 1, 12, "Stages", &out.fx.ph_stages) != 0) {
+        failed = 1;
+    }
+    if (in.ph_depth[0] &&
+        take_real(err, err_n, in.ph_depth, 0.5, 1, "Depth", &out.fx.ph_depth) != 0) {
+        failed = 1;
+    }
+    if (in.ph_triplets[0] &&
+        take_bool(err, err_n, in.ph_triplets, "Triplets", &out.fx.ph_triplets) != 0) {
+        failed = 1;
+    }
+    if (in.ph_stereo[0] && take_bool(err, err_n, in.ph_stereo, "Stereo", &out.fx.ph_stereo) != 0) {
+        failed = 1;
+    }
     for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
             failed = 1;
@@ -1206,12 +1509,6 @@ static int keys_id(const char *key)
     if (eq_ci(key, "rewind_1_5")) {
         return KEYID_REW15;
     }
-    if (eq_ci(key, "volume_up") || eq_ci(key, "brake_delayvolume_up")) {
-        return KEYID_UP;
-    }
-    if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
-        return KEYID_DN;
-    }
     if (eq_ci(key, "dial_forward")) {
         return KEYID_DIAL_FWD;
     }
@@ -1221,6 +1518,15 @@ static int keys_id(const char *key)
     if (eq_ci(key, "dial_mode")) {
         return KEYID_DIAL_MODE;
     }
+    if (eq_ci(key, "reverb")) {
+        return KEYID_REVERB;
+    }
+    if (eq_ci(key, "pitch_shift")) {
+        return KEYID_PITCH;
+    }
+    if (eq_ci(key, "phaser")) {
+        return KEYID_PHASER;
+    }
     return -1;
 }
 
@@ -1229,6 +1535,113 @@ static const char *g_jog_names[] = {
 };
 
 enum { JOG_COUNT = 6 };
+
+static void fmt_float(char *dest, size_t n, float v)
+{
+    snprintf(dest, n, "%g", (double)v);
+}
+
+static int fx_key_id(int section, const char *key)
+{
+    static const char *rv[] = {"on", "decay", "bw", "damping", "send"};
+    static const char *ps[] = {"on", "pitch", "range", "semitones", "formant"};
+    static const char *ph[] = {"on", "period", "feedback", "range", "stages", "depth", "triplets", "stereo"};
+    const char **names = section == 0 ? rv : section == 1 ? ps : ph;
+    int count = section == 0 ? 5 : section == 1 ? 5 : 8;
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (eq_ci(key, names[i]) || (section == 0 && i == 2 && eq_ci(key, "bandwidth"))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static const char *fx_key_name(int section, int id)
+{
+    static const char *rv[] = {"on", "decay", "bw", "damping", "send"};
+    static const char *ps[] = {"on", "pitch", "range", "semitones", "formant"};
+    static const char *ph[] = {"on", "period", "feedback", "range", "stages", "depth", "triplets", "stereo"};
+
+    if (section == 0) {
+        return rv[id];
+    }
+    if (section == 1) {
+        return ps[id];
+    }
+    return ph[id];
+}
+
+static void fx_value(const Config *cfg, int section, int id, char *dest, size_t n)
+{
+    const FxParams *fx = &cfg->fx;
+
+    if (section == 0) {
+        switch (id) {
+        case 0:
+            snprintf(dest, n, "%s", fx->reverb_on ? "true" : "false");
+            return;
+        case 1:
+            fmt_float(dest, n, fx->rv_decay);
+            return;
+        case 2:
+            fmt_float(dest, n, fx->rv_bw);
+            return;
+        case 3:
+            fmt_float(dest, n, fx->rv_damp);
+            return;
+        default:
+            fmt_float(dest, n, fx->rv_send);
+            return;
+        }
+    }
+    if (section == 1) {
+        switch (id) {
+        case 0:
+            snprintf(dest, n, "%s", fx->pitch_on ? "true" : "false");
+            return;
+        case 1:
+            fmt_float(dest, n, fx->ps_pitch);
+            return;
+        case 2:
+            fmt_float(dest, n, fx->ps_range);
+            return;
+        case 3:
+            snprintf(dest, n, "%s", fx->ps_semi ? "true" : "false");
+            return;
+        default:
+            snprintf(dest, n, "%s", fx->ps_formant ? "true" : "false");
+            return;
+        }
+    }
+    switch (id) {
+    case 0:
+        snprintf(dest, n, "%s", fx->phaser_on ? "true" : "false");
+        return;
+    case 1:
+        fmt_float(dest, n, fx->ph_period);
+        return;
+    case 2:
+        fmt_float(dest, n, fx->ph_feedback);
+        return;
+    case 3:
+        fmt_float(dest, n, fx->ph_range);
+        return;
+    case 4:
+        snprintf(dest, n, "%d", fx->ph_stages);
+        return;
+    case 5:
+        fmt_float(dest, n, fx->ph_depth);
+        return;
+    case 6:
+        snprintf(dest, n, "%s", fx->ph_triplets ? "true" : "false");
+        return;
+    default:
+        snprintf(dest, n, "%s", fx->ph_stereo ? "true" : "false");
+        return;
+    }
+}
 
 static int jog_id(const char *key)
 {
@@ -1325,12 +1738,6 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
     case KEYID_REW15:
         s = cfg->key_rew15_name;
         break;
-    case KEYID_UP:
-        s = cfg->key_vol_up_name;
-        break;
-    case KEYID_DN:
-        s = cfg->key_vol_dn_name;
-        break;
     case KEYID_DIAL_FWD:
         s = cfg->key_dial_fwd_name;
         break;
@@ -1339,6 +1746,15 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
         break;
     case KEYID_DIAL_MODE:
         s = cfg->key_dial_mode_name;
+        break;
+    case KEYID_REVERB:
+        s = cfg->key_reverb_name;
+        break;
+    case KEYID_PITCH:
+        s = cfg->key_pitch_name;
+        break;
+    case KEYID_PHASER:
+        s = cfg->key_phaser_name;
         break;
     default:
         break;
@@ -1541,7 +1957,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     };
     static const char *key_names[] = {
         "pause_resume", "skip", "previous", "rewind_0_5", "rewind_1",
-        "rewind_1_5", "volume_up", "volume_dn", "dial_forward", "dial_back", "dial_mode"
+        "rewind_1_5", "dial_forward", "dial_back", "dial_mode",
+        "reverb", "pitch_shift", "phaser"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -1565,9 +1982,11 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     int in_main = 0;
     int in_keys = 0;
     int in_jog = 0;
+    int in_fx = -1;
     int jog_seen[JOG_COUNT] = {0};
     int main_seen[10] = {0};
     int keys_seen[KEYID_COUNT] = {0};
+    int fx_seen[3][8] = {{0}};
     int id;
     int rc = -1;
 
@@ -1616,6 +2035,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             in_main = eq_ci(section, "Main");
             in_keys = eq_ci(section, "Keys");
             in_jog = eq_ci(section, "Jog");
+            in_fx = fx_section(section);
             prev = line;
             line = next;
             continue;
@@ -1624,6 +2044,22 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             (id = jog_id(key)) >= 0) {
             jog_seen[id] = 1;
             jog_value(cfg, id, value, sizeof value);
+            if (rewrite_value(line, value) != 0) {
+                set_err(err, err_n, "out of memory updating %s", path);
+                goto done;
+            }
+        }
+        if (!jog && in_keys && line_setting_key(line->text, key, sizeof key) &&
+            (eq_ci(key, "volume_up") || eq_ci(key, "volume_dn") ||
+             eq_ci(key, "volume_down") || eq_ci(key, "brake_delayvolume_up"))) {
+            unlink_line(&head, prev, line);
+            line = next;
+            continue;
+        }
+        if (!jog && in_fx >= 0 && line_setting_key(line->text, key, sizeof key) &&
+            (id = fx_key_id(in_fx, key)) >= 0) {
+            fx_seen[in_fx][id] = 1;
+            fx_value(cfg, in_fx, id, value, sizeof value);
             if (rewrite_value(line, value) != 0) {
                 set_err(err, err_n, "out of memory updating %s", path);
                 goto done;
@@ -1715,6 +2151,37 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             if (!keys_last) {
                 set_err(err, err_n, "out of memory updating %s", path);
                 goto done;
+            }
+        }
+    }
+
+    if (!jog) {
+        static const char *fx_names[] = {"Reverb", "Pitch Shift", "Phaser"};
+        static const int fx_count[] = {5, 5, 8};
+        int fx;
+
+        for (fx = 0; fx < 3; fx++) {
+            struct CfgLine *fx_header = NULL;
+            struct CfgLine *fx_last = NULL;
+
+            if (ensure_section(&head, fx_names[fx], &fx_header, &fx_last) != 0) {
+                set_err(err, err_n, "out of memory updating %s", path);
+                goto done;
+            }
+            for (id = 0; id < fx_count[fx]; id++) {
+                char text[80];
+                char fxv[32];
+
+                if (fx_seen[fx][id]) {
+                    continue;
+                }
+                fx_value(cfg, fx, id, fxv, sizeof fxv);
+                snprintf(text, sizeof text, "%s=%s\n", fx_key_name(fx, id), fxv);
+                fx_last = insert_after(&head, fx_last, text);
+                if (!fx_last) {
+                    set_err(err, err_n, "out of memory updating %s", path);
+                    goto done;
+                }
             }
         }
     }
@@ -1873,9 +2340,29 @@ static int edit_self_test(void)
         "[Keys]\n"
         "# key comment\n"
         "skip=KEY_KPDOT\n"
-        "volume_down=KEY_KPMINUS\n"
         "custom=KEY_A\n"
-        "pause_resume=KEY_KP0\n";
+        "pause_resume=KEY_KP0\n"
+        "[Reverb]\n"
+        "on=false\n"
+        "decay=0.5\n"
+        "bw=1\n"
+        "damping=0\n"
+        "send=0.5\n"
+        "[Pitch Shift]\n"
+        "on=false\n"
+        "pitch=1\n"
+        "range=1\n"
+        "semitones=true\n"
+        "formant=false\n"
+        "[Phaser]\n"
+        "on=false\n"
+        "period=1\n"
+        "feedback=0\n"
+        "range=1\n"
+        "stages=7\n"
+        "depth=0.5\n"
+        "triplets=false\n"
+        "stereo=false\n";
     Config cfg;
     ConfigEdit edit;
     char err[512];
@@ -1901,11 +2388,14 @@ static int edit_self_test(void)
     if (config_load_edit(path, &edit) != 0 ||
         strcmp(edit.folder, "/tmp") != 0 || strcmp(edit.volume, "40") != 0 ||
         strcmp(edit.shuffle, "true") != 0 || strcmp(edit.key_skip, "KEY_KPDOT") != 0 ||
-        strcmp(edit.key_vol_dn, "KEY_KPMINUS") != 0 || edit.key_pause[0] != '\0') {
+        edit.key_reverb[0] != '\0' || edit.key_pause[0] != '\0' ||
+        strcmp(edit.rv_decay, "0.5") != 0 || strcmp(edit.ph_depth, "0.5") != 0 ||
+        strcmp(edit.ps_semi, "true") != 0) {
         log_error("autodj", "config editor test loaded unexpected text");
         rc = -1;
     }
     memset(&cfg, 0, sizeof cfg);
+    fx_defaults(&cfg.fx);
     snprintf(cfg.folder, sizeof cfg.folder, "/tmp");
     cfg.shuffle = 1;
     cfg.overlap_sec = 8;
@@ -1918,16 +2408,16 @@ static int edit_self_test(void)
     cfg.dial_volume = 1;
     snprintf(cfg.key_pause_name, sizeof cfg.key_pause_name, "KEY_KP0");
     snprintf(cfg.key_skip_name, sizeof cfg.key_skip_name, "KEY_KPDOT");
-    snprintf(cfg.key_vol_dn_name, sizeof cfg.key_vol_dn_name, "KEY_KPMINUS");
     if (rc == 0 && (config_save(path, &cfg, err, sizeof err) != 0 ||
                     read_text(path, got, sizeof got) != 0 || strcmp(got, expect) != 0)) {
         log_error("autodj", "config editor test did not keep the file layout: %s\n%s", err, got);
         rc = -1;
     }
-    cfg.key_vol_dn_name[0] = '\0';
+    cfg.key_skip_name[0] = '\0';
     if (rc == 0 && (config_save(path, &cfg, err, sizeof err) != 0 ||
                     read_text(path, got, sizeof got) != 0 ||
                     strstr(got, "volume_down=") != NULL ||
+                    strstr(got, "skip=") != NULL ||
                     strstr(got, "pause_resume=KEY_KP0\n") == NULL ||
                     strstr(got, "custom=KEY_A\n") == NULL)) {
         log_error("autodj", "config editor test did not clear a key\n%s", got);
@@ -1942,7 +2432,12 @@ static int edit_self_test(void)
                     strcmp(edit.key_prev, "KEY_KPSLASH") != 0 ||
                     strcmp(edit.key_rew05, "KEY_KP1") != 0 ||
                     strcmp(edit.key_rew10, "KEY_KP2") != 0 ||
-                    strcmp(edit.key_rew15, "KEY_KP3") != 0)) {
+                    strcmp(edit.key_rew15, "KEY_KP3") != 0 ||
+                    strcmp(edit.rv_decay, "0.5") != 0 ||
+                    strcmp(edit.ps_semi, "true") != 0 ||
+                    strcmp(edit.ph_stages, "7") != 0 ||
+                    strcmp(edit.ph_depth, "0.5") != 0 ||
+                    edit.key_reverb[0] != '\0')) {
         log_error("autodj", "config editor test rejected a missing file");
         rc = -1;
     }
@@ -1962,9 +2457,12 @@ static int edit_self_test(void)
     snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KPDOT");
     if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) != 0 ||
                     strcmp(cfg.folder, "/tmp") != 0 || cfg.volume != 40 ||
-                    cfg.key_pause != 82 || cfg.key_vol_up != -1 ||
+                    cfg.key_pause != 82 || cfg.key_reverb != -1 ||
+                    cfg.key_pitch != -1 || cfg.key_phaser != -1 ||
                     cfg.key_prev != -1 || cfg.key_rew05 != -1 ||
-                    cfg.key_rew10 != -1 || cfg.key_rew15 != -1)) {
+                    cfg.key_rew10 != -1 || cfg.key_rew15 != -1 ||
+                    cfg.fx.rv_decay != 0.5f || cfg.fx.ps_semi != 1 ||
+                    cfg.fx.ph_stages != 7 || cfg.fx.ph_depth != 0.5f)) {
         log_error("autodj", "config editor test rejected a valid form: %s", err);
         rc = -1;
     }
@@ -2017,6 +2515,7 @@ static int edit_self_test(void)
     snprintf(nested, sizeof nested, "%s/sub/master.cfg", dir);
     snprintf(sub, sizeof sub, "%s/sub", dir);
     memset(&cfg, 0, sizeof cfg);
+    fx_defaults(&cfg.fx);
     snprintf(cfg.folder, sizeof cfg.folder, "/tmp");
     cfg.shuffle = 1;
     cfg.overlap_sec = 8;
@@ -2101,7 +2600,8 @@ int config_self_test(void)
                cfg.resume_sec != 4 || cfg.volume != 100 || cfg.volume_set != 0 ||
                cfg.loudness != 1 || cfg.loudness_lufs != -18 || cfg.dial_volume != 1 ||
                cfg.key_pause != 82 || cfg.key_skip != 83 ||
-               cfg.key_vol_up != 78 || cfg.key_vol_dn != 74 ||
+               cfg.key_reverb != -1 || cfg.key_pitch != -1 || cfg.key_phaser != -1 ||
+               cfg.fx.rv_decay != 0.5f || cfg.fx.ph_depth != 0.5f || cfg.fx.ps_semi != 1 ||
                cfg.key_prev != slash || cfg.key_rew05 != kp1 ||
                cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3) {
         log_error("autodj", "config test parsed unexpected values");
@@ -2114,7 +2614,7 @@ int config_self_test(void)
         log_error("autodj", "config test did not store volume");
         rc = -1;
     } else if (config_load(path, &cfg) != 0 || cfg.volume != 15 || cfg.volume_set != 1 ||
-               strcmp(cfg.folder, "/tmp/music folder") != 0 || cfg.key_vol_up != 78) {
+               strcmp(cfg.folder, "/tmp/music folder") != 0 || cfg.key_reverb != -1) {
         log_error("autodj", "config test did not reload stored volume");
         rc = -1;
     } else if (config_save_volume(path, 0) != 0 || file_count(path, "volume=") != 1 ||

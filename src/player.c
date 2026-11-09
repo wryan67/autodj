@@ -46,6 +46,9 @@ static atomic_int g_skip_gen;
 static atomic_int g_back_gen;
 static atomic_int g_rewind_ms;
 static atomic_int g_volume = 1000;
+static atomic_int g_fx_on[3];
+static FxState *g_fx;
+static FxParams g_fx_params;
 static atomic_int g_stop;
 static atomic_int g_jog_ticks;
 static atomic_int g_jog_interval_us = (int)(JOG_FIRST_LAG * 1e6);
@@ -936,6 +939,12 @@ static void render_frame(int16_t *dst)
 
     left *= g_vol;
     right *= g_vol;
+    if (g_fx) {
+        fx_set_on(g_fx, atomic_load(&g_fx_on[PLAYER_FX_REVERB]),
+                  atomic_load(&g_fx_on[PLAYER_FX_PITCH]),
+                  atomic_load(&g_fx_on[PLAYER_FX_PHASER]));
+        fx_process(g_fx, &left, &right);
+    }
     if (left > 1) {
         left = 1;
     }
@@ -1076,6 +1085,13 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
     atomic_store(&g_jogging, 0);
     g_vol = (float)atomic_load(&g_volume) / 1000.0f;
     atomic_store(&g_stop, 0);
+    fx_free(g_fx);
+    g_fx = fx_new(g_set.rate);
+    if (!g_fx) {
+        log_error("audio", "cannot start the sound effects");
+        return -1;
+    }
+    fx_setup(g_fx, &g_fx_params);
     hist_clear();
     g_prefetch_fail[0] = '\0';
     g_nav_failed = 0;
@@ -1088,10 +1104,14 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
     g_pending_path[0] = '\0';
 
     if (playlist_next(g_pl, path, sizeof path) != 0) {
+        fx_free(g_fx);
+        g_fx = NULL;
         return -1;
     }
     first = track_decode(path, g_set.rate, g_set.trim, g_set.loudness, g_set.loudness_lufs);
     if (!first) {
+        fx_free(g_fx);
+        g_fx = NULL;
         return -1;
     }
     become(first);
@@ -1105,6 +1125,8 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
         g_pending = NULL;
         g_nav_track = NULL;
         hist_clear();
+        fx_free(g_fx);
+        g_fx = NULL;
         return -1;
     }
     if (pthread_create(&g_audio_thread, NULL, audio_main, NULL) != 0) {
@@ -1121,6 +1143,8 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
         g_pending = NULL;
         g_nav_track = NULL;
         hist_clear();
+        fx_free(g_fx);
+        g_fx = NULL;
         return -1;
     }
     g_threads = 1;
@@ -1136,6 +1160,8 @@ void player_stop(void)
         track_free(g_nav_track);
         g_a = g_b = g_pending = g_nav_track = NULL;
         hist_clear();
+        fx_free(g_fx);
+        g_fx = NULL;
         return;
     }
     atomic_store(&g_stop, 1);
@@ -1145,6 +1171,8 @@ void player_stop(void)
     pthread_join(g_audio_thread, NULL);
     pthread_join(g_decode_thread, NULL);
     g_threads = 0;
+    fx_free(g_fx);
+    g_fx = NULL;
     track_free(g_a);
     track_free(g_b);
     track_free(g_pending);
@@ -1254,6 +1282,40 @@ int player_volume_percent(void)
         volume = 1000;
     }
     return volume / 10;
+}
+
+void player_set_fx(const FxParams *fx)
+{
+    if (!fx) {
+        fx_defaults(&g_fx_params);
+    } else {
+        g_fx_params = *fx;
+    }
+    atomic_store(&g_fx_on[PLAYER_FX_REVERB], g_fx_params.reverb_on ? 1 : 0);
+    atomic_store(&g_fx_on[PLAYER_FX_PITCH], g_fx_params.pitch_on ? 1 : 0);
+    atomic_store(&g_fx_on[PLAYER_FX_PHASER], g_fx_params.phaser_on ? 1 : 0);
+}
+
+int player_fx_enabled(int which)
+{
+    if (which < 0 || which > 2) {
+        return 0;
+    }
+    return atomic_load(&g_fx_on[which]) ? 1 : 0;
+}
+
+int player_fx_toggle(int which)
+{
+    static const char *names[] = {"reverb", "pitch shift", "phaser"};
+    int next;
+
+    if (which < 0 || which > 2) {
+        return 0;
+    }
+    next = !atomic_load(&g_fx_on[which]);
+    atomic_store(&g_fx_on[which], next);
+    log_info("keys", "%s %s", names[which], next ? "on" : "off");
+    return next;
 }
 
 void player_volume_step(int direction)

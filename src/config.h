@@ -1,6 +1,8 @@
 #ifndef AUTODJ_CONFIG_H
 #define AUTODJ_CONFIG_H
 
+#include "fx.h"
+
 #include <stddef.h>
 
 #define AUTODJ_PATH 4096
@@ -23,22 +25,25 @@ typedef struct Config {
     int key_rew05;
     int key_rew10;
     int key_rew15;
-    int key_vol_up;
-    int key_vol_dn;
     int key_dial_fwd;
     int key_dial_back;
     int key_dial_mode;
+    int key_reverb;
+    int key_pitch;
+    int key_phaser;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
     char key_rew05_name[64];
     char key_rew10_name[64];
     char key_rew15_name[64];
-    char key_vol_up_name[64];
-    char key_vol_dn_name[64];
     char key_dial_fwd_name[64];
     char key_dial_back_name[64];
     char key_dial_mode_name[64];
+    char key_reverb_name[64];
+    char key_pitch_name[64];
+    char key_phaser_name[64];
+    FxParams fx;
     /* [Jog] */
     double jog_turn_sec;   /* audio moved by one turn of the dial */
     int jog_clicks;        /* dial clicks in one turn */
@@ -89,11 +94,30 @@ typedef struct ConfigEdit {
     char key_rew05[64];
     char key_rew10[64];
     char key_rew15[64];
-    char key_vol_up[64];
-    char key_vol_dn[64];
     char key_dial_fwd[64];
     char key_dial_back[64];
     char key_dial_mode[64];
+    char key_reverb[64];
+    char key_pitch[64];
+    char key_phaser[64];
+    char rv_on[32];
+    char rv_decay[32];
+    char rv_bw[32];
+    char rv_damp[32];
+    char rv_send[32];
+    char ps_on[32];
+    char ps_pitch[32];
+    char ps_range[32];
+    char ps_semi[32];
+    char ps_formant[32];
+    char ph_on[32];
+    char ph_period[32];
+    char ph_feedback[32];
+    char ph_range[32];
+    char ph_stages[32];
+    char ph_depth[32];
+    char ph_triplets[32];
+    char ph_stereo[32];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */
