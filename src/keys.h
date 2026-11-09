@@ -23,6 +23,9 @@ int keys_grabbed(void);
 /* Also call fn for each dial click that keys_poll passes to player_jog.
  * NULL removes it. */
 void keys_set_jog_hook(void (*fn)(int direction, long long when_us));
+/* Make the dial a volume knob (1) or a jog wheel (0). keys_open starts it
+ * as a jog wheel, and the dial_mode key switches it. */
+void keys_set_dial_volume(int on);
 /* Copy the open device fds into fds. Returns the count. */
 int keys_fds(int *fds, int max);
 /* Poll timeout to use, at most max_ms, so held remote buttons repeat. */

@@ -181,9 +181,10 @@ int main(int argc, char **argv)
              cfg.key_rew05_name[0] ? cfg.key_rew05_name : "(none)",
              cfg.key_rew10_name[0] ? cfg.key_rew10_name : "(none)",
              cfg.key_rew15_name[0] ? cfg.key_rew15_name : "(none)");
-    log_info("autodj", "keys jog forward %s, jog back %s",
-             cfg.key_jog_fwd_name[0] ? cfg.key_jog_fwd_name : "(none)",
-             cfg.key_jog_back_name[0] ? cfg.key_jog_back_name : "(none)");
+    log_info("autodj", "keys dial forward %s, dial back %s, dial mode %s",
+             cfg.key_dial_fwd_name[0] ? cfg.key_dial_fwd_name : "(none)",
+             cfg.key_dial_back_name[0] ? cfg.key_dial_back_name : "(none)",
+             cfg.key_dial_mode_name[0] ? cfg.key_dial_mode_name : "(none)");
     log_info("autodj", "jog %gs per turn, %d clicks per turn, max speed %gx, spin-up %gs, grab %gs, smoothing %gs",
              cfg.jog_turn_sec, cfg.jog_clicks, cfg.jog_max_speed, cfg.jog_spinup_sec,
              cfg.jog_grab_sec, cfg.jog_smooth_sec);
@@ -227,6 +228,7 @@ int main(int argc, char **argv)
         return 1;
     }
     keys_open();
+    keys_set_dial_volume(cfg.dial_volume);
 
     settings.overlap_sec = cfg.overlap_sec;
     settings.pause_sec = cfg.pause_sec;

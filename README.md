@@ -54,7 +54,7 @@ With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
 
-`--config` opens a full-screen editor for that file. The folder is a text field. Bool settings are checkboxes. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops.
+`--config` opens a full-screen editor for that file. The folder is a text field. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops.
 
 `--calibrate` opens a full-screen view of the `[Jog]` dial settings, with a short note beside each one about what it changes in the sound. Calibrate measures the dial in two steps. First, turn the dial exactly one full turn and press Enter; the click count becomes `clicks_per_turn`. Then spin the dial as fast as you can; timing starts at the first click and runs for 3 seconds. `max_speed` becomes the fastest measured speed plus 25%. Test plays a random song from `Folder`, so you can turn the dial and hear the result. A change to a setting takes effect in the test at once. Stop test ends playback. Save writes only the `[Jog]` section. Close or Esc leaves without writing; with unsaved changes, it asks you to press Close again. The view needs the remote, so stop a running autodj first.
 
@@ -83,6 +83,7 @@ resume_time=3
 volume=100
 loudness=true
 loudness_lufs=-18
+dial_default=volume
 
 [Keys]
 pause_resume=KEY_KP0
@@ -93,8 +94,9 @@ rewind_1=KEY_KP2
 rewind_1_5=KEY_KP3
 volume_up=KEY_KPPLUS
 volume_dn=KEY_KPMINUS
-jog_forward=REMOTE_DIAL_CW
-jog_back=REMOTE_DIAL_CCW
+dial_forward=REMOTE_DIAL_CW
+dial_back=REMOTE_DIAL_CCW
+dial_mode=REMOTE_BTN4
 
 [Jog]
 seconds_per_turn=1.8
@@ -140,6 +142,9 @@ Percent from 0 to 100. Default `100`. The volume keys change it in steps of 5. E
 `loudness_lufs`  
 Target integrated loudness, from `-30` to `-5`. Default `-18`, which is the ReplayGain 2.0 reference. A quieter track is turned up and a louder track is turned down. The gain is held back if it would clip the loudest sample.
 
+`dial_default`  
+`volume` or `jog`. Default `volume`. What the shortcut remote's dial does when autodj starts. `dial_mode` switches it while autodj runs.
+
 ### [Keys]
 
 Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. The name can have `CTRL+`, `SHIFT+`, `ALT+`, or `META+` in front of it, for example `CTRL+SHIFT+KEY_Z`. These prefixes are not case-sensitive. Left and right modifiers are treated the same. The shortcut remote's raw-mode names can't take a prefix:
@@ -153,7 +158,7 @@ Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_
 | `REMOTE_CENTER` | Button in the center of the dial |
 | `REMOTE_DIAL_CW`, `REMOTE_DIAL_CCW` | Dial clockwise, counterclockwise |
 
- A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for the jog keys. Holding a volume key still repeats.
+ A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for dial clicks. Holding a volume key still repeats.
 
 `pause_resume`  
 Press once to pause. Press again to resume.
@@ -179,8 +184,14 @@ Press or hold to raise the volume. The name `brake_delayvolume_up` is accepted a
 `volume_dn`  
 Press or hold to lower the volume. `volume_down` is the same action.
 
-`jog_forward`, `jog_back`  
+`dial_forward`, `dial_back`  
 The shortcut remote's dial: `REMOTE_DIAL_CW` and `REMOTE_DIAL_CCW` in raw mode, or `CTRL+KEY_KPPLUS` and `CTRL+KEY_KPMINUS` with the factory shortcuts. The dial works like a hand on a record. With the default `[Jog]` settings, each click moves the song 90 ms, so one turn of 20 clicks moves it 1.8 seconds, which is one turn of a 33⅓ RPM record. The time between clicks sets the speed. A slow turn plays slowly, a fast spin plays up to 4 times as fast, and turning back plays the song backward. While the dial turns, normal playback is held. When the dial stops, the song spins back up to normal speed within 0.3 seconds. See `[Jog]` to change these numbers. If the music is paused, the dial still moves the song and you can hear it, but the song stays paused when the dial stops. The position stops at the start of the song.
+
+The old names `jog_forward` and `jog_back` are still read. `autodj --config` writes them back under the new names.
+
+`dial_mode`  
+Press to switch the dial between jog and volume. In volume mode each click of the dial raises or lowers the volume by one step of 5, the same as a volume key. autodj starts in the mode set by `dial_default`, and the log shows the mode after each switch.
+
 
 ### [Jog]
 

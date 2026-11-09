@@ -21,8 +21,9 @@ enum {
     KEYID_REW15,
     KEYID_UP,
     KEYID_DN,
-    KEYID_JOG_FWD,
-    KEYID_JOG_BACK,
+    KEYID_DIAL_FWD,
+    KEYID_DIAL_BACK,
+    KEYID_DIAL_MODE,
     KEYID_COUNT
 };
 
@@ -204,12 +205,15 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     } else if (eq_ci(action, "volume_dn") || eq_ci(action, "volume_down")) {
         cfg->key_vol_dn = code;
         snprintf(cfg->key_vol_dn_name, sizeof cfg->key_vol_dn_name, "%s", keyname);
-    } else if (eq_ci(action, "jog_forward")) {
-        cfg->key_jog_fwd = code;
-        snprintf(cfg->key_jog_fwd_name, sizeof cfg->key_jog_fwd_name, "%s", keyname);
-    } else if (eq_ci(action, "jog_back")) {
-        cfg->key_jog_back = code;
-        snprintf(cfg->key_jog_back_name, sizeof cfg->key_jog_back_name, "%s", keyname);
+    } else if (eq_ci(action, "dial_forward") || eq_ci(action, "jog_forward")) {
+        cfg->key_dial_fwd = code;
+        snprintf(cfg->key_dial_fwd_name, sizeof cfg->key_dial_fwd_name, "%s", keyname);
+    } else if (eq_ci(action, "dial_back") || eq_ci(action, "jog_back")) {
+        cfg->key_dial_back = code;
+        snprintf(cfg->key_dial_back_name, sizeof cfg->key_dial_back_name, "%s", keyname);
+    } else if (eq_ci(action, "dial_mode")) {
+        cfg->key_dial_mode = code;
+        snprintf(cfg->key_dial_mode_name, sizeof cfg->key_dial_mode_name, "%s", keyname);
     } else {
         log_warn("autodj", "unknown key action %s", action);
     }
@@ -223,7 +227,8 @@ static int key_code_used(const Config *cfg, int code)
     return cfg->key_pause == code || cfg->key_skip == code || cfg->key_prev == code ||
            cfg->key_rew05 == code || cfg->key_rew10 == code || cfg->key_rew15 == code ||
            cfg->key_vol_up == code || cfg->key_vol_dn == code ||
-           cfg->key_jog_fwd == code || cfg->key_jog_back == code;
+           cfg->key_dial_fwd == code || cfg->key_dial_back == code ||
+           cfg->key_dial_mode == code;
 }
 
 /* A missing previous or rewind binding takes the keypad default, unless
@@ -278,6 +283,10 @@ static void apply(Config *cfg, const char *section, const char *key, const char 
             if (parse_bool(val, &cfg->loudness) != 0) {
                 log_warn("autodj", "loudness must be true or false, got %s", val);
             }
+        } else if (eq_ci(key, "dial_default")) {
+            if (config_parse_dial(val, &cfg->dial_volume) != 0) {
+                log_warn("autodj", "dial_default must be volume or jog, got %s", val);
+            }
         } else if (eq_ci(key, "loudness_lufs")) {
             char *end = NULL;
             long v;
@@ -320,6 +329,7 @@ int config_load(const char *path, Config *cfg)
     cfg->volume_set = 0;
     cfg->loudness = 1;
     cfg->loudness_lufs = -18;
+    cfg->dial_volume = 1;
     cfg->key_pause = -1;
     cfg->key_skip = -1;
     cfg->key_prev = -1;
@@ -328,8 +338,9 @@ int config_load(const char *path, Config *cfg)
     cfg->key_rew15 = -1;
     cfg->key_vol_up = -1;
     cfg->key_vol_dn = -1;
-    cfg->key_jog_fwd = -1;
-    cfg->key_jog_back = -1;
+    cfg->key_dial_fwd = -1;
+    cfg->key_dial_back = -1;
+    cfg->key_dial_mode = -1;
     config_jog_defaults(cfg);
     section[0] = '\0';
 
@@ -667,6 +678,7 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->volume, sizeof edit->volume, "100");
     snprintf(edit->loudness, sizeof edit->loudness, "true");
     snprintf(edit->loudness_lufs, sizeof edit->loudness_lufs, "-18");
+    snprintf(edit->dial_default, sizeof edit->dial_default, "volume");
     snprintf(edit->key_prev, sizeof edit->key_prev, "KEY_KPSLASH");
     snprintf(edit->key_rew05, sizeof edit->key_rew05, "KEY_KP1");
     snprintf(edit->key_rew10, sizeof edit->key_rew10, "KEY_KP2");
@@ -699,6 +711,8 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->loudness, sizeof edit->loudness, val);
         } else if (eq_ci(key, "loudness_lufs")) {
             copy_raw(edit->loudness_lufs, sizeof edit->loudness_lufs, val);
+        } else if (eq_ci(key, "dial_default")) {
+            copy_raw(edit->dial_default, sizeof edit->dial_default, val);
         }
         return;
     }
@@ -719,10 +733,12 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_vol_up, sizeof edit->key_vol_up, val);
         } else if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
             copy_raw(edit->key_vol_dn, sizeof edit->key_vol_dn, val);
-        } else if (eq_ci(key, "jog_forward")) {
-            copy_raw(edit->key_jog_fwd, sizeof edit->key_jog_fwd, val);
-        } else if (eq_ci(key, "jog_back")) {
-            copy_raw(edit->key_jog_back, sizeof edit->key_jog_back, val);
+        } else if (eq_ci(key, "dial_forward") || eq_ci(key, "jog_forward")) {
+            copy_raw(edit->key_dial_fwd, sizeof edit->key_dial_fwd, val);
+        } else if (eq_ci(key, "dial_back") || eq_ci(key, "jog_back")) {
+            copy_raw(edit->key_dial_back, sizeof edit->key_dial_back, val);
+        } else if (eq_ci(key, "dial_mode")) {
+            copy_raw(edit->key_dial_mode, sizeof edit->key_dial_mode, val);
         }
     }
 }
@@ -730,7 +746,7 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
 /* Drop a keypad default when the file already gave that key to another action. */
 static void release_taken_default(ConfigEdit *edit, char *field, const char *defname)
 {
-    char *fields[10];
+    char *fields[11];
     int i;
     int hits = 0;
 
@@ -745,9 +761,10 @@ static void release_taken_default(ConfigEdit *edit, char *field, const char *def
     fields[5] = edit->key_rew15;
     fields[6] = edit->key_vol_up;
     fields[7] = edit->key_vol_dn;
-    fields[8] = edit->key_jog_fwd;
-    fields[9] = edit->key_jog_back;
-    for (i = 0; i < 10; i++) {
+    fields[8] = edit->key_dial_fwd;
+    fields[9] = edit->key_dial_back;
+    fields[10] = edit->key_dial_mode;
+    for (i = 0; i < 11; i++) {
         if (strcmp(fields[i], defname) == 0) {
             hits++;
         }
@@ -869,6 +886,22 @@ static int take_int(char *err, size_t err_n, const char *text, long min, long ma
     return 0;
 }
 
+int config_parse_dial(const char *s, int *volume)
+{
+    if (!s || !volume) {
+        return -1;
+    }
+    if (eq_ci(s, "volume")) {
+        *volume = 1;
+        return 0;
+    }
+    if (eq_ci(s, "jog")) {
+        *volume = 0;
+        return 0;
+    }
+    return -1;
+}
+
 static int take_bool(char *err, size_t err_n, const char *text, const char *what, int *out)
 {
     if (parse_bool(text, out) != 0) {
@@ -928,6 +961,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.volume);
     trim(in.loudness);
     trim(in.loudness_lufs);
+    trim(in.dial_default);
     trim(in.key_pause);
     trim(in.key_skip);
     trim(in.key_prev);
@@ -936,8 +970,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_rew15);
     trim(in.key_vol_up);
     trim(in.key_vol_dn);
-    trim(in.key_jog_fwd);
-    trim(in.key_jog_back);
+    trim(in.key_dial_fwd);
+    trim(in.key_dial_back);
+    trim(in.key_dial_mode);
 
     memset(&out, 0, sizeof out);
     out.key_pause = -1;
@@ -948,8 +983,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_rew15 = -1;
     out.key_vol_up = -1;
     out.key_vol_dn = -1;
-    out.key_jog_fwd = -1;
-    out.key_jog_back = -1;
+    out.key_dial_fwd = -1;
+    out.key_dial_back = -1;
+    out.key_dial_mode = -1;
     out.volume_set = 1;
 
     if (!in.folder[0]) {
@@ -999,6 +1035,11 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     if (take_int(err, err_n, in.loudness_lufs, -30, -5, "Loudness LUFS", &out.loudness_lufs) != 0) {
         failed = 1;
     }
+    out.dial_volume = 1;
+    if (in.dial_default[0] && config_parse_dial(in.dial_default, &out.dial_volume) != 0) {
+        add_err(err, err_n, "Dial starts in must be volume or jog.");
+        failed = 1;
+    }
     key_ok[KEYID_PAUSE] = take_key(err, err_n, in.key_pause, "Pause/resume",
                                    &out.key_pause, out.key_pause_name,
                                    sizeof out.key_pause_name) == 0;
@@ -1023,12 +1064,15 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_DN] = take_key(err, err_n, in.key_vol_dn, "Volume down",
                                 &out.key_vol_dn, out.key_vol_dn_name,
                                 sizeof out.key_vol_dn_name) == 0;
-    key_ok[KEYID_JOG_FWD] = take_key(err, err_n, in.key_jog_fwd, "Jog forward",
-                                     &out.key_jog_fwd, out.key_jog_fwd_name,
-                                     sizeof out.key_jog_fwd_name) == 0;
-    key_ok[KEYID_JOG_BACK] = take_key(err, err_n, in.key_jog_back, "Jog back",
-                                      &out.key_jog_back, out.key_jog_back_name,
-                                      sizeof out.key_jog_back_name) == 0;
+    key_ok[KEYID_DIAL_FWD] = take_key(err, err_n, in.key_dial_fwd, "Dial forward",
+                                     &out.key_dial_fwd, out.key_dial_fwd_name,
+                                     sizeof out.key_dial_fwd_name) == 0;
+    key_ok[KEYID_DIAL_BACK] = take_key(err, err_n, in.key_dial_back, "Dial back",
+                                      &out.key_dial_back, out.key_dial_back_name,
+                                      sizeof out.key_dial_back_name) == 0;
+    key_ok[KEYID_DIAL_MODE] = take_key(err, err_n, in.key_dial_mode, "Dial mode",
+                                      &out.key_dial_mode, out.key_dial_mode_name,
+                                      sizeof out.key_dial_mode_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
@@ -1037,8 +1081,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     keys[KEYID_REW15] = in.key_rew15;
     keys[KEYID_UP] = in.key_vol_up;
     keys[KEYID_DN] = in.key_vol_dn;
-    keys[KEYID_JOG_FWD] = in.key_jog_fwd;
-    keys[KEYID_JOG_BACK] = in.key_jog_back;
+    keys[KEYID_DIAL_FWD] = in.key_dial_fwd;
+    keys[KEYID_DIAL_BACK] = in.key_dial_back;
+    keys[KEYID_DIAL_MODE] = in.key_dial_mode;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
@@ -1047,8 +1092,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_REW15] = "rewind 1.5s";
     labels[KEYID_UP] = "volume up";
     labels[KEYID_DN] = "volume down";
-    labels[KEYID_JOG_FWD] = "jog forward";
-    labels[KEYID_JOG_BACK] = "jog back";
+    labels[KEYID_DIAL_FWD] = "dial forward";
+    labels[KEYID_DIAL_BACK] = "dial back";
+    labels[KEYID_DIAL_MODE] = "dial mode";
     for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
             failed = 1;
@@ -1134,6 +1180,9 @@ static int main_id(const char *key)
     if (eq_ci(key, "loudness_lufs")) {
         return 8;
     }
+    if (eq_ci(key, "dial_default")) {
+        return 9;
+    }
     return -1;
 }
 
@@ -1163,11 +1212,14 @@ static int keys_id(const char *key)
     if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
         return KEYID_DN;
     }
-    if (eq_ci(key, "jog_forward")) {
-        return KEYID_JOG_FWD;
+    if (eq_ci(key, "dial_forward")) {
+        return KEYID_DIAL_FWD;
     }
-    if (eq_ci(key, "jog_back")) {
-        return KEYID_JOG_BACK;
+    if (eq_ci(key, "dial_back")) {
+        return KEYID_DIAL_BACK;
+    }
+    if (eq_ci(key, "dial_mode")) {
+        return KEYID_DIAL_MODE;
     }
     return -1;
 }
@@ -1241,8 +1293,11 @@ static void main_value(const Config *cfg, int id, char *dest, size_t n)
     case 7:
         snprintf(dest, n, "%s", cfg->loudness ? "true" : "false");
         break;
-    default:
+    case 8:
         snprintf(dest, n, "%d", cfg->loudness_lufs);
+        break;
+    default:
+        snprintf(dest, n, "%s", cfg->dial_volume ? "volume" : "jog");
         break;
     }
 }
@@ -1276,11 +1331,14 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
     case KEYID_DN:
         s = cfg->key_vol_dn_name;
         break;
-    case KEYID_JOG_FWD:
-        s = cfg->key_jog_fwd_name;
+    case KEYID_DIAL_FWD:
+        s = cfg->key_dial_fwd_name;
         break;
-    case KEYID_JOG_BACK:
-        s = cfg->key_jog_back_name;
+    case KEYID_DIAL_BACK:
+        s = cfg->key_dial_back_name;
+        break;
+    case KEYID_DIAL_MODE:
+        s = cfg->key_dial_mode_name;
         break;
     default:
         break;
@@ -1479,11 +1537,11 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
 {
     static const char *main_names[] = {
         "Folder", "shuffle", "overlap", "trim_silence", "pause_time",
-        "resume_time", "volume", "loudness", "loudness_lufs"
+        "resume_time", "volume", "loudness", "loudness_lufs", "dial_default"
     };
     static const char *key_names[] = {
         "pause_resume", "skip", "previous", "rewind_0_5", "rewind_1",
-        "rewind_1_5", "volume_up", "volume_dn", "jog_forward", "jog_back"
+        "rewind_1_5", "volume_up", "volume_dn", "dial_forward", "dial_back", "dial_mode"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -1508,7 +1566,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     int in_keys = 0;
     int in_jog = 0;
     int jog_seen[JOG_COUNT] = {0};
-    int main_seen[9] = {0};
+    int main_seen[10] = {0};
     int keys_seen[KEYID_COUNT] = {0};
     int id;
     int rc = -1;
@@ -1575,6 +1633,12 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             int is_main = in_main && (id = main_id(key)) >= 0;
             int is_key = in_keys && (id = keys_id(key)) >= 0;
 
+            /* The old names are written again under the new ones. */
+            if (in_keys && (eq_ci(key, "jog_forward") || eq_ci(key, "jog_back"))) {
+                unlink_line(&head, prev, line);
+                line = next;
+                continue;
+            }
             if (is_main) {
                 main_seen[id] = 1;
                 main_value(cfg, id, value, sizeof value);
@@ -1604,7 +1668,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         set_err(err, err_n, "out of memory updating %s", path);
         goto done;
     }
-    for (id = 0; id < 9 && !jog; id++) {
+    for (id = 0; id < 10 && !jog; id++) {
         char text[AUTODJ_PATH + 64];
 
         if (main_seen[id]) {
@@ -1804,6 +1868,7 @@ static int edit_self_test(void)
         "resume_time=4\n"
         "loudness=true\n"
         "loudness_lufs=-18\n"
+        "dial_default=volume\n"
         "\n"
         "[Keys]\n"
         "# key comment\n"
@@ -1850,6 +1915,7 @@ static int edit_self_test(void)
     cfg.volume = 40;
     cfg.loudness = 1;
     cfg.loudness_lufs = -18;
+    cfg.dial_volume = 1;
     snprintf(cfg.key_pause_name, sizeof cfg.key_pause_name, "KEY_KP0");
     snprintf(cfg.key_skip_name, sizeof cfg.key_skip_name, "KEY_KPDOT");
     snprintf(cfg.key_vol_dn_name, sizeof cfg.key_vol_dn_name, "KEY_KPMINUS");
@@ -1891,6 +1957,7 @@ static int edit_self_test(void)
     snprintf(edit.volume, sizeof edit.volume, "40");
     snprintf(edit.loudness, sizeof edit.loudness, "true");
     snprintf(edit.loudness_lufs, sizeof edit.loudness_lufs, "-18");
+    snprintf(edit.dial_default, sizeof edit.dial_default, "volume");
     snprintf(edit.key_pause, sizeof edit.key_pause, "KEY_KP0");
     snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KPDOT");
     if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) != 0 ||
@@ -2032,7 +2099,7 @@ int config_self_test(void)
     } else if (strcmp(cfg.folder, "/tmp/music folder") != 0 || cfg.shuffle != 0 ||
                cfg.overlap_sec != 3 || cfg.trim_silence != 1 || cfg.pause_sec != 2 ||
                cfg.resume_sec != 4 || cfg.volume != 100 || cfg.volume_set != 0 ||
-               cfg.loudness != 1 || cfg.loudness_lufs != -18 ||
+               cfg.loudness != 1 || cfg.loudness_lufs != -18 || cfg.dial_volume != 1 ||
                cfg.key_pause != 82 || cfg.key_skip != 83 ||
                cfg.key_vol_up != 78 || cfg.key_vol_dn != 74 ||
                cfg.key_prev != slash || cfg.key_rew05 != kp1 ||
@@ -2185,6 +2252,52 @@ int config_self_test(void)
             }
         }
         remove(path4);
+    }
+    if (rc == 0) {
+        char path5[] = "/tmp/autodj-cfg-XXXXXX";
+        char err[256];
+        int cw = -1;
+        int ccw = -1;
+        int center = -1;
+
+        fd = mkstemp(path5);
+        if (fd < 0) {
+            log_error("autodj", "config test could not create a temp file");
+            return -1;
+        }
+        fp = fdopen(fd, "w");
+        if (!fp) {
+            log_error("autodj", "config test could not write a temp file");
+            close(fd);
+            remove(path5);
+            return -1;
+        }
+        fputs("[Main]\n"
+              "Folder=/tmp\n"
+              "dial_default=JOG\n"
+              "[Keys]\n"
+              "jog_forward=REMOTE_DIAL_CW\n"
+              "jog_back=REMOTE_DIAL_CCW\n"
+              "dial_mode=REMOTE_CENTER\n",
+              fp);
+        fclose(fp);
+        if (key_from_name("REMOTE_DIAL_CW", &cw) != 0 || key_from_name("REMOTE_DIAL_CCW", &ccw) != 0 ||
+            key_from_name("REMOTE_CENTER", &center) != 0 || config_load(path5, &cfg) != 0 ||
+            cfg.key_dial_fwd != cw || cfg.key_dial_back != ccw || cfg.key_dial_mode != center ||
+            cfg.dial_volume != 0) {
+            log_error("autodj", "config test did not read the dial keys");
+            rc = -1;
+        } else if (config_save(path5, &cfg, err, sizeof err) != 0 ||
+                   file_count(path5, "jog_") != 0 ||
+                   file_count(path5, "dial_forward=REMOTE_DIAL_CW\n") != 1 ||
+                   file_count(path5, "dial_back=REMOTE_DIAL_CCW\n") != 1 ||
+                   file_count(path5, "dial_mode=REMOTE_CENTER\n") != 1 ||
+                   file_count(path5, "dial_default=jog\n") != 1 ||
+                   config_load(path5, &cfg) != 0 || cfg.key_dial_fwd != cw) {
+            log_error("autodj", "config test did not rename the jog keys");
+            rc = -1;
+        }
+        remove(path5);
     }
     if (rc == 0 && edit_self_test() != 0) {
         rc = -1;

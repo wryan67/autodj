@@ -93,6 +93,8 @@ static int g_remote_kbd[MAX_PADS];  /* the remote's keyboard interface */
 static int g_rep_key = -1;          /* raw button held for repeats */
 static int g_ngrabbed;
 static void (*g_jog_hook)(int direction, long long when_us);
+/* 1 while dial_mode has turned the dial into a volume knob. */
+static int g_dial_volume;
 static struct Combo g_cap[MAX_CAPTURE_FD];
 /* Raw remote channels by fd, with the buttons held. */
 static unsigned char g_is_raw[MAX_CAPTURE_FD];
@@ -614,6 +616,7 @@ int keys_open(void)
 
     g_nfd = 0;
     g_ngrabbed = 0;
+    g_dial_volume = 0;
     for (i = 0; i < 32 && g_nfd < MAX_PADS; i++) {
         char name[256];
         unsigned long bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1];
@@ -672,6 +675,12 @@ void keys_close(void)
     g_ngrabbed = 0;
     g_raw_wanted = 0;
     g_rep_key = -1;
+}
+
+void keys_set_dial_volume(int on)
+{
+    g_dial_volume = on != 0;
+    log_info("keys", "dial mode %s", g_dial_volume ? "volume" : "jog");
 }
 
 static int raw_index(void)
@@ -767,11 +776,16 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
     }
     /* Dial clicks come faster than the press gap when it spins, and the
      * player measures their spacing, so they skip the debounce. */
-    if (key == cfg->key_jog_fwd || key == cfg->key_jog_back) {
+    if (key == cfg->key_dial_fwd || key == cfg->key_dial_back) {
         if (value == 1) {
-            int dir = key == cfg->key_jog_fwd ? 1 : -1;
-            long long us = (long long)when->tv_sec * 1000000LL + when->tv_usec;
+            int dir = key == cfg->key_dial_fwd ? 1 : -1;
+            long long us;
 
+            if (g_dial_volume) {
+                player_volume_step(dir);
+                return;
+            }
+            us = (long long)when->tv_sec * 1000000LL + when->tv_usec;
             player_jog(dir, us);
             if (g_jog_hook) {
                 g_jog_hook(dir, us);
@@ -781,6 +795,11 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
     }
     /* Value 1 is a press. Repeats stay on the volume hold path. */
     if (value == 1 && !press_accepted(when)) {
+        return;
+    }
+    if (key == cfg->key_dial_mode && value == 1) {
+        g_dial_volume = !g_dial_volume;
+        log_info("keys", "dial mode %s", g_dial_volume ? "volume" : "jog");
         return;
     }
     if (key == cfg->key_pause && value == 1) {
@@ -972,8 +991,9 @@ static int debounce_self_test(void)
     cfg.key_rew15 = -1;
     cfg.key_vol_up = KEY_KPPLUS;
     cfg.key_vol_dn = KEY_KPMINUS;
-    cfg.key_jog_fwd = -1;
-    cfg.key_jog_back = -1;
+    cfg.key_dial_fwd = -1;
+    cfg.key_dial_back = -1;
+    cfg.key_dial_mode = -1;
     player_set_volume_percent(50);
     g_press_seen = 0;
     memset(&g_press_time, 0, sizeof g_press_time);
@@ -1049,8 +1069,28 @@ static int debounce_self_test(void)
                   player_volume_percent());
         goto out;
     }
+
+    /* In volume mode each dial click is one step, even when they come fast. */
+    cfg.key_dial_mode = KEY_C;
+    cfg.key_dial_fwd = KEY_D;
+    cfg.key_dial_back = KEY_E;
+    g_dial_volume = 0;
+    if (put_key(pipefd[1], 10200, KEY_C, 1) != 0 ||
+        put_key(pipefd[1], 10205, KEY_D, 1) != 0 ||
+        put_key(pipefd[1], 10206, KEY_D, 1) != 0 ||
+        put_key(pipefd[1], 10207, KEY_E, 1) != 0) {
+        log_error("keys", "cannot write dial events");
+        goto out;
+    }
+    keys_poll(&cfg);
+    if (!g_dial_volume || player_volume_percent() != 70) {
+        log_error("keys", "dial in volume mode left volume %d, expected 70",
+                  player_volume_percent());
+        goto out;
+    }
     rc = 0;
 out:
+    g_dial_volume = 0;
     g_fds[0] = -1;
     g_nfd = 0;
     close(pipefd[0]);

@@ -40,6 +40,7 @@ enum {
     FE_VOLUME,
     FE_LOUDNESS,
     FE_LUFS,
+    FE_DIAL_DEFAULT,
     FE_KEY_PAUSE,
     FE_KEY_SKIP,
     FE_KEY_PREV,
@@ -48,8 +49,9 @@ enum {
     FE_KEY_REW15,
     FE_KEY_UP,
     FE_KEY_DN,
-    FE_KEY_JOG_FWD,
-    FE_KEY_JOG_BACK,
+    FE_KEY_DIAL_FWD,
+    FE_KEY_DIAL_BACK,
+    FE_KEY_DIAL_MODE,
     FE_FIELD_COUNT,
     FE_SAVE = FE_FIELD_COUNT,
     FE_CANCEL,
@@ -59,10 +61,11 @@ enum {
 enum {
     LABEL_W = 16,
     NUM_W = 8,
-    ROW_FIELD0 = 2,
+    ROW_FIELD0 = 1,
     ROW_BUTTONS = ROW_FIELD0 + FE_FIELD_COUNT,
     FRAME_H = ROW_BUTTONS + 2,
-    MIN_ROWS = FRAME_H + 1,
+    /* The hint line below the frame is left out when it does not fit. */
+    MIN_ROWS = FRAME_H,
     MIN_COLS = 68,
     SAVE_W = 8,
     CANCEL_W = 10
@@ -160,6 +163,7 @@ static const char *field_label(int id)
         "Volume %",
         "Loudness",
         "Target LUFS",
+        "Dial starts in",
         "Pause/resume",
         "Skip",
         "Previous",
@@ -168,8 +172,9 @@ static const char *field_label(int id)
         "Rewind 1.5s",
         "Volume up",
         "Volume down",
-        "Jog forward",
-        "Jog back"
+        "Dial forward",
+        "Dial back",
+        "Dial mode"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -208,6 +213,9 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_LUFS:
         *cap = sizeof edit->loudness_lufs;
         return edit->loudness_lufs;
+    case FE_DIAL_DEFAULT:
+        *cap = sizeof edit->dial_default;
+        return edit->dial_default;
     case FE_KEY_PAUSE:
         *cap = sizeof edit->key_pause;
         return edit->key_pause;
@@ -232,12 +240,15 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_DN:
         *cap = sizeof edit->key_vol_dn;
         return edit->key_vol_dn;
-    case FE_KEY_JOG_FWD:
-        *cap = sizeof edit->key_jog_fwd;
-        return edit->key_jog_fwd;
-    case FE_KEY_JOG_BACK:
-        *cap = sizeof edit->key_jog_back;
-        return edit->key_jog_back;
+    case FE_KEY_DIAL_FWD:
+        *cap = sizeof edit->key_dial_fwd;
+        return edit->key_dial_fwd;
+    case FE_KEY_DIAL_BACK:
+        *cap = sizeof edit->key_dial_back;
+        return edit->key_dial_back;
+    case FE_KEY_DIAL_MODE:
+        *cap = sizeof edit->key_dial_mode;
+        return edit->key_dial_mode;
     default:
         *cap = 0;
         return NULL;
@@ -252,7 +263,7 @@ static int is_number_field(int id)
 
 static int is_key_field(int id)
 {
-    return id >= FE_KEY_PAUSE && id <= FE_KEY_JOG_BACK;
+    return id >= FE_KEY_PAUSE && id <= FE_KEY_DIAL_MODE;
 }
 
 static int is_check_field(const ConfigEdit *edit, int id)
@@ -266,6 +277,26 @@ static int is_check_field(const ConfigEdit *edit, int id)
     }
     text = field_text((ConfigEdit *)edit, id, &cap);
     return text && config_parse_bool(text, &on) == 0;
+}
+
+/* A field that Space switches between two words. A value that is neither
+ * stays a text field so it can be corrected. */
+static int is_choice_field(const ConfigEdit *edit, int id)
+{
+    size_t cap;
+    int on = 0;
+    char *text;
+
+    if (id != FE_DIAL_DEFAULT) {
+        return 0;
+    }
+    text = field_text((ConfigEdit *)edit, id, &cap);
+    return text && config_parse_dial(text, &on) == 0;
+}
+
+static int is_toggle_field(const ConfigEdit *edit, int id)
+{
+    return is_check_field(edit, id) || is_choice_field(edit, id);
 }
 
 static int utf8_need(unsigned char c)
@@ -396,6 +427,10 @@ static void toggle_check(struct Editor *ed, int id)
     char *text = field_text(&ed->edit, id, &cap);
     int on = 0;
 
+    if (text && id == FE_DIAL_DEFAULT && config_parse_dial(text, &on) == 0) {
+        snprintf(text, cap, "%s", on ? "jog" : "volume");
+        return;
+    }
     if (!text || config_parse_bool(text, &on) != 0) {
         return;
     }
@@ -470,7 +505,7 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols)
         ui->field_r[i] = ui->frame_r + ROW_FIELD0 + i;
         if (is_check_field(edit, i)) {
             ui->box_w[i] = 3;
-        } else if (is_number_field(i)) {
+        } else if (is_number_field(i) || i == FE_DIAL_DEFAULT) {
             ui->box_w[i] = NUM_W;
         } else {
             ui->box_w[i] = avail;
@@ -776,21 +811,21 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         fputs("Resize the window, or press Esc to cancel.", fp);
         return;
     }
-    draw_hbar(fp, ui->frame_r, ui->frame_c, ui->frame_w, " autodj configuration ");
+    {
+        char shown[AUTODJ_PATH];
+        char title[AUTODJ_PATH + 32];
+        int width = ui->frame_w - 4 - (int)strlen(" autodj config:  ");
+
+        shorten_path(ed->path, width, shown, sizeof shown);
+        snprintf(title, sizeof title, " autodj config: %s ", shown);
+        draw_hbar(fp, ui->frame_r, ui->frame_c, ui->frame_w, title);
+    }
     draw_hbar(fp, ui->frame_r + ui->frame_h - 1, ui->frame_c, ui->frame_w, NULL);
     for (i = 1; i < ui->frame_h - 1; i++) {
         cup(fp, ui->frame_r + i, ui->frame_c);
         fputc('|', fp);
         cup(fp, ui->frame_r + i, ui->frame_c + ui->frame_w - 1);
         fputc('|', fp);
-    }
-    {
-        char shown[AUTODJ_PATH];
-        int width = ui->frame_w - 4;
-
-        shorten_path(ed->path, width, shown, sizeof shown);
-        cup(fp, ui->frame_r + 1, ui->label_c);
-        fputs(shown, fp);
     }
     for (i = 0; i < FE_FIELD_COUNT; i++) {
         size_t cap;
@@ -807,7 +842,7 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         if (is_check_field(&ed->edit, i)) {
             config_parse_bool(text, &on);
             draw_check(fp, ui->field_r[i], ui->box_c, on, focused);
-        } else if (is_key_field(i)) {
+        } else if (is_key_field(i) || is_choice_field(&ed->edit, i)) {
             draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i],
                           text ? text : "", 0, focused, 0);
         } else {
@@ -1417,7 +1452,7 @@ static void place_cursor(struct Editor *ed, int id, int x)
     if (!text) {
         return;
     }
-    if (is_check_field(&ed->edit, id) || is_key_field(id)) {
+    if (is_toggle_field(&ed->edit, id) || is_key_field(id)) {
         return;
     }
     interior = box_w - 2;
@@ -1455,7 +1490,7 @@ static void try_save(struct Editor *ed)
 
 static int editing_text(const struct Editor *ed)
 {
-    return ed->focus < FE_FIELD_COUNT && !is_check_field(&ed->edit, ed->focus) &&
+    return ed->focus < FE_FIELD_COUNT && !is_toggle_field(&ed->edit, ed->focus) &&
            !is_key_field(ed->focus);
 }
 
@@ -1492,10 +1527,12 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
         return edit->key_vol_up;
     case FE_KEY_DN:
         return edit->key_vol_dn;
-    case FE_KEY_JOG_FWD:
-        return edit->key_jog_fwd;
-    case FE_KEY_JOG_BACK:
-        return edit->key_jog_back;
+    case FE_KEY_DIAL_FWD:
+        return edit->key_dial_fwd;
+    case FE_KEY_DIAL_BACK:
+        return edit->key_dial_back;
+    case FE_KEY_DIAL_MODE:
+        return edit->key_dial_mode;
     default:
         return "";
     }
@@ -1506,7 +1543,7 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
     static const int ids[] = {
         FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
         FE_KEY_REW10, FE_KEY_REW15, FE_KEY_UP, FE_KEY_DN,
-        FE_KEY_JOG_FWD, FE_KEY_JOG_BACK
+        FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK, FE_KEY_DIAL_MODE
     };
     int i;
 
@@ -1669,7 +1706,7 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
             ed->saved = 0;
             return 1;
         }
-        if (is_check_field(&ed->edit, id)) {
+        if (is_toggle_field(&ed->edit, id)) {
             ed->focus = id;
             toggle_check(ed, id);
             return 0;
@@ -1700,7 +1737,7 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
         }
         return 0;
     }
-    if (is_check_field(&ed->edit, ed->focus)) {
+    if (is_toggle_field(&ed->edit, ed->focus)) {
         if (ev->kind == EV_ENTER || (ev->kind == EV_CHAR && ev->text[0] == ' ')) {
             toggle_check(ed, ed->focus);
             return 0;
@@ -2614,9 +2651,9 @@ int dial_calibrate(const char *path)
                  "The remote is busy. Stop autodj (it holds the remote), then run --calibrate again.");
         keys_close();
         d.kfd_n = 0;
-    } else if (d.cfg.key_jog_fwd < 0 || d.cfg.key_jog_back < 0) {
+    } else if (d.cfg.key_dial_fwd < 0 || d.cfg.key_dial_back < 0) {
         snprintf(d.status, sizeof d.status,
-                 "Jog forward and Jog back are not bound. Set them with autodj --config.");
+                 "Dial forward and Dial back are not bound. Set them with autodj --config.");
     } else {
         snprintf(d.status, sizeof d.status,
                  "Press Calibrate to measure the dial, or Test to try it on a random song.");

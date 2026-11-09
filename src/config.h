@@ -16,6 +16,7 @@ typedef struct Config {
     int volume_set; /* 1 when the file contained volume */
     int loudness;      /* 1 to normalize each track */
     int loudness_lufs; /* target integrated loudness */
+    int dial_volume;   /* 1 when the dial starts as a volume knob */
     int key_pause;
     int key_skip;
     int key_prev;
@@ -24,8 +25,9 @@ typedef struct Config {
     int key_rew15;
     int key_vol_up;
     int key_vol_dn;
-    int key_jog_fwd;
-    int key_jog_back;
+    int key_dial_fwd;
+    int key_dial_back;
+    int key_dial_mode;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -34,8 +36,9 @@ typedef struct Config {
     char key_rew15_name[64];
     char key_vol_up_name[64];
     char key_vol_dn_name[64];
-    char key_jog_fwd_name[64];
-    char key_jog_back_name[64];
+    char key_dial_fwd_name[64];
+    char key_dial_back_name[64];
+    char key_dial_mode_name[64];
     /* [Jog] */
     double jog_turn_sec;   /* audio moved by one turn of the dial */
     int jog_clicks;        /* dial clicks in one turn */
@@ -79,6 +82,7 @@ typedef struct ConfigEdit {
     char volume[32];
     char loudness[32];
     char loudness_lufs[32];
+    char dial_default[32];
     char key_pause[64];
     char key_skip[64];
     char key_prev[64];
@@ -87,12 +91,16 @@ typedef struct ConfigEdit {
     char key_rew15[64];
     char key_vol_up[64];
     char key_vol_dn[64];
-    char key_jog_fwd[64];
-    char key_jog_back[64];
+    char key_dial_fwd[64];
+    char key_dial_back[64];
+    char key_dial_mode[64];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */
 int config_parse_bool(const char *s, int *out);
+
+/* Returns 0 and sets *volume when s is volume (1) or jog (0). */
+int config_parse_dial(const char *s, int *volume);
 
 /* Load path for editing. A missing file yields defaults and returns 0.
  * Folder may be empty. Returns -1 when the file exists but cannot be read. */
