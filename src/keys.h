@@ -12,7 +12,9 @@ int key_from_name(const char *name, int *code);
 const char *key_name(int code);
 
 /* Open and exclusively grab the USB keypad and the XP-Pen shortcut remote.
- * Returns 0, or -1 if neither is present. */
+ * The remote is switched to raw mode when its HID channel can be opened;
+ * its controls are then named REMOTE_BTN1..REMOTE_BTN10, REMOTE_CENTER,
+ * REMOTE_DIAL_CW, and REMOTE_DIAL_CCW. Returns 0, or -1 if none is present. */
 int keys_open(void);
 void keys_close(void);
 /* How many devices keys_open grabbed. Zero while another program, such
@@ -23,6 +25,8 @@ int keys_grabbed(void);
 void keys_set_jog_hook(void (*fn)(int direction, long long when_us));
 /* Copy the open device fds into fds. Returns the count. */
 int keys_fds(int *fds, int max);
+/* Poll timeout to use, at most max_ms, so held remote buttons repeat. */
+int keys_wait_ms(int max_ms);
 
 /* Grab one device. Returns 0, or -1 if it stays shared (errno is unchanged). */
 int keys_grab(int fd);

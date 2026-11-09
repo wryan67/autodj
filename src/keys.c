@@ -5,13 +5,16 @@
 #include "player.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -41,6 +44,39 @@ static const struct {
     {"CTRL", MOD_CTRL}, {"SHIFT", MOD_SHIFT}, {"ALT", MOD_ALT}, {"META", MOD_META},
 };
 
+/*
+ * In raw mode the XP-Pen ACK05 Shortcut Remote reports on its vendor HID
+ * channel instead of sending keyboard shortcuts. That is the only way to
+ * see the button in the center of the dial. Report 02 f0 holds the buttons
+ * as a 16-bit little-endian bitmap in bytes 2-3 and the dial in byte 7
+ * (1 clockwise, 2 counterclockwise). Buttons are named by position: top row
+ * left to right with the tall button last, then the middle and bottom rows.
+ */
+enum {
+    REMOTE_BASE = 0x1000,
+    REMOTE_BUTTONS = 10,
+    REMOTE_CENTER = REMOTE_BASE + REMOTE_BUTTONS,
+    REMOTE_DIAL_CW,
+    REMOTE_DIAL_CCW,
+    REMOTE_END,
+    RAW_REPORT = 12,
+    RAW_REPEAT_DELAY_MS = 250,
+    RAW_REPEAT_MS = 33,
+    RAW_RETRY_MS = 3000
+};
+
+static const char *g_remote_names[REMOTE_END - REMOTE_BASE] = {
+    "REMOTE_BTN1", "REMOTE_BTN2", "REMOTE_BTN3", "REMOTE_BTN4", "REMOTE_BTN5",
+    "REMOTE_BTN6", "REMOTE_BTN7", "REMOTE_BTN8", "REMOTE_BTN9", "REMOTE_BTN10",
+    "REMOTE_CENTER", "REMOTE_DIAL_CW", "REMOTE_DIAL_CCW"
+};
+
+/* Bitmap bit of each button, REMOTE_BTN1 first, then the center. */
+static const int g_remote_bits[REMOTE_BUTTONS + 1] = {0, 1, 2, 6, 3, 4, 5, 7, 8, 9, 10};
+
+/* Report that switches the remote to raw mode. */
+static const unsigned char g_raw_magic[64] = {0x02, 0xb0, 0x04};
+
 /* Modifier state for one device. lone is a modifier pressed with nothing
  * else held, until another key goes down. */
 struct Combo {
@@ -53,9 +89,19 @@ enum { MAX_PADS = 8, MAX_CAPTURE_FD = 256 };
 static int g_fds[MAX_PADS];
 static struct Combo g_combo[MAX_PADS];
 static int g_nfd;
+static int g_remote_kbd[MAX_PADS];  /* the remote's keyboard interface */
+static int g_rep_key = -1;          /* raw button held for repeats */
 static int g_ngrabbed;
 static void (*g_jog_hook)(int direction, long long when_us);
 static struct Combo g_cap[MAX_CAPTURE_FD];
+/* Raw remote channels by fd, with the buttons held. */
+static unsigned char g_is_raw[MAX_CAPTURE_FD];
+static unsigned g_raw_held[MAX_CAPTURE_FD];
+static struct timespec g_raw_since;   /* when the held button went down */
+static struct timespec g_raw_repeat;  /* last repeat sent */
+static struct timespec g_raw_retry;   /* last attempt to open the raw channel */
+static int g_raw_wanted;              /* keys_open looks for the raw channel */
+static struct timespec g_raw_kick;    /* last raw-mode request */
 static struct timespec g_vol_time;
 static struct timeval g_press_time;
 static int g_press_seen;
@@ -86,6 +132,9 @@ static const char *base_name(int code)
 {
     size_t i;
 
+    if (code >= REMOTE_BASE && code < REMOTE_END) {
+        return g_remote_names[code - REMOTE_BASE];
+    }
     for (i = 0; i < sizeof g_keys / sizeof g_keys[0]; i++) {
         if (g_keys[i].code == code) {
             return g_keys[i].name;
@@ -114,6 +163,15 @@ int key_from_name(const char *name, int *code)
         }
         mods |= bit;
         name = plus + 1;
+    }
+    for (i = 0; i < REMOTE_END - REMOTE_BASE; i++) {
+        if (strcasecmp(g_remote_names[i], name) == 0) {
+            if (mods) {
+                return -1;
+            }
+            *code = REMOTE_BASE + (int)i;
+            return 0;
+        }
     }
     for (i = 0; i < sizeof g_keys / sizeof g_keys[0]; i++) {
         if (strcmp(g_keys[i].name, name) == 0) {
@@ -204,8 +262,141 @@ static int bit_set(const unsigned long *bits, int code)
     return (bits[word] & (1UL << shift)) != 0;
 }
 
+static int is_raw(int fd)
+{
+    return fd >= 0 && fd < MAX_CAPTURE_FD && g_is_raw[fd];
+}
+
+static long ms_since(const struct timespec *then, const struct timespec *now)
+{
+    return (long)(now->tv_sec - then->tv_sec) * 1000 + (now->tv_nsec - then->tv_nsec) / 1000000;
+}
+
+/* Turn one raw report into presses (value 1) and releases (value 0).
+ * *held is the button bitmap from the previous report. Returns the count. */
+static int raw_parse(unsigned *held, const unsigned char *r, size_t n, int *keys, int *values, int max)
+{
+    unsigned now;
+    int count = 0;
+    int i;
+
+    if (n < 8 || r[0] != 0x02 || r[1] != 0xf0) {
+        return 0;
+    }
+    now = (unsigned)r[2] | ((unsigned)r[3] << 8);
+    for (i = 0; i <= REMOTE_BUTTONS && count < max; i++) {
+        unsigned bit = 1u << g_remote_bits[i];
+
+        if ((now & bit) != (*held & bit)) {
+            keys[count] = REMOTE_BASE + i;
+            values[count++] = (now & bit) ? 1 : 0;
+        }
+    }
+    *held = now;
+    if ((r[7] == 1 || r[7] == 2) && count < max) {
+        keys[count] = r[7] == 1 ? REMOTE_DIAL_CW : REMOTE_DIAL_CCW;
+        values[count++] = 1;
+    }
+    return count;
+}
+
+static void raw_kick(int fd)
+{
+    if (write(fd, g_raw_magic, sizeof g_raw_magic) != (ssize_t)sizeof g_raw_magic) {
+        log_warn("keys", "could not switch the shortcut remote to raw mode: %s", strerror(errno));
+    }
+    clock_gettime(CLOCK_MONOTONIC, &g_raw_kick);
+}
+
+static int read_text(const char *path, char *buf, size_t n)
+{
+    FILE *fp = fopen(path, "r");
+    size_t got;
+
+    if (!fp) {
+        return -1;
+    }
+    got = fread(buf, 1, n - 1, fp);
+    fclose(fp);
+    buf[got] = '\0';
+    return 0;
+}
+
+/* Open the vendor channel of the shortcut remote and switch it to raw mode.
+ * Returns the fd, or -1. quiet leaves out the log lines. */
+static int raw_open(int quiet)
+{
+    DIR *dir = opendir("/sys/class/hidraw");
+    struct dirent *de;
+    int fd = -1;
+
+    if (!dir) {
+        return -1;
+    }
+    while (fd < 0 && (de = readdir(dir)) != NULL) {
+        char path[512];
+        char text[2048];
+        unsigned char desc[8];
+        FILE *fp;
+        size_t got;
+
+        if (strncmp(de->d_name, "hidraw", 6) != 0) {
+            continue;
+        }
+        snprintf(path, sizeof path, "/sys/class/hidraw/%s/device/uevent", de->d_name);
+        if (read_text(path, text, sizeof text) != 0 ||
+            !strstr(text, "HID_ID=0003:000028BD:00000202")) {
+            continue;
+        }
+        /* The vendor channel starts with usage page 0xff0a. */
+        snprintf(path, sizeof path, "/sys/class/hidraw/%s/device/report_descriptor", de->d_name);
+        fp = fopen(path, "rb");
+        if (!fp) {
+            continue;
+        }
+        got = fread(desc, 1, sizeof desc, fp);
+        fclose(fp);
+        if (got < 3 || desc[0] != 0x06 || desc[1] != 0x0a || desc[2] != 0xff) {
+            continue;
+        }
+        snprintf(path, sizeof path, "/dev/%s", de->d_name);
+        fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            if (!quiet) {
+                log_warn("keys", "cannot open %s (%s), so the dial's center button is off. "
+                         "Run ./build.sh once to install the udev rule.", path, strerror(errno));
+            }
+            break;
+        }
+        if (fd >= MAX_CAPTURE_FD) {
+            close(fd);
+            fd = -1;
+            break;
+        }
+        g_is_raw[fd] = 1;
+        g_raw_held[fd] = 0;
+        raw_kick(fd);
+        if (!quiet) {
+            log_info("keys", "shortcut remote raw mode on %s", path);
+        }
+    }
+    closedir(dir);
+    return fd;
+}
+
+static void raw_close(int fd)
+{
+    if (is_raw(fd)) {
+        g_is_raw[fd] = 0;
+        g_raw_held[fd] = 0;
+    }
+}
+
 int keys_grab(int fd)
 {
+    if (is_raw(fd)) {
+        return 0;
+    }
     if (fd < 0 || ioctl(fd, EVIOCGRAB, (void *)1) < 0) {
         return -1;
     }
@@ -214,7 +405,7 @@ int keys_grab(int fd)
 
 void keys_ungrab(int fd)
 {
-    if (fd < 0) {
+    if (fd < 0 || is_raw(fd)) {
         return;
     }
     ioctl(fd, EVIOCGRAB, (void *)0);
@@ -237,6 +428,24 @@ int keys_read_press(int fd)
 
     if (fd < 0) {
         return -1;
+    }
+    if (is_raw(fd)) {
+        unsigned char r[64];
+        ssize_t n;
+
+        while ((n = read(fd, r, sizeof r)) > 0) {
+            int keys[16];
+            int values[16];
+            int count = raw_parse(&g_raw_held[fd], r, (size_t)n, keys, values, 16);
+            int i;
+
+            for (i = 0; i < count; i++) {
+                if (found < 0 && values[i] == 1) {
+                    found = keys[i];
+                }
+            }
+        }
+        return found;
     }
     combo_reset(&spare);
     c = fd < MAX_CAPTURE_FD ? &g_cap[fd] : &spare;
@@ -356,6 +565,13 @@ int keys_open_capture(int *fds, int max, int *keypad)
             close(fd);
         }
     }
+    if (npads < (int)(sizeof pads / sizeof pads[0])) {
+        int fd = raw_open(1);
+
+        if (fd >= 0) {
+            pads[npads++] = fd;
+        }
+    }
     if (keypad) {
         *keypad = npads < max ? npads : max;
     }
@@ -385,6 +601,7 @@ void keys_close_capture(int *fds, int n)
     }
     for (i = 0; i < n; i++) {
         if (fds[i] >= 0) {
+            raw_close(fds[i]);
             close(fds[i]);
             fds[i] = -1;
         }
@@ -420,7 +637,19 @@ int keys_open(void)
         }
         drain_fd(fd);
         combo_reset(&g_combo[g_nfd]);
+        g_remote_kbd[g_nfd] = strcmp(name, "USB Keypad") != 0;
         g_fds[g_nfd++] = fd;
+    }
+    g_raw_wanted = 1;
+    clock_gettime(CLOCK_MONOTONIC, &g_raw_retry);
+    if (g_nfd < MAX_PADS) {
+        int fd = raw_open(0);
+
+        if (fd >= 0) {
+            g_remote_kbd[g_nfd] = 0;
+            g_fds[g_nfd++] = fd;
+            g_ngrabbed++;
+        }
     }
     if (g_nfd == 0) {
         log_warn("keys", "no USB keypad or shortcut remote found, playback will continue without keys");
@@ -434,12 +663,35 @@ void keys_close(void)
     int i;
 
     for (i = 0; i < g_nfd; i++) {
-        ioctl(g_fds[i], EVIOCGRAB, (void *)0);
+        keys_ungrab(g_fds[i]);
+        raw_close(g_fds[i]);
         close(g_fds[i]);
         g_fds[i] = -1;
     }
     g_nfd = 0;
     g_ngrabbed = 0;
+    g_raw_wanted = 0;
+    g_rep_key = -1;
+}
+
+static int raw_index(void)
+{
+    int i;
+
+    for (i = 0; i < g_nfd; i++) {
+        if (is_raw(g_fds[i])) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int keys_wait_ms(int max_ms)
+{
+    if (g_rep_key >= 0 && max_ms > RAW_REPEAT_MS) {
+        return RAW_REPEAT_MS;
+    }
+    return max_ms;
 }
 
 int keys_grabbed(void)
@@ -567,22 +819,114 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
     }
 }
 
+static void drop_fd(int i)
+{
+    keys_ungrab(g_fds[i]);
+    raw_close(g_fds[i]);
+    close(g_fds[i]);
+    memmove(&g_fds[i], &g_fds[i + 1], (size_t)(g_nfd - i - 1) * sizeof g_fds[0]);
+    memmove(&g_combo[i], &g_combo[i + 1], (size_t)(g_nfd - i - 1) * sizeof g_combo[0]);
+    memmove(&g_remote_kbd[i], &g_remote_kbd[i + 1], (size_t)(g_nfd - i - 1) * sizeof g_remote_kbd[0]);
+    g_nfd--;
+}
+
+/* Returns the last read result, so a lost device shows as -1. */
+static ssize_t poll_raw(const struct Config *cfg, int fd)
+{
+    unsigned char r[64];
+    ssize_t n;
+
+    while ((n = read(fd, r, sizeof r)) > 0) {
+        int keys[16];
+        int values[16];
+        int count = raw_parse(&g_raw_held[fd], r, (size_t)n, keys, values, 16);
+        struct timeval when;
+        int k;
+
+        gettimeofday(&when, NULL);
+        for (k = 0; k < count; k++) {
+            if (values[k] == 1) {
+                dispatch(cfg, keys[k], 1, &when);
+                if (keys[k] < REMOTE_DIAL_CW) {
+                    g_rep_key = keys[k];
+                    clock_gettime(CLOCK_MONOTONIC, &g_raw_since);
+                    g_raw_repeat = g_raw_since;
+                }
+            } else if (keys[k] == g_rep_key) {
+                g_rep_key = -1;
+            }
+        }
+    }
+    return n;
+}
+
 void keys_poll(const struct Config *cfg)
 {
     struct input_event ev;
+    struct timespec now;
     int i;
 
     if (!cfg) {
         return;
     }
     for (i = 0; i < g_nfd; i++) {
-        while (read(g_fds[i], &ev, sizeof ev) == (ssize_t)sizeof ev) {
-            int value = 0;
-            int key = combo_feed(&g_combo[i], &ev, &value);
+        ssize_t n;
 
-            if (key >= 0) {
-                dispatch(cfg, key, value, &ev.time);
+        if (is_raw(g_fds[i])) {
+            n = poll_raw(cfg, g_fds[i]);
+        } else {
+            while ((n = read(g_fds[i], &ev, sizeof ev)) == (ssize_t)sizeof ev) {
+                int value = 0;
+                int key = combo_feed(&g_combo[i], &ev, &value);
+
+                /* A shortcut from the remote means it left raw mode, for
+                 * example after it slept. Ask again. */
+                if (g_remote_kbd[i] && ev.type == EV_KEY && raw_index() >= 0) {
+                    struct timespec t;
+
+                    clock_gettime(CLOCK_MONOTONIC, &t);
+                    if (ms_since(&g_raw_kick, &t) >= 1000) {
+                        log_info("keys", "shortcut remote left raw mode, switching it back");
+                        raw_kick(g_fds[raw_index()]);
+                    }
+                }
+                if (key >= 0) {
+                    dispatch(cfg, key, value, &ev.time);
+                }
             }
+        }
+        if (n < 0 && (errno == ENODEV || errno == EIO)) {
+            log_warn("keys", "a key device was disconnected");
+            drop_fd(i);
+            i--;
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (g_rep_key >= 0 && raw_index() < 0) {
+        g_rep_key = -1;
+    }
+    if (g_rep_key >= 0 && ms_since(&g_raw_since, &now) >= RAW_REPEAT_DELAY_MS &&
+        ms_since(&g_raw_repeat, &now) >= RAW_REPEAT_MS) {
+        struct timeval when;
+
+        gettimeofday(&when, NULL);
+        g_raw_repeat = now;
+        dispatch(cfg, g_rep_key, 2, &when);
+    }
+    /* Reopen the raw channel after the remote was plugged back in. */
+    if (g_raw_wanted && raw_index() < 0 && g_nfd < MAX_PADS &&
+        ms_since(&g_raw_retry, &now) >= RAW_RETRY_MS) {
+        int fd;
+
+        g_raw_retry = now;
+        fd = raw_open(1);
+        if (fd >= 0) {
+            log_info("keys", "shortcut remote raw mode on again");
+            g_remote_kbd[g_nfd] = 0;
+            g_combo[g_nfd].mods = 0;
+            g_combo[g_nfd].lone = -1;
+            g_fds[g_nfd++] = fd;
+            g_ngrabbed++;
         }
     }
 }
@@ -816,6 +1160,15 @@ int keys_self_test(void)
             char name[256];
             unsigned long bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1];
 
+            if (is_raw(fds[i])) {
+                if (i != pads) {
+                    log_error("keys", "keypads were not the first capture devices");
+                    keys_close_capture(fds, n);
+                    return -1;
+                }
+                pads++;
+                continue;
+            }
             memset(name, 0, sizeof name);
             memset(bits, 0, sizeof bits);
             if (ioctl(fds[i], EVIOCGNAME(sizeof name), name) < 0 ||
@@ -886,6 +1239,32 @@ int keys_self_test(void)
         close(pipefd[1]);
         if (code != KEY_A) {
             log_error("keys", "key press read returned %d", code);
+            return -1;
+        }
+    }
+    {
+        static const unsigned char press[12] = {0x02, 0xf0, 0x40, 0x04};
+        static const unsigned char up[12] = {0x02, 0xf0};
+        static const unsigned char ccw[12] = {0x02, 0xf0, 0, 0, 0, 0, 0, 2};
+        static const unsigned char battery[12] = {0x02, 0xf2, 0x01, 0x50};
+        unsigned held = 0;
+        int keys[16];
+        int values[16];
+        int code = -1;
+
+        /* Bit 6 is the tall button (REMOTE_BTN4), bit 10 the center. */
+        if (raw_parse(&held, press, sizeof press, keys, values, 16) != 2 ||
+            keys[0] != REMOTE_BASE + 3 || values[0] != 1 ||
+            keys[1] != REMOTE_CENTER || values[1] != 1 ||
+            raw_parse(&held, up, sizeof up, keys, values, 16) != 2 ||
+            values[0] != 0 || values[1] != 0 ||
+            raw_parse(&held, ccw, sizeof ccw, keys, values, 16) != 1 ||
+            keys[0] != REMOTE_DIAL_CCW || values[0] != 1 ||
+            raw_parse(&held, battery, sizeof battery, keys, values, 16) != 0 ||
+            key_from_name("remote_center", &code) != 0 || code != REMOTE_CENTER ||
+            strcmp(key_name(REMOTE_BASE + 9), "REMOTE_BTN10") != 0 ||
+            key_from_name("CTRL+REMOTE_BTN1", &code) == 0) {
+            log_error("keys", "raw remote report test failed");
             return -1;
         }
     }

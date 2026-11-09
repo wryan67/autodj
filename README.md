@@ -34,6 +34,12 @@ make install
 
 This copies the binary to `/home/pi/bin/autodj`. `PREFIX` in the Makefile is that directory. Add it to `PATH` if it is not already there.
 
+```
+./build.sh
+```
+
+This does the same build and install. Before that, it installs `udev/70-autodj-remote.rules` to `/etc/udev/rules.d` with `sudo`, then reloads udev. It does this only when that file is missing or different, so it asks for the password only the first time. The rule gives the `input` group read and write access to the shortcut remote's `/dev/hidraw*` devices, which autodj needs for the center button.
+
 ## Run
 
 ```
@@ -52,7 +58,7 @@ With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--calibrate` opens a full-screen view of the `[Jog]` dial settings, with a short note beside each one about what it changes in the sound. Calibrate measures the dial in two steps. First, turn the dial exactly one full turn and press Enter; the click count becomes `clicks_per_turn`. Then spin the dial as fast as you can; timing starts at the first click and runs for 3 seconds. `max_speed` becomes the fastest measured speed plus 25%. Test plays a random song from `Folder`, so you can turn the dial and hear the result. A change to a setting takes effect in the test at once. Stop test ends playback. Save writes only the `[Jog]` section. Close or Esc leaves without writing; with unsaved changes, it asks you to press Close again. The view needs the remote, so stop a running autodj first.
 
-The keypad device must be named `USB Keypad` and must report `KEY_KP0`. The XP-Pen ACK05 Shortcut Remote (USB `28bd:0202`, shown as `Hanvon Ugee Shortcut Remote Keyboard`) is also used. Its buttons send keyboard shortcuts such as `CTRL+KEY_Z`, `KEY_SPACE`, or a bare `KEY_LEFTCTRL`. The dial sends `CTRL+KEY_KPPLUS` and `CTRL+KEY_KPMINUS`. Both devices can be connected at once. autodj grabs them so the keys are not also typed into the console, and Ctrl+Z from the remote does not suspend the shell. The process needs read access to `/dev/input/event*`, which on Raspberry Pi OS means the user is in the `input` group. If neither device is found, playback still runs.
+The keypad device must be named `USB Keypad` and must report `KEY_KP0`. The XP-Pen ACK05 Shortcut Remote (USB `28bd:0202`, shown as `Hanvon Ugee Shortcut Remote Keyboard`) is also used. The button in the center of its dial sends nothing in the remote's normal mode, so autodj switches the remote to raw mode on its vendor HID channel (`/dev/hidraw*`) and reads every button and the dial there. In raw mode the buttons have the names `REMOTE_BTN1` to `REMOTE_BTN10` and `REMOTE_CENTER`, and the dial has `REMOTE_DIAL_CW` and `REMOTE_DIAL_CCW`. The remote stays in raw mode after autodj exits, and its factory keyboard shortcuts do not work until it is unplugged and plugged back in. If the raw channel cannot be opened, autodj logs a warning to run `./build.sh` and keeps using the factory shortcuts, such as `CTRL+KEY_Z`, `KEY_SPACE`, or a bare `KEY_LEFTCTRL`, with the dial sending `CTRL+KEY_KPPLUS` and `CTRL+KEY_KPMINUS`. It tries to open the channel again every 3 seconds. Both devices can be connected at once. autodj grabs them so the keys are not also typed into the console, and Ctrl+Z from the remote does not suspend the shell. The process needs read access to `/dev/input/event*`, which on Raspberry Pi OS means the user is in the `input` group. If neither device is found, playback still runs.
 
 Stop autodj with Ctrl-C or SIGTERM.
 
@@ -87,8 +93,8 @@ rewind_1=KEY_KP2
 rewind_1_5=KEY_KP3
 volume_up=KEY_KPPLUS
 volume_dn=KEY_KPMINUS
-jog_forward=CTRL+KEY_KPPLUS
-jog_back=CTRL+KEY_KPMINUS
+jog_forward=REMOTE_DIAL_CW
+jog_back=REMOTE_DIAL_CCW
 
 [Jog]
 seconds_per_turn=1.8
@@ -136,7 +142,18 @@ Target integrated loudness, from `-30` to `-5`. Default `-18`, which is the Repl
 
 ### [Keys]
 
-Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. The name can have `CTRL+`, `SHIFT+`, `ALT+`, or `META+` in front of it, for example `CTRL+SHIFT+KEY_Z`. These prefixes are not case-sensitive. Left and right modifiers are treated the same. A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for the jog keys. Holding a volume key still repeats.
+Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_KP0`. The name can have `CTRL+`, `SHIFT+`, `ALT+`, or `META+` in front of it, for example `CTRL+SHIFT+KEY_Z`. These prefixes are not case-sensitive. Left and right modifiers are treated the same. The shortcut remote's raw-mode names can't take a prefix:
+
+| Name | Button |
+|---|---|
+| `REMOTE_BTN1` to `REMOTE_BTN3` | Top row, left to right |
+| `REMOTE_BTN4` | Tall button on the right |
+| `REMOTE_BTN5` to `REMOTE_BTN7` | Middle row, left to right |
+| `REMOTE_BTN8` to `REMOTE_BTN10` | Bottom row, left to right |
+| `REMOTE_CENTER` | Button in the center of the dial |
+| `REMOTE_DIAL_CW`, `REMOTE_DIAL_CCW` | Dial clockwise, counterclockwise |
+
+ A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for the jog keys. Holding a volume key still repeats.
 
 `pause_resume`  
 Press once to pause. Press again to resume.
@@ -163,7 +180,7 @@ Press or hold to raise the volume. The name `brake_delayvolume_up` is accepted a
 Press or hold to lower the volume. `volume_down` is the same action.
 
 `jog_forward`, `jog_back`  
-The shortcut remote's dial, which sends `CTRL+KEY_KPPLUS` clockwise and `CTRL+KEY_KPMINUS` counterclockwise. The dial works like a hand on a record. With the default `[Jog]` settings, each click moves the song 90 ms, so one turn of 20 clicks moves it 1.8 seconds, which is one turn of a 33⅓ RPM record. The time between clicks sets the speed. A slow turn plays slowly, a fast spin plays up to 4 times as fast, and turning back plays the song backward. While the dial turns, normal playback is held. When the dial stops, the song spins back up to normal speed within 0.3 seconds. See `[Jog]` to change these numbers. If the music is paused, the dial still moves the song and you can hear it, but the song stays paused when the dial stops. The position stops at the start of the song.
+The shortcut remote's dial: `REMOTE_DIAL_CW` and `REMOTE_DIAL_CCW` in raw mode, or `CTRL+KEY_KPPLUS` and `CTRL+KEY_KPMINUS` with the factory shortcuts. The dial works like a hand on a record. With the default `[Jog]` settings, each click moves the song 90 ms, so one turn of 20 clicks moves it 1.8 seconds, which is one turn of a 33⅓ RPM record. The time between clicks sets the speed. A slow turn plays slowly, a fast spin plays up to 4 times as fast, and turning back plays the song backward. While the dial turns, normal playback is held. When the dial stops, the song spins back up to normal speed within 0.3 seconds. See `[Jog]` to change these numbers. If the music is paused, the dial still moves the song and you can hear it, but the song stays paused when the dial stops. The position stops at the start of the song.
 
 ### [Jog]
 

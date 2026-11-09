@@ -2540,14 +2540,13 @@ static int dial_wait(struct Dial *d, struct Event *ev, int timeout_ms)
     if (pr == 0) {
         return 0;
     }
-    for (i = d->kfd_n - 1; i >= 0; i--) {
-        if (pfds[1 + i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-            memmove(&d->kfd[i], &d->kfd[i + 1], (size_t)(d->kfd_n - i - 1) * sizeof d->kfd[0]);
-            d->kfd_n--;
+    if (d->kfd_n > 0) {
+        keys_poll(&d->cfg);
+        d->kfd_n = keys_fds(d->kfd, 8);
+        if (d->kfd_n == 0) {
             snprintf(d->status, sizeof d->status, "The remote was disconnected.");
         }
     }
-    keys_poll(&d->cfg);
     if (pfds[0].revents & POLLIN) {
         unsigned char c;
         ssize_t n = read(g_tty, &c, 1);

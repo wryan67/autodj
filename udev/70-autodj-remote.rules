@@ -1,0 +1,4 @@
+# Let the input group read and write the raw HID channel of the XP-Pen
+# ACK05 Shortcut Remote. autodj switches the remote to raw mode there so it
+# can read the button in the center of the dial.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28bd", ATTRS{idProduct}=="0202", MODE="0660", GROUP="input"

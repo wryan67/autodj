@@ -256,14 +256,13 @@ int main(int argc, char **argv)
             pfd[i].events = POLLIN;
             pfd[i].revents = 0;
         }
-        pr = poll(nfds ? pfd : NULL, (nfds_t)nfds, 200);
+        pr = poll(nfds ? pfd : NULL, (nfds_t)nfds, keys_wait_ms(200));
         if (pr < 0 && errno == EINTR) {
             continue;
         }
-        if (pr > 0) {
-            keys_poll(&cfg);
-            remember_volume(path, &cfg);
-        }
+        /* Also on timeout, for held remote buttons and reconnects. */
+        keys_poll(&cfg);
+        remember_volume(path, &cfg);
     }
 
     remember_volume(path, &cfg);
