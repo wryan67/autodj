@@ -24,6 +24,8 @@ typedef struct Config {
     int key_rew15;
     int key_vol_up;
     int key_vol_dn;
+    int key_jog_fwd;
+    int key_jog_back;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -32,7 +34,30 @@ typedef struct Config {
     char key_rew15_name[64];
     char key_vol_up_name[64];
     char key_vol_dn_name[64];
+    char key_jog_fwd_name[64];
+    char key_jog_back_name[64];
+    /* [Jog] */
+    double jog_turn_sec;   /* audio moved by one turn of the dial */
+    int jog_clicks;        /* dial clicks in one turn */
+    double jog_max_speed;  /* fastest scratch, times normal speed */
+    double jog_spinup_sec; /* back to normal speed after the dial stops */
+    double jog_grab_sec;   /* normal playback held back when the dial starts */
+    double jog_smooth_sec; /* how quickly the speed follows the dial */
 } Config;
+
+/* Range for each [Jog] setting. */
+#define JOG_TURN_MIN 0.1
+#define JOG_TURN_MAX 20.0
+#define JOG_CLICKS_MIN 1
+#define JOG_CLICKS_MAX 1000
+#define JOG_SPEED_MIN 0.5
+#define JOG_SPEED_MAX 20.0
+#define JOG_SPINUP_MAX 5.0
+#define JOG_GRAB_MAX 1.0
+#define JOG_SMOOTH_MAX 1.0
+
+/* Put the [Jog] defaults into cfg. */
+void config_jog_defaults(Config *cfg);
 
 /* Load path into cfg. Missing optional keys keep their defaults.
  * Returns 0 on success. */
@@ -62,6 +87,8 @@ typedef struct ConfigEdit {
     char key_rew15[64];
     char key_vol_up[64];
     char key_vol_dn[64];
+    char key_jog_fwd[64];
+    char key_jog_back[64];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */
@@ -78,6 +105,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
 /* Rewrite known settings in path. Comments and unknown lines stay.
  * Creates parent directories and the file when they are missing. */
 int config_save(const char *path, const Config *cfg, char *err, size_t err_n);
+/* Write only the [Jog] settings of cfg into path, keeping every other line. */
+int config_save_jog(const char *path, const Config *cfg, char *err, size_t err_n);
 
 int config_self_test(void);
 

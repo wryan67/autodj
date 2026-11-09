@@ -53,6 +53,8 @@ enum { MAX_PADS = 8, MAX_CAPTURE_FD = 256 };
 static int g_fds[MAX_PADS];
 static struct Combo g_combo[MAX_PADS];
 static int g_nfd;
+static int g_ngrabbed;
+static void (*g_jog_hook)(int direction, long long when_us);
 static struct Combo g_cap[MAX_CAPTURE_FD];
 static struct timespec g_vol_time;
 static struct timeval g_press_time;
@@ -394,6 +396,7 @@ int keys_open(void)
     int i;
 
     g_nfd = 0;
+    g_ngrabbed = 0;
     for (i = 0; i < 32 && g_nfd < MAX_PADS; i++) {
         char name[256];
         unsigned long bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1];
@@ -413,6 +416,7 @@ int keys_open(void)
             log_warn("keys", "could not grab %s (event%d): %s", name, i, strerror(errno));
         } else {
             log_info("keys", "%s (event%d) grabbed", name, i);
+            g_ngrabbed++;
         }
         drain_fd(fd);
         combo_reset(&g_combo[g_nfd]);
@@ -435,6 +439,17 @@ void keys_close(void)
         g_fds[i] = -1;
     }
     g_nfd = 0;
+    g_ngrabbed = 0;
+}
+
+int keys_grabbed(void)
+{
+    return g_ngrabbed;
+}
+
+void keys_set_jog_hook(void (*fn)(int direction, long long when_us))
+{
+    g_jog_hook = fn;
 }
 
 int keys_fds(int *fds, int max)
@@ -496,6 +511,20 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
     const char *name;
 
     if ((key & KEY_CODE_MASK) == KEY_NUMLOCK) {
+        return;
+    }
+    /* Dial clicks come faster than the press gap when it spins, and the
+     * player measures their spacing, so they skip the debounce. */
+    if (key == cfg->key_jog_fwd || key == cfg->key_jog_back) {
+        if (value == 1) {
+            int dir = key == cfg->key_jog_fwd ? 1 : -1;
+            long long us = (long long)when->tv_sec * 1000000LL + when->tv_usec;
+
+            player_jog(dir, us);
+            if (g_jog_hook) {
+                g_jog_hook(dir, us);
+            }
+        }
         return;
     }
     /* Value 1 is a press. Repeats stay on the volume hold path. */
@@ -599,6 +628,8 @@ static int debounce_self_test(void)
     cfg.key_rew15 = -1;
     cfg.key_vol_up = KEY_KPPLUS;
     cfg.key_vol_dn = KEY_KPMINUS;
+    cfg.key_jog_fwd = -1;
+    cfg.key_jog_back = -1;
     player_set_volume_percent(50);
     g_press_seen = 0;
     memset(&g_press_time, 0, sizeof g_press_time);

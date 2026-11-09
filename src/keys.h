@@ -15,6 +15,12 @@ const char *key_name(int code);
  * Returns 0, or -1 if neither is present. */
 int keys_open(void);
 void keys_close(void);
+/* How many devices keys_open grabbed. Zero while another program, such
+ * as a running autodj, holds them. */
+int keys_grabbed(void);
+/* Also call fn for each dial click that keys_poll passes to player_jog.
+ * NULL removes it. */
+void keys_set_jog_hook(void (*fn)(int direction, long long when_us));
 /* Copy the open device fds into fds. Returns the count. */
 int keys_fds(int *fds, int max);
 

@@ -25,9 +25,21 @@
  * Previous does the same toward a song already played. Twenty songs can
  * be replayed; another press past that does nothing. Rewind moves inside
  * the current song and stops at its start.
+ *
+ * The jog dial works like a hand on a record. Each click moves the song
+ * turn_sec / clicks forward or back. The clicks are spread over the time between
+ * clicks, so the playback speed follows how fast the dial turns, in either
+ * direction. While the dial turns, the normal motor speed is held back.
+ * When it stops, the record spins back up to the pause/resume rate, so a
+ * paused song stays paused.
  */
 
 #define HIST_MAX 21 /* the song playing, plus 20 before it */
+
+#define JOG_LAG_MIN 0.03      /* seconds to play one click, at the fastest */
+#define JOG_LAG_MAX 0.6       /* and at the slowest */
+#define JOG_FIRST_LAG 0.12    /* a click after the dial was still */
+#define JOG_IDLE_PAD 0.1      /* extra wait before the hand counts as off */
 
 static atomic_int g_pause_gen;
 static atomic_int g_skip_gen;
@@ -35,6 +47,13 @@ static atomic_int g_back_gen;
 static atomic_int g_rewind_ms;
 static atomic_int g_volume = 1000;
 static atomic_int g_stop;
+static atomic_int g_jog_ticks;
+static atomic_int g_jog_interval_us = (int)(JOG_FIRST_LAG * 1e6);
+static atomic_int g_jog_gen;
+static atomic_int g_speed_milli;
+static atomic_int g_jogging;
+static pthread_mutex_t g_jog_mu = PTHREAD_MUTEX_INITIALIZER;
+static JogSettings g_jog_next = {1.8, 20, 4.0, 0.3, 0.02, 0.01};
 
 static PlayerSettings g_set;
 static Playlist *g_pl;
@@ -90,6 +109,17 @@ static int g_seen_pause;
 static int g_seen_skip;
 static int g_seen_back;
 static float g_vol = 1.0f;
+static int g_jog_seen;
+static int g_jog_on;
+static double g_jog_left;   /* frames the hand moved that are not played yet */
+static double g_jog_target; /* jog speed in frames per output frame */
+static double g_jog_v;
+static double g_jog_hold;   /* 1 while the hand holds the record */
+static double g_jog_lag;    /* frames to play one click over */
+static uint64_t g_jog_last;
+static JogSettings g_jog = {1.8, 20, 4.0, 0.3, 0.02, 0.01};
+static double g_rate_shown;
+static int g_jog_seen_gen;
 
 static double rate_at(double from, double to, uint64_t elapsed, uint64_t span)
 {
@@ -150,6 +180,8 @@ static size_t remaining(void)
     return (size_t)ceil(left);
 }
 
+static char g_now_name[256];
+
 static void log_playing(const Track *track)
 {
     unsigned sec = 0;
@@ -158,6 +190,9 @@ static void log_playing(const Track *track)
     if (!track) {
         return;
     }
+    pthread_mutex_lock(&g_jog_mu);
+    snprintf(g_now_name, sizeof g_now_name, "%s", track->name);
+    pthread_mutex_unlock(&g_jog_mu);
     frames = audible(track);
     if (g_set.rate) {
         sec = (unsigned)(frames / g_set.rate);
@@ -666,6 +701,95 @@ static void try_apply_nav(void)
     g_hist_pin = -1;
 }
 
+static int sign_of(double v)
+{
+    return v > 0 ? 1 : (v < 0 ? -1 : 0);
+}
+
+static void jog_reset(void)
+{
+    g_jog_on = 0;
+    g_jog_left = 0;
+    g_jog_target = 0;
+    g_jog_v = 0;
+    g_jog_hold = 0;
+    g_jog_lag = 0;
+    g_jog_last = 0;
+}
+
+static void jog_clicks(int n, int interval_us)
+{
+    double rate = (double)g_set.rate;
+    double lag = (double)interval_us / 1e6;
+
+    if (n == 0 || rate <= 0) {
+        return;
+    }
+    if (lag < JOG_LAG_MIN) {
+        lag = JOG_LAG_MIN;
+    }
+    if (lag > JOG_LAG_MAX) {
+        lag = JOG_LAG_MAX;
+    }
+    /* A turn the other way drops what the old direction had not played. */
+    if (sign_of(g_jog_left) != 0 && sign_of(g_jog_left) != sign_of((double)n)) {
+        g_jog_left = 0;
+    }
+    g_jog_left += (double)n * (g_jog.turn_sec / (double)g_jog.clicks) * rate;
+    g_jog_lag = lag * rate;
+    g_jog_target = g_jog_left / g_jog_lag;
+    if (g_jog_target > g_jog.max_speed) {
+        g_jog_target = g_jog.max_speed;
+    }
+    if (g_jog_target < -g_jog.max_speed) {
+        g_jog_target = -g_jog.max_speed;
+    }
+    g_jog_last = g_rendered;
+    g_jog_on = 1;
+}
+
+/* Speed for the next frame: the hand's speed, plus whatever share of the
+ * motor speed the hand is not holding back. */
+/* Share of the gap closed per frame for a time constant of sec. */
+static double per_frame(double sec, double rate)
+{
+    double k = sec > 0 ? 1.0 / (sec * rate) : 1.0;
+
+    return k > 1.0 ? 1.0 : k;
+}
+
+static double jog_rate(void)
+{
+    double rate = (double)g_set.rate;
+    double idle;
+    double before;
+
+    if (!g_jog_on || rate <= 0) {
+        return g_rate;
+    }
+    idle = 2.0 * g_jog_lag + JOG_IDLE_PAD * rate;
+    if (g_jog_left == 0 && (double)(g_rendered - g_jog_last) > idle) {
+        g_jog_hold -= per_frame(g_jog.spinup_sec, rate);
+        if (g_jog_hold <= 0) {
+            jog_reset();
+            return g_rate;
+        }
+    } else {
+        g_jog_hold += per_frame(g_jog.grab_sec, rate);
+        if (g_jog_hold > 1) {
+            g_jog_hold = 1;
+        }
+    }
+    g_jog_v += (g_jog_target - g_jog_v) * per_frame(g_jog.smooth_sec, rate);
+    before = g_jog_left;
+    g_jog_left -= g_jog_v;
+    if (sign_of(before) != sign_of(g_jog_left)) {
+        g_jog_left = 0;
+        g_jog_target = 0;
+    }
+    return g_jog_v + (1.0 - g_jog_hold) * g_rate;
+}
+
 static void service_commands(void)
 {
     int pause_gen = atomic_load(&g_pause_gen);
@@ -673,7 +797,19 @@ static void service_commands(void)
     int back_gen = atomic_load(&g_back_gen);
     int rewind_ms = atomic_exchange(&g_rewind_ms, 0);
     int volume = atomic_load(&g_volume);
+    int jog = atomic_load(&g_jog_ticks);
+    int jog_gen = atomic_load(&g_jog_gen);
 
+    if (jog_gen != g_jog_seen_gen) {
+        pthread_mutex_lock(&g_jog_mu);
+        g_jog = g_jog_next;
+        pthread_mutex_unlock(&g_jog_mu);
+        g_jog_seen_gen = jog_gen;
+    }
+    if (jog != g_jog_seen) {
+        jog_clicks(jog - g_jog_seen, atomic_load(&g_jog_interval_us));
+        g_jog_seen = jog;
+    }
     if (rewind_ms > 0) {
         apply_rewind(rewind_ms);
     }
@@ -750,9 +886,12 @@ static void render_frame(int16_t *dst)
     float gain_a = 1;
     float gain_b = 0;
     float s;
+    double rate;
 
     update_rate();
-    if (g_rate > 0.000001) {
+    rate = jog_rate();
+    g_rate_shown = rate;
+    if (rate > 0.000001) {
         maybe_natural_fade();
     }
 
@@ -768,19 +907,28 @@ static void render_frame(int16_t *dst)
         gain_b = (float)t;
     }
 
-    if (g_rate > 0.000001 && g_a && g_pos_a < (double)g_a->end) {
+    if (fabs(rate) > 0.000001 && g_a && (g_pos_a < (double)g_a->end || rate < 0)) {
         float sl, sr;
-        sample_at(g_a, g_pos_a, &sl, &sr);
-        left += sl * gain_a;
-        right += sr * gain_a;
-        g_pos_a += g_rate;
+
+        if (g_pos_a < (double)g_a->end) {
+            sample_at(g_a, g_pos_a, &sl, &sr);
+            left += sl * gain_a;
+            right += sr * gain_a;
+        }
+        g_pos_a += rate;
+        if (g_pos_a < (double)g_a->start) {
+            g_pos_a = (double)g_a->start;
+        }
     }
-    if (g_rate > 0.000001 && g_fading && g_b) {
+    if (fabs(rate) > 0.000001 && g_fading && g_b) {
         float sl, sr;
         sample_at(g_b, g_pos_b, &sl, &sr);
         left += sl * gain_b;
         right += sr * gain_b;
-        g_pos_b += g_rate;
+        g_pos_b += rate;
+        if (g_pos_b < (double)g_b->start) {
+            g_pos_b = (double)g_b->start;
+        }
         if ((g_pos_b - g_fade_origin) >= g_fade_span) {
             promote();
         }
@@ -824,6 +972,8 @@ static void *audio_main(void *arg)
         for (i = 0; i < period; i++) {
             render_frame(buf + i * 2);
         }
+        atomic_store(&g_speed_milli, (int)lrint(g_rate_shown * 1000.0));
+        atomic_store(&g_jogging, g_jog_on);
         if (audio_write(buf, period) != 0) {
             atomic_store(&g_stop, 1);
             break;
@@ -917,6 +1067,13 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
     g_seen_skip = atomic_load(&g_skip_gen);
     g_seen_back = atomic_load(&g_back_gen);
     atomic_store(&g_rewind_ms, 0);
+    g_jog_seen = atomic_load(&g_jog_ticks);
+    jog_reset();
+    pthread_mutex_lock(&g_jog_mu);
+    g_now_name[0] = '\0';
+    pthread_mutex_unlock(&g_jog_mu);
+    atomic_store(&g_speed_milli, 0);
+    atomic_store(&g_jogging, 0);
     g_vol = (float)atomic_load(&g_volume) / 1000.0f;
     atomic_store(&g_stop, 0);
     hist_clear();
@@ -1023,6 +1180,58 @@ void player_rewind(int ms)
     }
 }
 
+void player_jog(int direction, long long when_us)
+{
+    static long long last_us;
+    static int last_dir;
+    static double interval_us = JOG_FIRST_LAG * 1e6;
+    long long gap = when_us - last_us;
+
+    if (direction == 0) {
+        return;
+    }
+    direction = direction > 0 ? 1 : -1;
+    if (last_us == 0 || direction != last_dir || gap <= 0 || gap > (long long)(JOG_LAG_MAX * 1e6)) {
+        interval_us = JOG_FIRST_LAG * 1e6;
+    } else {
+        /* USB reports land on a 16 ms grid, so average the gaps. */
+        interval_us = interval_us * 0.5 + (double)gap * 0.5;
+    }
+    last_us = when_us;
+    last_dir = direction;
+    atomic_store(&g_jog_interval_us, (int)interval_us);
+    atomic_fetch_add(&g_jog_ticks, direction);
+}
+
+void player_set_jog(const JogSettings *jog)
+{
+    if (!jog || jog->clicks <= 0 || jog->turn_sec <= 0 || jog->max_speed <= 0) {
+        return;
+    }
+    pthread_mutex_lock(&g_jog_mu);
+    g_jog_next = *jog;
+    pthread_mutex_unlock(&g_jog_mu);
+    atomic_fetch_add(&g_jog_gen, 1);
+}
+
+void player_now_playing(char *dest, size_t n)
+{
+    if (!dest || n == 0) {
+        return;
+    }
+    pthread_mutex_lock(&g_jog_mu);
+    snprintf(dest, n, "%s", g_now_name);
+    pthread_mutex_unlock(&g_jog_mu);
+}
+
+double player_speed(int *jogging)
+{
+    if (jogging) {
+        *jogging = atomic_load(&g_jogging);
+    }
+    return (double)atomic_load(&g_speed_milli) / 1000.0;
+}
+
 void player_set_volume_percent(int percent)
 {
     if (percent < 0) {
@@ -1063,6 +1272,104 @@ void player_volume_step(int direction)
     }
     atomic_store(&g_volume, next);
     log_info("keys", "volume %d%%", next / 10);
+}
+
+static void render_frames(int n)
+{
+    int16_t out[2];
+
+    while (n-- > 0) {
+        render_frame(out);
+    }
+}
+
+/* Paused, ten clicks forward 50 ms apart move the song ten clicks and then
+ * stay paused. Ten clicks back return it. Playing, a release lets the song
+ * run at normal speed again. */
+static int jog_self_test(void)
+{
+    Track track;
+    double origin;
+    double click;
+    double moved;
+    int i;
+    int rc = -1;
+
+    memset(&track, 0, sizeof track);
+    g_set.rate = 44100;
+    track.frames = 44100 * 20;
+    track.start = 0;
+    track.end = track.frames;
+    track.pcm = calloc(track.frames * 2, sizeof(float));
+    if (!track.pcm) {
+        log_error("audio", "out of memory for the jog test");
+        return -1;
+    }
+    g_a = &track;
+    g_b = NULL;
+    g_fading = 0;
+    g_ramping = 0;
+    g_paused = 1;
+    g_rate = 0;
+    g_rendered = 0;
+    g_vol = 0;
+    jog_reset();
+    g_jog.turn_sec = 1.8;
+    g_jog.clicks = 20;
+    g_jog.max_speed = 4.0;
+    g_jog.spinup_sec = 0.3;
+    g_jog.grab_sec = 0.02;
+    g_jog.smooth_sec = 0.01;
+    origin = 44100.0 * 10;
+    g_pos_a = origin;
+    click = g_jog.turn_sec / g_jog.clicks * 44100.0;
+
+    for (i = 0; i < 10; i++) {
+        jog_clicks(1, 50000);
+        render_frames(2205);
+    }
+    render_frames(44100);
+    moved = g_pos_a - origin;
+    if (moved < click * 10 * 0.95 || moved > click * 10 * 1.05 || g_jog_on) {
+        log_error("audio", "jog forward moved %.0f frames, expected %.0f", moved, click * 10);
+        goto out;
+    }
+    origin = g_pos_a;
+    render_frames(4410);
+    if (g_pos_a != origin) {
+        log_error("audio", "paused song moved after the dial stopped");
+        goto out;
+    }
+    for (i = 0; i < 10; i++) {
+        jog_clicks(-1, 50000);
+        render_frames(2205);
+    }
+    render_frames(44100);
+    moved = origin - g_pos_a;
+    if (moved < click * 10 * 0.95 || moved > click * 10 * 1.05 || g_jog_on) {
+        log_error("audio", "jog back moved %.0f frames, expected %.0f", moved, click * 10);
+        goto out;
+    }
+    g_paused = 0;
+    g_rate = 1.0;
+    jog_clicks(3, 50000);
+    render_frames(44100);
+    origin = g_pos_a;
+    render_frames(4410);
+    if (g_jog_on || g_pos_a - origin < 4409 || g_pos_a - origin > 4411) {
+        log_error("audio", "playback did not return to normal speed after the dial");
+        goto out;
+    }
+    rc = 0;
+out:
+    jog_reset();
+    g_a = NULL;
+    g_rate = 1.0;
+    g_paused = 0;
+    g_rendered = 0;
+    g_vol = 1.0f;
+    free(track.pcm);
+    return rc;
 }
 
 int player_self_test(void)
@@ -1195,6 +1502,9 @@ int player_self_test(void)
             g_fading = 0;
         }
         g_a = NULL;
+    }
+    if (jog_self_test() != 0) {
+        return -1;
     }
 
     hist_clear();

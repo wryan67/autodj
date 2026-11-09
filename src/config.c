@@ -21,6 +21,8 @@ enum {
     KEYID_REW15,
     KEYID_UP,
     KEYID_DN,
+    KEYID_JOG_FWD,
+    KEYID_JOG_BACK,
     KEYID_COUNT
 };
 
@@ -94,6 +96,78 @@ static int parse_nonneg(const char *s, int *out)
     return 0;
 }
 
+static int parse_real(const char *s, double min, double max, double *out)
+{
+    char *end = NULL;
+    double v;
+
+    if (!s || !s[0]) {
+        return -1;
+    }
+    errno = 0;
+    v = strtod(s, &end);
+    if (errno != 0 || !end || *end != '\0' || v != v || v < min || v > max) {
+        return -1;
+    }
+    *out = v;
+    return 0;
+}
+
+void config_jog_defaults(Config *cfg)
+{
+    cfg->jog_turn_sec = 1.8;
+    cfg->jog_clicks = 20;
+    cfg->jog_max_speed = 4.0;
+    cfg->jog_spinup_sec = 0.3;
+    cfg->jog_grab_sec = 0.02;
+    cfg->jog_smooth_sec = 0.01;
+}
+
+static void apply_jog(Config *cfg, const char *key, const char *val)
+{
+    double v = 0;
+
+    if (eq_ci(key, "seconds_per_turn")) {
+        if (parse_real(val, JOG_TURN_MIN, JOG_TURN_MAX, &v) != 0) {
+            log_warn("autodj", "seconds_per_turn must be from 0.1 to 20, got %s", val);
+        } else {
+            cfg->jog_turn_sec = v;
+        }
+    } else if (eq_ci(key, "clicks_per_turn")) {
+        if (parse_real(val, JOG_CLICKS_MIN, JOG_CLICKS_MAX, &v) != 0 || v != (int)v) {
+            log_warn("autodj", "clicks_per_turn must be a whole number from 1 to 1000, got %s", val);
+        } else {
+            cfg->jog_clicks = (int)v;
+        }
+    } else if (eq_ci(key, "max_speed")) {
+        if (parse_real(val, JOG_SPEED_MIN, JOG_SPEED_MAX, &v) != 0) {
+            log_warn("autodj", "max_speed must be from 0.5 to 20, got %s", val);
+        } else {
+            cfg->jog_max_speed = v;
+        }
+    } else if (eq_ci(key, "spinup_time")) {
+        if (parse_real(val, 0, JOG_SPINUP_MAX, &v) != 0) {
+            log_warn("autodj", "spinup_time must be from 0 to 5 seconds, got %s", val);
+        } else {
+            cfg->jog_spinup_sec = v;
+        }
+    } else if (eq_ci(key, "grab_time")) {
+        if (parse_real(val, 0, JOG_GRAB_MAX, &v) != 0) {
+            log_warn("autodj", "grab_time must be from 0 to 1 second, got %s", val);
+        } else {
+            cfg->jog_grab_sec = v;
+        }
+    } else if (eq_ci(key, "smoothing")) {
+        if (parse_real(val, 0, JOG_SMOOTH_MAX, &v) != 0) {
+            log_warn("autodj", "smoothing must be from 0 to 1 second, got %s", val);
+        } else {
+            cfg->jog_smooth_sec = v;
+        }
+    } else {
+        log_warn("autodj", "unknown jog setting %s", key);
+    }
+}
+
 static void set_key(Config *cfg, const char *action, const char *keyname)
 {
     int code = -1;
@@ -130,6 +204,12 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     } else if (eq_ci(action, "volume_dn") || eq_ci(action, "volume_down")) {
         cfg->key_vol_dn = code;
         snprintf(cfg->key_vol_dn_name, sizeof cfg->key_vol_dn_name, "%s", keyname);
+    } else if (eq_ci(action, "jog_forward")) {
+        cfg->key_jog_fwd = code;
+        snprintf(cfg->key_jog_fwd_name, sizeof cfg->key_jog_fwd_name, "%s", keyname);
+    } else if (eq_ci(action, "jog_back")) {
+        cfg->key_jog_back = code;
+        snprintf(cfg->key_jog_back_name, sizeof cfg->key_jog_back_name, "%s", keyname);
     } else {
         log_warn("autodj", "unknown key action %s", action);
     }
@@ -142,7 +222,8 @@ static int key_code_used(const Config *cfg, int code)
     }
     return cfg->key_pause == code || cfg->key_skip == code || cfg->key_prev == code ||
            cfg->key_rew05 == code || cfg->key_rew10 == code || cfg->key_rew15 == code ||
-           cfg->key_vol_up == code || cfg->key_vol_dn == code;
+           cfg->key_vol_up == code || cfg->key_vol_dn == code ||
+           cfg->key_jog_fwd == code || cfg->key_jog_back == code;
 }
 
 /* A missing previous or rewind binding takes the keypad default, unless
@@ -216,6 +297,10 @@ static void apply(Config *cfg, const char *section, const char *key, const char 
         set_key(cfg, key, val);
         return;
     }
+    if (eq_ci(section, "Jog")) {
+        apply_jog(cfg, key, val);
+        return;
+    }
     log_warn("autodj", "ignoring %s in section %s", key, section[0] ? section : "(none)");
 }
 
@@ -243,6 +328,9 @@ int config_load(const char *path, Config *cfg)
     cfg->key_rew15 = -1;
     cfg->key_vol_up = -1;
     cfg->key_vol_dn = -1;
+    cfg->key_jog_fwd = -1;
+    cfg->key_jog_back = -1;
+    config_jog_defaults(cfg);
     section[0] = '\0';
 
     fp = fopen(path, "r");
@@ -631,6 +719,10 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_vol_up, sizeof edit->key_vol_up, val);
         } else if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
             copy_raw(edit->key_vol_dn, sizeof edit->key_vol_dn, val);
+        } else if (eq_ci(key, "jog_forward")) {
+            copy_raw(edit->key_jog_fwd, sizeof edit->key_jog_fwd, val);
+        } else if (eq_ci(key, "jog_back")) {
+            copy_raw(edit->key_jog_back, sizeof edit->key_jog_back, val);
         }
     }
 }
@@ -638,7 +730,7 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
 /* Drop a keypad default when the file already gave that key to another action. */
 static void release_taken_default(ConfigEdit *edit, char *field, const char *defname)
 {
-    char *fields[8];
+    char *fields[10];
     int i;
     int hits = 0;
 
@@ -653,7 +745,9 @@ static void release_taken_default(ConfigEdit *edit, char *field, const char *def
     fields[5] = edit->key_rew15;
     fields[6] = edit->key_vol_up;
     fields[7] = edit->key_vol_dn;
-    for (i = 0; i < 8; i++) {
+    fields[8] = edit->key_jog_fwd;
+    fields[9] = edit->key_jog_back;
+    for (i = 0; i < 10; i++) {
         if (strcmp(fields[i], defname) == 0) {
             hits++;
         }
@@ -842,6 +936,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_rew15);
     trim(in.key_vol_up);
     trim(in.key_vol_dn);
+    trim(in.key_jog_fwd);
+    trim(in.key_jog_back);
 
     memset(&out, 0, sizeof out);
     out.key_pause = -1;
@@ -852,6 +948,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_rew15 = -1;
     out.key_vol_up = -1;
     out.key_vol_dn = -1;
+    out.key_jog_fwd = -1;
+    out.key_jog_back = -1;
     out.volume_set = 1;
 
     if (!in.folder[0]) {
@@ -925,6 +1023,12 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_DN] = take_key(err, err_n, in.key_vol_dn, "Volume down",
                                 &out.key_vol_dn, out.key_vol_dn_name,
                                 sizeof out.key_vol_dn_name) == 0;
+    key_ok[KEYID_JOG_FWD] = take_key(err, err_n, in.key_jog_fwd, "Jog forward",
+                                     &out.key_jog_fwd, out.key_jog_fwd_name,
+                                     sizeof out.key_jog_fwd_name) == 0;
+    key_ok[KEYID_JOG_BACK] = take_key(err, err_n, in.key_jog_back, "Jog back",
+                                      &out.key_jog_back, out.key_jog_back_name,
+                                      sizeof out.key_jog_back_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
@@ -933,6 +1037,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     keys[KEYID_REW15] = in.key_rew15;
     keys[KEYID_UP] = in.key_vol_up;
     keys[KEYID_DN] = in.key_vol_dn;
+    keys[KEYID_JOG_FWD] = in.key_jog_fwd;
+    keys[KEYID_JOG_BACK] = in.key_jog_back;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
@@ -941,6 +1047,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_REW15] = "rewind 1.5s";
     labels[KEYID_UP] = "volume up";
     labels[KEYID_DN] = "volume down";
+    labels[KEYID_JOG_FWD] = "jog forward";
+    labels[KEYID_JOG_BACK] = "jog back";
     for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
             failed = 1;
@@ -1055,7 +1163,55 @@ static int keys_id(const char *key)
     if (eq_ci(key, "volume_dn") || eq_ci(key, "volume_down")) {
         return KEYID_DN;
     }
+    if (eq_ci(key, "jog_forward")) {
+        return KEYID_JOG_FWD;
+    }
+    if (eq_ci(key, "jog_back")) {
+        return KEYID_JOG_BACK;
+    }
     return -1;
+}
+
+static const char *g_jog_names[] = {
+    "seconds_per_turn", "clicks_per_turn", "max_speed", "spinup_time", "grab_time", "smoothing"
+};
+
+enum { JOG_COUNT = 6 };
+
+static int jog_id(const char *key)
+{
+    int i;
+
+    for (i = 0; i < JOG_COUNT; i++) {
+        if (eq_ci(key, g_jog_names[i])) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void jog_value(const Config *cfg, int id, char *dest, size_t n)
+{
+    switch (id) {
+    case 0:
+        snprintf(dest, n, "%g", cfg->jog_turn_sec);
+        break;
+    case 1:
+        snprintf(dest, n, "%d", cfg->jog_clicks);
+        break;
+    case 2:
+        snprintf(dest, n, "%g", cfg->jog_max_speed);
+        break;
+    case 3:
+        snprintf(dest, n, "%g", cfg->jog_spinup_sec);
+        break;
+    case 4:
+        snprintf(dest, n, "%g", cfg->jog_grab_sec);
+        break;
+    default:
+        snprintf(dest, n, "%g", cfg->jog_smooth_sec);
+        break;
+    }
 }
 
 static void main_value(const Config *cfg, int id, char *dest, size_t n)
@@ -1119,6 +1275,12 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
         break;
     case KEYID_DN:
         s = cfg->key_vol_dn_name;
+        break;
+    case KEYID_JOG_FWD:
+        s = cfg->key_jog_fwd_name;
+        break;
+    case KEYID_JOG_BACK:
+        s = cfg->key_jog_back_name;
         break;
     default:
         break;
@@ -1312,7 +1474,8 @@ static int ensure_parent(const char *path, char *err, size_t err_n)
     return mkdir_p(dir, err, err_n);
 }
 
-int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
+/* Rewrite [Main] and [Keys], or only [Jog] when jog is set. */
+static int save_sections(const char *path, const Config *cfg, int jog, char *err, size_t err_n)
 {
     static const char *main_names[] = {
         "Folder", "shuffle", "overlap", "trim_silence", "pause_time",
@@ -1320,7 +1483,7 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
     };
     static const char *key_names[] = {
         "pause_resume", "skip", "previous", "rewind_0_5", "rewind_1",
-        "rewind_1_5", "volume_up", "volume_dn"
+        "rewind_1_5", "volume_up", "volume_dn", "jog_forward", "jog_back"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -1332,6 +1495,8 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
     struct CfgLine *main_last = NULL;
     struct CfgLine *keys_header = NULL;
     struct CfgLine *keys_last = NULL;
+    struct CfgLine *jog_header = NULL;
+    struct CfgLine *jog_last = NULL;
     char buf[AUTODJ_PATH + 128];
     char tmp[AUTODJ_PATH + 16];
     char section[64];
@@ -1341,6 +1506,8 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
     int created = 0;
     int in_main = 0;
     int in_keys = 0;
+    int in_jog = 0;
+    int jog_seen[JOG_COUNT] = {0};
     int main_seen[9] = {0};
     int keys_seen[KEYID_COUNT] = {0};
     int id;
@@ -1390,11 +1557,21 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
         if (section_name(line->text, section, sizeof section)) {
             in_main = eq_ci(section, "Main");
             in_keys = eq_ci(section, "Keys");
+            in_jog = eq_ci(section, "Jog");
             prev = line;
             line = next;
             continue;
         }
-        if ((in_main || in_keys) && line_setting_key(line->text, key, sizeof key)) {
+        if (jog && in_jog && line_setting_key(line->text, key, sizeof key) &&
+            (id = jog_id(key)) >= 0) {
+            jog_seen[id] = 1;
+            jog_value(cfg, id, value, sizeof value);
+            if (rewrite_value(line, value) != 0) {
+                set_err(err, err_n, "out of memory updating %s", path);
+                goto done;
+            }
+        }
+        if (!jog && (in_main || in_keys) && line_setting_key(line->text, key, sizeof key)) {
             int is_main = in_main && (id = main_id(key)) >= 0;
             int is_key = in_keys && (id = keys_id(key)) >= 0;
 
@@ -1423,11 +1600,11 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
         line = next;
     }
 
-    if (ensure_section(&head, "Main", &main_header, &main_last) != 0) {
+    if (!jog && ensure_section(&head, "Main", &main_header, &main_last) != 0) {
         set_err(err, err_n, "out of memory updating %s", path);
         goto done;
     }
-    for (id = 0; id < 9; id++) {
+    for (id = 0; id < 9 && !jog; id++) {
         char text[AUTODJ_PATH + 64];
 
         if (main_seen[id]) {
@@ -1445,14 +1622,13 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
         }
     }
 
-    id = 0;
-    for (id = 0; id < KEYID_COUNT; id++) {
+    for (id = 0; id < KEYID_COUNT && !jog; id++) {
         key_value(cfg, id, value, sizeof value);
         if (!keys_seen[id] && value[0]) {
             break;
         }
     }
-    if (id < KEYID_COUNT) {
+    if (!jog && id < KEYID_COUNT) {
         if (ensure_section(&head, "Keys", &keys_header, &keys_last) != 0) {
             set_err(err, err_n, "out of memory updating %s", path);
             goto done;
@@ -1473,6 +1649,27 @@ int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
             }
             keys_last = insert_after(&head, keys_last, text);
             if (!keys_last) {
+                set_err(err, err_n, "out of memory updating %s", path);
+                goto done;
+            }
+        }
+    }
+
+    if (jog) {
+        if (ensure_section(&head, "Jog", &jog_header, &jog_last) != 0) {
+            set_err(err, err_n, "out of memory updating %s", path);
+            goto done;
+        }
+        for (id = 0; id < JOG_COUNT; id++) {
+            char text[160];
+
+            if (jog_seen[id]) {
+                continue;
+            }
+            jog_value(cfg, id, value, sizeof value);
+            snprintf(text, sizeof text, "%s=%.60s\n", g_jog_names[id], value);
+            jog_last = insert_after(&head, jog_last, text);
+            if (!jog_last) {
                 set_err(err, err_n, "out of memory updating %s", path);
                 goto done;
             }
@@ -1774,6 +1971,16 @@ static int edit_self_test(void)
     return rc;
 }
 
+int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
+{
+    return save_sections(path, cfg, 0, err, err_n);
+}
+
+int config_save_jog(const char *path, const Config *cfg, char *err, size_t err_n)
+{
+    return save_sections(path, cfg, 1, err, err_n);
+}
+
 int config_self_test(void)
 {
     char path[] = "/tmp/autodj-cfg-XXXXXX";
@@ -1931,6 +2138,53 @@ int config_self_test(void)
             rc = -1;
         }
         remove(path3);
+    }
+    if (rc == 0) {
+        char path4[] = "/tmp/autodj-cfg-XXXXXX";
+
+        fd = mkstemp(path4);
+        if (fd < 0) {
+            log_error("autodj", "config test could not create a temp file");
+            return -1;
+        }
+        fp = fdopen(fd, "w");
+        if (!fp) {
+            log_error("autodj", "config test could not write a temp file");
+            close(fd);
+            remove(path4);
+            return -1;
+        }
+        fputs("[Main]\n"
+              "Folder=/tmp\n"
+              "[Jog]\n"
+              "clicks_per_turn = 24\n"
+              "max_speed=99\n"
+              "[Other]\n"
+              "x=1\n",
+              fp);
+        fclose(fp);
+        if (config_load(path4, &cfg) != 0 || cfg.jog_clicks != 24 || cfg.jog_max_speed != 4.0 ||
+            cfg.jog_turn_sec != 1.8 || cfg.jog_smooth_sec != 0.01) {
+            log_error("autodj", "config test parsed unexpected jog values");
+            rc = -1;
+        } else {
+            char err[256];
+
+            cfg.jog_clicks = 30;
+            cfg.jog_spinup_sec = 0;
+            if (config_save_jog(path4, &cfg, err, sizeof err) != 0 ||
+                file_count(path4, "shuffle") != 0 ||
+                file_count(path4, "clicks_per_turn = 30\n") != 1 ||
+                file_count(path4, "max_speed=4\n") != 1 ||
+                file_count(path4, "spinup_time=0\n") != 1 ||
+                file_count(path4, "[Jog]") != 1 || file_count(path4, "x=1\n") != 1 ||
+                config_load(path4, &cfg) != 0 || cfg.jog_clicks != 30 ||
+                cfg.jog_spinup_sec != 0) {
+                log_error("autodj", "config test saved jog values incorrectly");
+                rc = -1;
+            }
+        }
+        remove(path4);
     }
     if (rc == 0 && edit_self_test() != 0) {
         rc = -1;

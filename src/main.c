@@ -95,6 +95,7 @@ static void usage(void)
     fprintf(stderr,
             "usage: autodj [--check] [config]\n"
             "       autodj --config [config]\n"
+            "       autodj --calibrate [config]\n"
             "  config defaults to ~/.config/autodj/master.cfg\n");
 }
 
@@ -104,6 +105,7 @@ int main(int argc, char **argv)
     const char *path = NULL;
     int check = 0;
     int edit = 0;
+    int calibrate = 0;
     int i;
     Config cfg;
     Playlist *pl;
@@ -124,13 +126,17 @@ int main(int argc, char **argv)
             edit = 1;
             continue;
         }
+        if (strcmp(argv[i], "--calibrate") == 0) {
+            calibrate = 1;
+            continue;
+        }
         if (path) {
             usage();
             return 2;
         }
         path = argv[i];
     }
-    if (edit && check) {
+    if (edit + check + calibrate > 1) {
         usage();
         return 2;
     }
@@ -140,6 +146,9 @@ int main(int argc, char **argv)
     }
     if (edit) {
         return config_edit(path) == 0 ? 0 : 1;
+    }
+    if (calibrate) {
+        return dial_calibrate(path) == 0 ? 0 : 1;
     }
 
     log_info("autodj", "starting");
@@ -172,6 +181,23 @@ int main(int argc, char **argv)
              cfg.key_rew05_name[0] ? cfg.key_rew05_name : "(none)",
              cfg.key_rew10_name[0] ? cfg.key_rew10_name : "(none)",
              cfg.key_rew15_name[0] ? cfg.key_rew15_name : "(none)");
+    log_info("autodj", "keys jog forward %s, jog back %s",
+             cfg.key_jog_fwd_name[0] ? cfg.key_jog_fwd_name : "(none)",
+             cfg.key_jog_back_name[0] ? cfg.key_jog_back_name : "(none)");
+    log_info("autodj", "jog %gs per turn, %d clicks per turn, max speed %gx, spin-up %gs, grab %gs, smoothing %gs",
+             cfg.jog_turn_sec, cfg.jog_clicks, cfg.jog_max_speed, cfg.jog_spinup_sec,
+             cfg.jog_grab_sec, cfg.jog_smooth_sec);
+    {
+        JogSettings jog;
+
+        jog.turn_sec = cfg.jog_turn_sec;
+        jog.clicks = cfg.jog_clicks;
+        jog.max_speed = cfg.jog_max_speed;
+        jog.spinup_sec = cfg.jog_spinup_sec;
+        jog.grab_sec = cfg.jog_grab_sec;
+        jog.smooth_sec = cfg.jog_smooth_sec;
+        player_set_jog(&jog);
+    }
 
     pl = playlist_load(cfg.folder, cfg.shuffle);
     if (!pl) {
