@@ -10,10 +10,13 @@
  * two cross-fed tanks with slowly moving allpasses, read at several points
  * for a wide stereo tail. Pitch change is a phase vocoder, so a full mix
  * keeps its steady tones and only the pitch moves. Autopan moves the
- * balance from one side to the other and back, in time with the beat.
+ * balance from one side to the other and back, in time with the beat,
+ * after a phaser: a chain of allpass filters whose notches sweep up and
+ * down once per measure.
  */
 
 #define AP_DELAY 512
+#define PH_STAGES 6
 #define PV_OSAMP 8
 #define PV_PI 3.14159265358979323846f
 
@@ -81,6 +84,10 @@ struct FxState {
     int ap_w;
     double ap_phase;
     float ap_mix;
+    float ph_x[2][PH_STAGES];
+    float ph_y[2][PH_STAGES];
+    float ph_fb[2];
+    double ph_phase;
     float beat_sec;
     int ap_on;
     int ap_live;
@@ -362,6 +369,10 @@ static void ap_clear(FxState *st)
     memset(st->ap_buf, 0, sizeof st->ap_buf);
     st->ap_w = 0;
     st->ap_phase = 0;
+    memset(st->ph_x, 0, sizeof st->ph_x);
+    memset(st->ph_y, 0, sizeof st->ph_y);
+    memset(st->ph_fb, 0, sizeof st->ph_fb);
+    st->ph_phase = 0;
 }
 
 void fx_setup(FxState *st, const FxParams *p)
@@ -800,6 +811,54 @@ static float ap_read(const float *buf, int w, float delay)
     return buf[i0] + (buf[i1] - buf[i0]) * frac;
 }
 
+/* Six first-order allpasses with feedback, mixed half and half with the
+ * input. Where the chain turns the phase around, the two halves cancel, so
+ * three notches sweep between 300 Hz and 3 kHz, once up and down per
+ * measure.
+ */
+static void process_phaser(FxState *st, float *left, float *right)
+{
+    const float fb = 0.5f;
+    double sweep;
+    float freq;
+    float t;
+    float a;
+    float *io[2];
+    int c;
+    int k;
+
+    sweep = 4.0 * (st->beat_sec > 0 ? st->beat_sec : 0.5);
+    st->ph_phase += 1.0 / (sweep * (double)st->rate);
+    if (st->ph_phase >= 1.0) {
+        st->ph_phase -= floor(st->ph_phase);
+    }
+    freq = 300.0f * powf(10.0f, 0.5f - 0.5f * cosf(2.0f * PV_PI * (float)st->ph_phase));
+    if (freq > 0.45f * (float)st->rate) {
+        freq = 0.45f * (float)st->rate;
+    }
+    t = tanf(PV_PI * freq / (float)st->rate);
+    a = (t - 1.0f) / (t + 1.0f);
+
+    io[0] = left;
+    io[1] = right;
+    for (c = 0; c < 2; c++) {
+        float x = *io[c];
+        float v = x + fb * st->ph_fb[c];
+
+        for (k = 0; k < PH_STAGES; k++) {
+            float y = a * v + st->ph_x[c][k] - a * st->ph_y[c][k];
+
+            st->ph_x[c][k] = v;
+            st->ph_y[c][k] = y;
+            v = y;
+        }
+        st->ph_fb[c] = v;
+        /* 0.75 keeps the feedback peaks near the input level. */
+        v = 0.75f * 0.5f * (x + v);
+        *io[c] = fin(x + st->ap_mix * (v - x));
+    }
+}
+
 static void process_autopan(FxState *st, float *left, float *right)
 {
     double period;
@@ -829,6 +888,7 @@ static void process_autopan(FxState *st, float *left, float *right)
         ap_clear(st);
         st->ap_live = 1;
     }
+    process_phaser(st, left, right);
 
     /* Period counts 4-beat measures, snapped to whole beats. */
     period = round(st->p.ap_period * 4.0);

@@ -32,7 +32,8 @@ typedef struct FxParams {
     float ap_smooth; /* 0.25..0.5, default 0.5. 0.5 is a smooth swing, lower
                       * waits longer at each side. */
     float ap_distance; /* 0..100, default 75. Percent from the middle toward
-                        * each speaker. 100 is all the way. */
+                        * each speaker. 100 is all the way. A phaser runs
+                        * with autopan, sweeping once per measure. */
 } FxParams;
 
 typedef struct FxState FxState;
