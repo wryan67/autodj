@@ -274,17 +274,31 @@ static int fx_section(const char *section)
     if (eq_ci(section, "Autopan")) {
         return 2;
     }
+    if (eq_ci(section, "Phaser")) {
+        return 3;
+    }
     return -1;
+}
+
+/* Keys left from the old Mixxx-style phaser. They are ignored and dropped. */
+static int old_phaser_key(const char *key)
+{
+    return eq_ci(key, "depth") || eq_ci(key, "range") || eq_ci(key, "triplets") ||
+           eq_ci(key, "stereo");
 }
 
 static void apply_fx(Config *cfg, int section, const char *key, const char *val)
 {
     double v = 0;
     int on = 0;
-    const char *what = section == 0 ? "reverb" : section == 1 ? "chipmunk" : "autopan";
+    const char *what = section == 0 ? "reverb" : section == 1 ? "chipmunk" :
+                       section == 2 ? "autopan" : "phaser";
 
     if (eq_ci(key, "on")) {
         /* Old configs stored the startup state here. Effects always start off. */
+        return;
+    }
+    if (section == 3 && old_phaser_key(key)) {
         return;
     }
     if ((section == 1 && eq_ci(key, "semitones")) ||
@@ -353,6 +367,48 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
             log_warn("autodj", "autopan distance must be from 0 to 100, got %s", val);
         } else {
             cfg->fx.ap_distance = (float)v;
+        }
+    } else if (section == 3 && eq_ci(key, "period")) {
+        if (parse_real(val, 0.25, 16, &v) != 0) {
+            log_warn("autodj", "phaser period must be from 0.25 to 16, got %s", val);
+        } else {
+            cfg->fx.ph_period = (float)v;
+        }
+    } else if (section == 3 && eq_ci(key, "low")) {
+        if (parse_real(val, 20, 20000, &v) != 0) {
+            log_warn("autodj", "phaser low must be from 20 to 20000, got %s", val);
+        } else {
+            cfg->fx.ph_low = (float)v;
+        }
+    } else if (section == 3 && eq_ci(key, "high")) {
+        if (parse_real(val, 20, 20000, &v) != 0) {
+            log_warn("autodj", "phaser high must be from 20 to 20000, got %s", val);
+        } else {
+            cfg->fx.ph_high = (float)v;
+        }
+    } else if (section == 3 && eq_ci(key, "stages")) {
+        if (parse_real(val, 1, 12, &v) != 0 || v != (int)v) {
+            log_warn("autodj", "phaser stages must be a whole number from 1 to 12, got %s", val);
+        } else {
+            cfg->fx.ph_stages = (int)v;
+        }
+    } else if (section == 3 && eq_ci(key, "feedback")) {
+        if (parse_real(val, 0, 0.9, &v) != 0) {
+            log_warn("autodj", "phaser feedback must be from 0 to 0.9, got %s", val);
+        } else {
+            cfg->fx.ph_feedback = (float)v;
+        }
+    } else if (section == 3 && eq_ci(key, "mix")) {
+        if (parse_real(val, 0, 100, &v) != 0) {
+            log_warn("autodj", "phaser mix must be from 0 to 100, got %s", val);
+        } else {
+            cfg->fx.ph_blend = (float)v;
+        }
+    } else if (section == 3 && eq_ci(key, "boost")) {
+        if (parse_real(val, 0, 100, &v) != 0) {
+            log_warn("autodj", "phaser boost must be from 0 to 100, got %s", val);
+        } else {
+            cfg->fx.ph_boost = (float)v;
         }
     } else {
         log_warn("autodj", "unknown %s setting %s", what, key);
@@ -430,10 +486,6 @@ static void apply(Config *cfg, const char *section, const char *key, const char 
             apply_fx(cfg, fx, key, val);
             return;
         }
-    }
-    if (eq_ci(section, "Phaser")) {
-        /* The phaser has no settings, so an old [Phaser] section is ignored. */
-        return;
     }
     log_warn("autodj", "ignoring %s in section %s", key, section[0] ? section : "(none)");
 }
@@ -526,6 +578,17 @@ int config_load(const char *path, Config *cfg)
     cfg->fx.reverb_on = 0;
     cfg->fx.pitch_on = 0;
     cfg->fx.autopan_on = 0;
+    cfg->fx.phaser_on = 0;
+    if (cfg->fx.ph_low >= cfg->fx.ph_high) {
+        FxParams def;
+
+        fx_defaults(&def);
+        log_warn("autodj", "phaser low (%g) must be below high (%g), using %g and %g",
+                 (double)cfg->fx.ph_low, (double)cfg->fx.ph_high,
+                 (double)def.ph_low, (double)def.ph_high);
+        cfg->fx.ph_low = def.ph_low;
+        cfg->fx.ph_high = def.ph_high;
+    }
     return 0;
 }
 
@@ -842,6 +905,13 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->ap_period, sizeof edit->ap_period, "4");
     snprintf(edit->ap_smooth, sizeof edit->ap_smooth, "0.5");
     snprintf(edit->ap_distance, sizeof edit->ap_distance, "75");
+    snprintf(edit->ph_period, sizeof edit->ph_period, "1");
+    snprintf(edit->ph_low, sizeof edit->ph_low, "300");
+    snprintf(edit->ph_high, sizeof edit->ph_high, "3000");
+    snprintf(edit->ph_stages, sizeof edit->ph_stages, "6");
+    snprintf(edit->ph_feedback, sizeof edit->ph_feedback, "0.5");
+    snprintf(edit->ph_mix, sizeof edit->ph_mix, "50");
+    snprintf(edit->ph_boost, sizeof edit->ph_boost, "15");
 }
 
 static void copy_raw(char *dest, size_t n, const char *val)
@@ -938,6 +1008,22 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
                 copy_raw(edit->ap_smooth, sizeof edit->ap_smooth, val);
             } else if (eq_ci(key, "distance")) {
                 copy_raw(edit->ap_distance, sizeof edit->ap_distance, val);
+            }
+        } else if (fx == 3) {
+            if (eq_ci(key, "period")) {
+                copy_raw(edit->ph_period, sizeof edit->ph_period, val);
+            } else if (eq_ci(key, "low")) {
+                copy_raw(edit->ph_low, sizeof edit->ph_low, val);
+            } else if (eq_ci(key, "high")) {
+                copy_raw(edit->ph_high, sizeof edit->ph_high, val);
+            } else if (eq_ci(key, "stages")) {
+                copy_raw(edit->ph_stages, sizeof edit->ph_stages, val);
+            } else if (eq_ci(key, "feedback")) {
+                copy_raw(edit->ph_feedback, sizeof edit->ph_feedback, val);
+            } else if (eq_ci(key, "mix")) {
+                copy_raw(edit->ph_mix, sizeof edit->ph_mix, val);
+            } else if (eq_ci(key, "boost")) {
+                copy_raw(edit->ph_boost, sizeof edit->ph_boost, val);
             }
         }
     }
@@ -1204,6 +1290,13 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.ap_period);
     trim(in.ap_smooth);
     trim(in.ap_distance);
+    trim(in.ph_period);
+    trim(in.ph_low);
+    trim(in.ph_high);
+    trim(in.ph_stages);
+    trim(in.ph_feedback);
+    trim(in.ph_mix);
+    trim(in.ph_boost);
 
     memset(&out, 0, sizeof out);
     out.key_pause = -1;
@@ -1375,6 +1468,41 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
         take_real(err, err_n, in.ap_distance, 0, 100, "Distance", &out.fx.ap_distance) != 0) {
         failed = 1;
     }
+    {
+        int low_ok = !in.ph_low[0] ||
+                     take_real(err, err_n, in.ph_low, 20, 20000, "Low Hz", &out.fx.ph_low) == 0;
+        int high_ok = !in.ph_high[0] ||
+                      take_real(err, err_n, in.ph_high, 20, 20000, "High Hz",
+                                &out.fx.ph_high) == 0;
+
+        if (in.ph_period[0] &&
+            take_real(err, err_n, in.ph_period, 0.25, 16, "Period", &out.fx.ph_period) != 0) {
+            failed = 1;
+        }
+        if (!low_ok || !high_ok) {
+            failed = 1;
+        } else if (out.fx.ph_low >= out.fx.ph_high) {
+            add_err(err, err_n, "Low Hz must be below High Hz.");
+            failed = 1;
+        }
+        if (in.ph_stages[0] &&
+            take_int(err, err_n, in.ph_stages, 1, 12, "Stages", &out.fx.ph_stages) != 0) {
+            failed = 1;
+        }
+        if (in.ph_feedback[0] &&
+            take_real(err, err_n, in.ph_feedback, 0, 0.9, "Feedback",
+                      &out.fx.ph_feedback) != 0) {
+            failed = 1;
+        }
+        if (in.ph_mix[0] &&
+            take_real(err, err_n, in.ph_mix, 0, 100, "Mix %", &out.fx.ph_blend) != 0) {
+            failed = 1;
+        }
+        if (in.ph_boost[0] &&
+            take_real(err, err_n, in.ph_boost, 0, 100, "Boost %", &out.fx.ph_boost) != 0) {
+            failed = 1;
+        }
+    }
     for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
             failed = 1;
@@ -1526,8 +1654,9 @@ static int fx_key_id(int section, const char *key)
     static const char *rv[] = {"decay", "bw", "damping", "send"};
     static const char *ps[] = {"pitch", "range", "semitones", "formant"};
     static const char *ap[] = {"period", "smoothing", "distance"};
-    const char **names = section == 0 ? rv : section == 1 ? ps : ap;
-    int count = section == 0 ? 4 : section == 1 ? 4 : 3;
+    static const char *ph[] = {"period", "low", "high", "stages", "feedback", "mix", "boost"};
+    const char **names = section == 0 ? rv : section == 1 ? ps : section == 2 ? ap : ph;
+    int count = section == 0 ? 4 : section == 1 ? 4 : section == 2 ? 3 : 7;
     int i;
 
     for (i = 0; i < count; i++) {
@@ -1543,6 +1672,7 @@ static const char *fx_key_name(int section, int id)
     static const char *rv[] = {"decay", "bw", "damping", "send"};
     static const char *ps[] = {"pitch", "range", "semitones", "formant"};
     static const char *ap[] = {"period", "smoothing", "distance"};
+    static const char *ph[] = {"period", "low", "high", "stages", "feedback", "mix", "boost"};
 
     if (section == 0) {
         return rv[id];
@@ -1550,7 +1680,10 @@ static const char *fx_key_name(int section, int id)
     if (section == 1) {
         return ps[id];
     }
-    return ap[id];
+    if (section == 2) {
+        return ap[id];
+    }
+    return ph[id];
 }
 
 static void fx_value(const Config *cfg, int section, int id, char *dest, size_t n)
@@ -1586,6 +1719,31 @@ static void fx_value(const Config *cfg, int section, int id, char *dest, size_t 
             return;
         default:
             snprintf(dest, n, "%s", fx->ps_formant ? "true" : "false");
+            return;
+        }
+    }
+    if (section == 3) {
+        switch (id) {
+        case 0:
+            fmt_float(dest, n, fx->ph_period);
+            return;
+        case 1:
+            fmt_float(dest, n, fx->ph_low);
+            return;
+        case 2:
+            fmt_float(dest, n, fx->ph_high);
+            return;
+        case 3:
+            snprintf(dest, n, "%d", fx->ph_stages);
+            return;
+        case 4:
+            fmt_float(dest, n, fx->ph_feedback);
+            return;
+        case 5:
+            fmt_float(dest, n, fx->ph_blend);
+            return;
+        default:
+            fmt_float(dest, n, fx->ph_boost);
             return;
         }
     }
@@ -1949,7 +2107,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     int jog_seen[JOG_COUNT] = {0};
     int main_seen[10] = {0};
     int keys_seen[KEYID_COUNT] = {0};
-    int fx_seen[3][4] = {{0}};
+    int fx_seen[4][7] = {{0}};
     int id;
     int rc = -1;
 
@@ -1999,8 +2157,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             in_keys = eq_ci(section, "Keys");
             in_jog = eq_ci(section, "Jog");
             in_fx = fx_section(section);
-            /* The phaser has no settings, so an old [Phaser] section is dropped. */
-            in_old_fx = eq_ci(section, "Phaser");
+            in_old_fx = 0;
             /* Pitch Shift is written again as Chipmunk, or dropped if both are there. */
             if (!jog && in_fx == 1 && !eq_ci(section, "Chipmunk")) {
                 struct CfgLine *ck_header;
@@ -2050,9 +2207,10 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             line = next;
             continue;
         }
-        /* Effects always start off, so the old startup switch goes away. */
+        /* Effects always start off, so the old startup switch goes away, and so
+         * do the settings of the old Mixxx-style phaser. */
         if (!jog && in_fx >= 0 && line_setting_key(line->text, key, sizeof key) &&
-            eq_ci(key, "on")) {
+            (eq_ci(key, "on") || (in_fx == 3 && old_phaser_key(key)))) {
             unlink_line(&head, prev, line);
             line = next;
             continue;
@@ -2158,11 +2316,11 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     }
 
     if (!jog) {
-        static const char *fx_names[] = {"Reverb", "Chipmunk", "Autopan"};
-        static const int fx_count[] = {4, 4, 3};
+        static const char *fx_names[] = {"Reverb", "Chipmunk", "Autopan", "Phaser"};
+        static const int fx_count[] = {4, 4, 3, 7};
         int fx;
 
-        for (fx = 0; fx < 3; fx++) {
+        for (fx = 0; fx < 4; fx++) {
             struct CfgLine *fx_header = NULL;
             struct CfgLine *fx_last = NULL;
 
@@ -2332,7 +2490,10 @@ static int edit_self_test(void)
         "[Pitch Shift]\n"
         "pitch=0.5\n"
         "[Phaser]\n"
-        "depth=0.7\n";
+        "on=true\n"
+        "depth=0.7\n"
+        "stages=7\n"
+        "stereo=true\n";
     const char *expect =
         "# keep me\n"
         "[Main]\n"
@@ -2364,6 +2525,14 @@ static int edit_self_test(void)
         "range=1\n"
         "semitones=true\n"
         "formant=false\n"
+        "[Phaser]\n"
+        "stages=7\n"
+        "period=1\n"
+        "low=300\n"
+        "high=3000\n"
+        "feedback=0.5\n"
+        "mix=50\n"
+        "boost=15\n"
         "[Autopan]\n"
         "period=4\n"
         "smoothing=0.5\n"
@@ -2396,7 +2565,8 @@ static int edit_self_test(void)
         edit.key_reverb[0] != '\0' || edit.key_pause[0] != '\0' ||
         strcmp(edit.rv_decay, "0.5") != 0 || strcmp(edit.ap_distance, "75") != 0 ||
         edit.key_autopan[0] != '\0' || strcmp(edit.key_phaser, "KEY_B") != 0 ||
-        strcmp(edit.ps_semi, "true") != 0 ||
+        strcmp(edit.ps_semi, "true") != 0 || strcmp(edit.ph_stages, "7") != 0 ||
+        strcmp(edit.ph_low, "300") != 0 || strcmp(edit.ph_mix, "50") != 0 ||
         strcmp(edit.key_pitch, "KEY_C") != 0 || strcmp(edit.ps_pitch, "0.5") != 0) {
         log_error("autodj", "config editor test loaded unexpected text");
         rc = -1;
@@ -2417,6 +2587,7 @@ static int edit_self_test(void)
     snprintf(cfg.key_skip_name, sizeof cfg.key_skip_name, "KEY_KPDOT");
     snprintf(cfg.key_pitch_name, sizeof cfg.key_pitch_name, "KEY_C");
     snprintf(cfg.key_phaser_name, sizeof cfg.key_phaser_name, "KEY_B");
+    cfg.fx.ph_stages = 7;
     if (rc == 0 && (config_save(path, &cfg, err, sizeof err) != 0 ||
                     read_text(path, got, sizeof got) != 0 || strcmp(got, expect) != 0)) {
         log_error("autodj", "config editor test did not keep the file layout: %s\n%s", err, got);
@@ -2487,10 +2658,23 @@ static int edit_self_test(void)
                     cfg.key_prev != -1 || cfg.key_rew05 != -1 ||
                     cfg.key_rew10 != -1 || cfg.key_rew15 != -1 ||
                     cfg.fx.rv_decay != 0.5f || cfg.fx.ps_semi != 1 ||
-                    cfg.fx.ap_period != 4 || cfg.fx.ap_distance != 75)) {
+                    cfg.fx.ap_period != 4 || cfg.fx.ap_distance != 75 ||
+                    cfg.fx.ph_low != 300 || cfg.fx.ph_stages != 6)) {
         log_error("autodj", "config editor test rejected a valid form: %s", err);
         rc = -1;
     }
+    snprintf(edit.ph_low, sizeof edit.ph_low, "3000");
+    snprintf(edit.ph_high, sizeof edit.ph_high, "3000");
+    snprintf(edit.ph_stages, sizeof edit.ph_stages, "2.5");
+    if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) == 0 ||
+                    strstr(err, "Low Hz must be below High Hz.") == NULL ||
+                    strstr(err, "Stages must be a whole number from 1 to 12.") == NULL)) {
+        log_error("autodj", "config editor test missed a bad phaser: %s", err);
+        rc = -1;
+    }
+    edit.ph_low[0] = '\0';
+    edit.ph_high[0] = '\0';
+    edit.ph_stages[0] = '\0';
     snprintf(edit.volume, sizeof edit.volume, "150");
     snprintf(edit.folder, sizeof edit.folder, "/tmp/autodj-missing-folder");
     snprintf(edit.shuffle, sizeof edit.shuffle, "maybe");
@@ -2627,7 +2811,11 @@ int config_self_test(void)
           "period=1.5\n"
           "smoothing=0.3\n"
           "[Phaser]\n"
-          "depth=0.7\n",
+          "depth=0.7\n"
+          "stages=7\n"
+          "triplets=true\n"
+          "mix=80\n"
+          "low=4000\n",
           fp);
     fclose(fp);
 
@@ -2643,6 +2831,8 @@ int config_self_test(void)
                cfg.fx.ps_pitch != -0.5f ||
                cfg.fx.rv_decay != 0.5f || cfg.fx.ps_semi != 1 || cfg.fx.ap_period != 1.5f ||
                cfg.fx.ap_smooth != 0.3f || cfg.fx.ap_distance != 75 ||
+               cfg.fx.ph_stages != 7 || cfg.fx.ph_blend != 80 || cfg.fx.ph_low != 300 ||
+               cfg.fx.ph_high != 3000 || cfg.fx.ph_period != 1 ||
                cfg.fx.reverb_on != 0 || cfg.fx.pitch_on != 0 || cfg.fx.autopan_on != 0 ||
                cfg.key_prev != slash || cfg.key_rew05 != kp1 ||
                cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3) {

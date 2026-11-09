@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* Reverb is a plate reverb: input smoothing, four diffusing allpasses, and
  * two cross-fed tanks with slowly moving allpasses, read at several points
@@ -16,7 +17,7 @@
  */
 
 #define AP_DELAY 512
-#define PH_STAGES 6
+#define PH_STAGES 12
 #define PV_OSAMP 8
 #define PV_PI 3.14159265358979323846f
 
@@ -89,6 +90,11 @@ struct FxState {
     float ph_fb[2];
     double ph_phase;
     float ph_mix;
+    float ap_ret_amp;
+    float ap_ret_th;
+    float ap_ret_w;
+    int ap_ret;
+    unsigned ap_rng; /* 0 always starts to the left (self test). */
     int ph_on;
     int ph_live;
     float beat_sec;
@@ -128,6 +134,13 @@ void fx_defaults(FxParams *p)
     p->ap_period = 4.0f;
     p->ap_smooth = 0.5f;
     p->ap_distance = 75.0f;
+    p->ph_period = 1.0f;
+    p->ph_low = 300.0f;
+    p->ph_high = 3000.0f;
+    p->ph_stages = 6;
+    p->ph_feedback = 0.5f;
+    p->ph_blend = 50.0f;
+    p->ph_boost = 15.0f;
 }
 
 static int scaled(unsigned rate, int n)
@@ -249,6 +262,10 @@ FxState *fx_new(unsigned rate)
         return NULL;
     }
     st->rate = rate;
+    st->ap_rng = (unsigned)time(NULL) ^ (unsigned)(clock() << 8) ^ 0x9e3779b9u;
+    if (!st->ap_rng) {
+        st->ap_rng = 1;
+    }
 
     rv_layout(st, NULL, &total);
     st->rv_block = calloc((size_t)total, sizeof(float));
@@ -372,6 +389,10 @@ static void ap_clear(FxState *st)
     memset(st->ap_buf, 0, sizeof st->ap_buf);
     st->ap_w = 0;
     st->ap_phase = 0;
+    st->ap_ret = 0;
+    st->ap_ret_amp = 0;
+    st->ap_ret_th = 0;
+    st->ap_ret_w = 0;
 }
 
 static void ph_clear(FxState *st)
@@ -823,14 +844,18 @@ static float ap_read(const float *buf, int w, float delay)
     return buf[i0] + (buf[i1] - buf[i0]) * frac;
 }
 
-/* Six first-order allpasses with feedback, mixed half and half with the
- * input. Where the chain turns the phase around, the two halves cancel, so
- * three notches sweep between 300 Hz and 3 kHz, once up and down per
- * measure.
+/* First-order allpasses with feedback, mixed with the input. Where the
+ * chain turns the phase around, the two cancel, so notches (one per two
+ * stages) sweep between low and high, up and down once per period.
  */
 static void process_phaser(FxState *st, float *left, float *right)
 {
-    const float fb = 0.5f;
+    float fb;
+    float blend;
+    float gain;
+    float lo;
+    float hi;
+    int stages;
     double sweep;
     float freq;
     float t;
@@ -853,15 +878,29 @@ static void process_phaser(FxState *st, float *left, float *right)
         st->ph_live = 1;
     }
 
-    sweep = 4.0 * (st->beat_sec > 0 ? st->beat_sec : 0.5);
+    /* Period counts 4-beat measures, snapped to whole beats. */
+    sweep = round(st->p.ph_period * 4.0);
+    if (sweep < 1) {
+        sweep = 1;
+    }
+    sweep *= st->beat_sec > 0 ? st->beat_sec : 0.5;
     st->ph_phase += 1.0 / (sweep * (double)st->rate);
     if (st->ph_phase >= 1.0) {
         st->ph_phase -= floor(st->ph_phase);
     }
-    freq = 300.0f * powf(10.0f, 0.5f - 0.5f * cosf(2.0f * PV_PI * (float)st->ph_phase));
-    if (freq > 0.45f * (float)st->rate) {
-        freq = 0.45f * (float)st->rate;
+    hi = st->p.ph_high < 0.45f * (float)st->rate ? st->p.ph_high : 0.45f * (float)st->rate;
+    lo = st->p.ph_low > 10.0f ? st->p.ph_low : 10.0f;
+    if (lo > hi) {
+        lo = hi;
     }
+    freq = lo * powf(hi / lo, 0.5f - 0.5f * cosf(2.0f * PV_PI * (float)st->ph_phase));
+    stages = st->p.ph_stages < 1 ? 1 : st->p.ph_stages > PH_STAGES ? PH_STAGES : st->p.ph_stages;
+    fb = st->p.ph_feedback < 0 ? 0 : st->p.ph_feedback > 0.9f ? 0.9f : st->p.ph_feedback;
+    blend = clamp_unit(st->p.ph_blend * 0.01f);
+    /* 0.75 keeps the feedback peaks near the input level; boost then makes
+     * up for what the notches take out.
+     */
+    gain = 0.75f * (1.0f + (st->p.ph_boost > 0 ? st->p.ph_boost * 0.01f : 0));
     t = tanf(PV_PI * freq / (float)st->rate);
     a = (t - 1.0f) / (t + 1.0f);
 
@@ -871,7 +910,7 @@ static void process_phaser(FxState *st, float *left, float *right)
         float x = *io[c];
         float v = x + fb * st->ph_fb[c];
 
-        for (k = 0; k < PH_STAGES; k++) {
+        for (k = 0; k < stages; k++) {
             float y = a * v + st->ph_x[c][k] - a * st->ph_y[c][k];
 
             st->ph_x[c][k] = v;
@@ -879,9 +918,65 @@ static void process_phaser(FxState *st, float *left, float *right)
             v = y;
         }
         st->ph_fb[c] = v;
-        /* 0.75 keeps the feedback peaks near the input level. */
-        v = 0.75f * 0.5f * (x + v);
+        v = gain * (x + blend * (v - x));
         *io[c] = fin(x + st->ph_mix * (v - x));
+    }
+}
+
+/* Where the swing is at a phase, -1..1, before distance. */
+static float ap_shape(double phase, float smooth)
+{
+    float hold;
+    float boost;
+    float pos;
+
+    if (smooth < 0.25f) {
+        smooth = 0.25f;
+    }
+    if (smooth > 0.5f) {
+        smooth = 0.5f;
+    }
+    /* hold is the share of each half swing spent parked at the side. A sine
+     * scaled up by 1/cos(pi * hold) and clipped stays at 1 for that long.
+     */
+    hold = 0.5f - smooth;
+    boost = 1.0f / cosf(PV_PI * hold);
+    pos = boost * sinf(2.0f * PV_PI * (float)phase);
+    if (pos > 1.0f) {
+        pos = 1.0f;
+    }
+    if (pos < -1.0f) {
+        pos = -1.0f;
+    }
+    return pos;
+}
+
+/* Turned off while moving out: slow down quickly, stop a little past where
+ * it is, and come back to the middle. The turn runs at four times the swing
+ * speed; the way back at the swing speed.
+ */
+static void ap_begin_return(FxState *st, float width, double step)
+{
+    float s0 = ap_shape(st->ap_phase, st->p.ap_smooth);
+    float x0 = width * s0;
+    float v0 = width * (ap_shape(st->ap_phase + step, st->p.ap_smooth) - s0);
+    float w = 2.0f * PV_PI * (float)step;
+    float q = fabsf(v0) / (4.0f * w);
+    float amp = sqrtf(x0 * x0 + q * q);
+
+    st->ap_ret_w = w;
+    if (amp < 1e-6f) {
+        st->ap_ret = 0;
+        return;
+    }
+    st->ap_ret_amp = (x0 != 0 ? x0 : v0) < 0 ? -amp : amp;
+    if (q < 1e-9f) {
+        /* Parked at the side: start straight back. */
+        st->ap_ret = 2;
+        st->ap_ret_th = 0;
+    } else {
+        st->ap_ret = 1;
+        st->ap_ret_th = atan2f(fabsf(x0), q);
     }
 }
 
@@ -889,9 +984,6 @@ static void process_autopan(FxState *st, float *left, float *right)
 {
     double period;
     float width;
-    float smooth;
-    float hold;
-    float boost;
     float pos;
     float frac;
     float gl;
@@ -901,13 +993,20 @@ static void process_autopan(FxState *st, float *left, float *right)
     float l;
     float r;
     double half;
+    double step;
 
     if (!st->ap_live) {
         if (!st->ap_on) {
             return;
         }
-        /* Starts at the middle of the swing. */
+        /* Starts at the middle of the swing, heading left or right at
+         * random.
+         */
         ap_clear(st);
+        st->ap_rng ^= st->ap_rng << 13;
+        st->ap_rng ^= st->ap_rng >> 17;
+        st->ap_rng ^= st->ap_rng << 5;
+        st->ap_phase = (st->ap_rng >> 16) & 1 ? 0.5 : 0.0;
         st->ap_mix = 0;
         st->ap_live = 1;
     }
@@ -921,42 +1020,62 @@ static void process_autopan(FxState *st, float *left, float *right)
         period = 1;
     }
     period *= st->beat_sec > 0 ? st->beat_sec : 0.5;
-    half = st->ap_phase < 0.5 ? 0.5 : 1.0;
-    st->ap_phase += 1.0 / (period * (double)st->rate);
-    if (!st->ap_on && st->ap_phase >= half) {
-        /* Turned off: the swing ran on to the middle, where the song is
-         * back as it was, so stop here.
-         */
-        ap_clear(st);
-        st->ap_mix = 0;
-        st->ap_live = 0;
-        return;
-    }
-    if (st->ap_phase >= 1.0) {
-        st->ap_phase -= floor(st->ap_phase);
+    step = 1.0 / (period * (double)st->rate);
+    width = clamp_unit(st->p.ap_distance * 0.01f) * st->ap_mix;
+
+    if (!st->ap_on && !st->ap_ret &&
+        (st->ap_phase < 0.25 || (st->ap_phase >= 0.5 && st->ap_phase < 0.75))) {
+        ap_begin_return(st, width, step);
+        if (!st->ap_ret) {
+            ap_clear(st);
+            st->ap_mix = 0;
+            st->ap_live = 0;
+            return;
+        }
     }
 
-    width = clamp_unit(st->p.ap_distance * 0.01f) * st->ap_mix;
-    smooth = st->p.ap_smooth;
-    if (smooth < 0.25f) {
-        smooth = 0.25f;
+    if (st->ap_ret == 1) {
+        st->ap_ret_th += 4.0f * st->ap_ret_w;
+        if (st->ap_ret_th >= 0.5f * PV_PI) {
+            st->ap_ret = 2;
+            st->ap_ret_th = 0;
+        }
+        pos = st->ap_ret_amp * (st->ap_ret == 1 ? sinf(st->ap_ret_th) : 1.0f);
+    } else if (st->ap_ret == 2) {
+        st->ap_ret_th += st->ap_ret_w;
+        if (st->ap_ret_th >= 0.5f * PV_PI) {
+            /* Back at the middle. Off stops here; on again carries on
+             * swinging toward the other side.
+             */
+            if (!st->ap_on) {
+                ap_clear(st);
+                st->ap_mix = 0;
+                st->ap_live = 0;
+                return;
+            }
+            st->ap_phase = st->ap_ret_amp > 0 ? 0.5 : 0.0;
+            st->ap_ret = 0;
+            pos = 0;
+        } else {
+            pos = st->ap_ret_amp * cosf(st->ap_ret_th);
+        }
+    } else {
+        half = st->ap_phase < 0.5 ? 0.5 : 1.0;
+        st->ap_phase += step;
+        if (!st->ap_on && st->ap_phase >= half) {
+            /* Turned off on the way in: the swing ran on to the middle,
+             * where the song is back as it was, so stop here.
+             */
+            ap_clear(st);
+            st->ap_mix = 0;
+            st->ap_live = 0;
+            return;
+        }
+        if (st->ap_phase >= 1.0) {
+            st->ap_phase -= floor(st->ap_phase);
+        }
+        pos = width * ap_shape(st->ap_phase, st->p.ap_smooth);
     }
-    if (smooth > 0.5f) {
-        smooth = 0.5f;
-    }
-    /* hold is the share of each half swing spent parked at the side. A sine
-     * scaled up by 1/cos(pi * hold) and clipped stays at 1 for that long.
-     */
-    hold = 0.5f - smooth;
-    boost = 1.0f / cosf(PV_PI * hold);
-    pos = boost * sinf(2.0f * PV_PI * (float)st->ap_phase);
-    if (pos > 1.0f) {
-        pos = 1.0f;
-    }
-    if (pos < -1.0f) {
-        pos = -1.0f;
-    }
-    pos *= width;
 
     /* Equal power, so the song is as loud at the side as in the middle,
      * trimmed a little at the sides so peaks do not clip.
@@ -1150,6 +1269,7 @@ int fx_self_test(void)
     p.ap_distance = 100;
     p.ap_period = 0.25f;
     fx_setup(st, &p);
+    st->ap_rng = 0;
     fx_set_on(st, 0, 0, 1, 0);
     fx_set_beat(st, 0.5f);
     {
@@ -1185,6 +1305,7 @@ int fx_self_test(void)
      * passes the song through untouched.
      */
     fx_setup(st, &p);
+    st->ap_rng = 0;
     fx_set_on(st, 0, 0, 1, 0);
     for (i = 0; i < 5512; i++) {
         left = 0.5f;
@@ -1203,6 +1324,68 @@ int fx_self_test(void)
         if (i >= 5600 && (left != 0.5f || right != 0.5f)) {
             log_error("fx", "autopan still on after reaching the middle (%.3f %.3f)",
                       left, right);
+            goto done;
+        }
+    }
+
+    /* Turned off while moving out, a tenth of the way through the swing
+     * (about 59% left), it levels off well short of the side, comes back,
+     * and stops at the middle.
+     */
+    fx_setup(st, &p);
+    st->ap_rng = 0;
+    fx_set_on(st, 0, 0, 1, 0);
+    for (i = 0; i < 2205; i++) {
+        left = 0.5f;
+        right = 0.5f;
+        fx_process(st, &left, &right);
+    }
+    fx_set_on(st, 0, 0, 0, 0);
+    {
+        float low_r = 1;
+
+        for (i = 0; i < 8000; i++) {
+            left = 0.5f;
+            right = 0.5f;
+            fx_process(st, &left, &right);
+            low_r = right < low_r ? right : low_r;
+            if (i >= 7000 && (left != 0.5f || right != 0.5f)) {
+                log_error("fx", "autopan did not return to the middle (%.3f %.3f)", left, right);
+                goto done;
+            }
+        }
+        if (low_r < 0.12f) {
+            log_error("fx", "autopan kept going out after being turned off (right %.3f)", low_r);
+            goto done;
+        }
+    }
+
+    /* Started again and again, it heads both ways. */
+    {
+        int went_left = 0;
+        int went_right = 0;
+        int run;
+
+        st->ap_rng = 12345;
+        for (run = 0; run < 16; run++) {
+            fx_set_on(st, 0, 0, 1, 0);
+            for (i = 0; i < 2000; i++) {
+                left = 0.5f;
+                right = 0.5f;
+                fx_process(st, &left, &right);
+            }
+            went_left += left > right;
+            went_right += right > left;
+            fx_set_on(st, 0, 0, 0, 0);
+            for (i = 0; i < 30000; i++) {
+                left = 0.5f;
+                right = 0.5f;
+                fx_process(st, &left, &right);
+            }
+        }
+        if (!went_left || !went_right || went_left + went_right != 16) {
+            log_error("fx", "autopan start direction not random (%d left, %d right)",
+                      went_left, went_right);
             goto done;
         }
     }

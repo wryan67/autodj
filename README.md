@@ -54,7 +54,7 @@ With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
 
-`--config` opens a full-screen editor for that file. The editor has five tabs: Main, Buttons, Reverb, Chipmunk, and Autopan. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, loudness, and where the dial starts. Buttons holds the key bindings, including one button each for effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), and effect 4 (phaser). The other three tabs hold the settings of reverb, chipmunk, and autopan; the phaser has no settings. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
+`--config` opens a full-screen editor for that file. The editor has six tabs: Main, Buttons, Reverb, Chipmunk, Autopan, and Phaser. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, loudness, and where the dial starts. Buttons holds the key bindings, including one button each for effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), and effect 4 (phaser). The other four tabs hold the settings of reverb, chipmunk, autopan, and phaser. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
 
 `--calibrate` opens a full-screen view of the `[Jog]` dial settings, with a short note beside each one about what it changes in the sound. Calibrate measures the dial in two steps. First, turn the dial exactly one full turn and press Enter; the click count becomes `clicks_per_turn`. Then spin the dial as fast as you can; timing starts at the first click and runs for 3 seconds. `max_speed` becomes the fastest measured speed plus 25%. Test plays a random song from `Folder`, so you can turn the dial and hear the result. A change to a setting takes effect in the test at once. Stop test ends playback. Save writes only the `[Jog]` section. Close or Esc leaves without writing; with unsaved changes, it asks you to press Close again. The view needs the remote, so stop a running autodj first.
 
@@ -112,6 +112,15 @@ formant=false
 period=4
 smoothing=0.5
 distance=75
+
+[Phaser]
+period=1
+low=300
+high=3000
+stages=6
+feedback=0.5
+mix=50
+boost=15
 
 [Jog]
 seconds_per_turn=1.8
@@ -196,9 +205,7 @@ Press to jump back 1.5 seconds. The position stops at the start of the song.
 `reverb`, `chipmunk`, `autopan`, `phaser`  
 Press to turn effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), or effect 4 (phaser) on or off. All effects are always off when autodj starts; the buttons turn them on for the current run only, and nothing is saved. Old `on=` lines in the effect sections are ignored, and `autodj --config` removes them when it saves.
 
-Phaser sends the song through six allpass filters and mixes the result with the original, so notches sweep between 300 Hz and 3 kHz for a swirling sound, up and down once per measure in time with the beat. It has no settings.
-
-`phaser=` is the effect 4 button. It no longer means `autopan`, as it did in older versions. An old `[Phaser]` section is ignored, and `autodj --config` removes its settings.
+`phaser=` is the effect 4 button. It no longer means `autopan`, as it did in older versions. See `[Phaser]` for its settings.
 
 Chipmunk was called pitch shift before. The old key `pitch_shift` is still read as `chipmunk`, and an old `[Pitch Shift]` section is still read as `[Chipmunk]`. `autodj --config` writes both back under the new names.
 
@@ -244,7 +251,7 @@ A pitch shifter. Raises or lowers the pitch. The default pitch is one octave up,
 
 ### [Autopan]
 
-Moves the song from the left speaker to the right and back. Turned off, it keeps swinging until it reaches the middle, then stops there, so the song never jumps back to the center. The knob names come from Mixxx. The processing is autodj's own. The swing follows the beat: autodj finds each song's tempo when it loads it, and Period counts measures of 4 beats. When a song has no steady beat, autodj assumes 120 BPM. The far speaker also gets up to 1 ms of delay, which helps the ear place the sound.
+Moves the song from one speaker to the other and back. Each time it is turned on it heads left or right first, at random. Turned off, it keeps swinging until it reaches the middle, then stops there, so the song never jumps back to the center. The knob names come from Mixxx. The processing is autodj's own. The swing follows the beat: autodj finds each song's tempo when it loads it, and Period counts measures of 4 beats. When a song has no steady beat, autodj assumes 120 BPM. The far speaker also gets up to 1 ms of delay, which helps the ear place the sound.
 
 `period`  
 `0.25` to `16`. Default `4`. Measures for one full swing, left, right, and back, rounded to whole beats. At `4` the song moves out to the left and back to the middle over two measures, then out to the right and back over the next two, so it passes the middle every other measure.
@@ -254,6 +261,31 @@ Moves the song from the left speaker to the right and back. Turned off, it keeps
 
 `distance`  
 `0` to `100`. Default `75`. How far it swings, in percent from the middle toward each speaker. `100` goes all the way to each speaker. `0` stays in the middle.
+
+### [Phaser]
+
+Sends the song through a chain of allpass filters and mixes the result with the original, so notches sweep up and down between Low and High for a swirling sound. The sweep follows the beat like autopan: Period counts measures of 4 beats, and when a song has no steady beat, autodj assumes 120 BPM. The phaser turns on at once, with a small volume boost to make up for what the notches take out. The settings of the old Mixxx-style phaser, `depth`, `range`, `triplets`, and `stereo`, are ignored, and `autodj --config` removes them when it saves. A value out of range is logged and the default is used.
+
+`period`  
+`0.25` to `16`. Default `1`. Measures for one sweep up and back down.
+
+`low`  
+`20` to `20000`. Default `300`. Bottom of the sweep in Hz.
+
+`high`  
+`20` to `20000`. Default `3000`. Top of the sweep in Hz. It must be above `low`; otherwise both go back to their defaults.
+
+`stages`  
+A whole number from `1` to `12`. Default `6`. Allpass filters in the chain. Every two make one notch, so more stages give more notches.
+
+`feedback`  
+`0` to `0.9`. Default `0.5`. Feeds the output back into the chain. Higher values make sharper, ringing notches.
+
+`mix`  
+`0` to `100`. Default `50`. Percent of phased sound in the mix. `50` gives the deepest notches. `0` leaves the song unchanged.
+
+`boost`  
+`0` to `100`. Default `15`. Percent louder while the phaser is on.
 
 ### [Jog]
 

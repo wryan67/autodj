@@ -33,7 +33,17 @@ typedef struct FxParams {
                       * waits longer at each side. */
     float ap_distance; /* 0..100, default 75. Percent from the middle toward
                         * each speaker. 100 is all the way. */
-    int phaser_on;     /* Notches sweep 300 Hz..3 kHz once per measure. */
+    int phaser_on;
+    float ph_period;   /* 0.25..16, default 1. Measures for one sweep up and
+                        * down. 120 BPM when the tempo is unknown. */
+    float ph_low;      /* 20..20000 Hz, default 300. Bottom of the sweep. */
+    float ph_high;     /* 20..20000 Hz, default 3000. Top, above ph_low. */
+    int ph_stages;     /* 1..12, default 6. Allpasses; two per notch. */
+    float ph_feedback; /* 0..0.9, default 0.5. Sharper, ringing notches. */
+    float ph_blend;    /* 0..100, default 50. Percent phased sound in the
+                        * mix. 50 gives the deepest notches. */
+    float ph_boost;    /* 0..100, default 15. Percent louder while on, to
+                        * make up for what the notches take out. */
 } FxParams;
 
 typedef struct FxState FxState;

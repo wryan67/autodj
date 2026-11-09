@@ -24,8 +24,8 @@
 
 /*
  * Full-screen editor for master.cfg. The screen has tabs: Main, Buttons,
- * Reverb, Chipmunk, and Autopan. The phaser has a button but no settings
- * tab. Tab and the arrow keys move between the fields on the current tab. Up from the first field reaches the tabs, and left
+ * Reverb, Chipmunk, Autopan, and Phaser.
+ * Tab and the arrow keys move between the fields on the current tab. Up from the first field reaches the tabs, and left
  * and right there switch tabs. Left and right move the cursor in a text
  * field, and step to the next field at either end. A key binding is captured
  * from the keypad, or from another keyboard if the press is not on the
@@ -38,6 +38,7 @@ enum {
     TAB_REVERB,
     TAB_PITCH,
     TAB_AUTOPAN,
+    TAB_PHASER,
     TAB_COUNT
 };
 
@@ -84,6 +85,15 @@ enum {
     FE_AP_PERIOD = FE_PS_END,
     FE_AP_SMOOTH,
     FE_AP_DISTANCE,
+    FE_AP_END,
+
+    FE_PH_PERIOD = FE_AP_END,
+    FE_PH_LOW,
+    FE_PH_HIGH,
+    FE_PH_STAGES,
+    FE_PH_FEEDBACK,
+    FE_PH_MIX,
+    FE_PH_BOOST,
     FE_FIELD_COUNT,
 
     FE_TABS = FE_FIELD_COUNT,
@@ -104,7 +114,8 @@ enum {
     FRAME_H = ROW_BUTTONS + 2,
     /* The hint line below the frame is left out when it does not fit. */
     MIN_ROWS = FRAME_H,
-    MIN_COLS = 68,
+    /* Wide enough for the six tab buttons inside the frame. */
+    MIN_COLS = 72,
     SAVE_W = 8,
     CANCEL_W = 10
 };
@@ -230,7 +241,14 @@ static const char *field_label(int id)
         "Range",
         "Period",
         "Smoothing",
-        "Distance %"
+        "Distance %",
+        "Period",
+        "Low Hz",
+        "High Hz",
+        "Stages",
+        "Feedback",
+        "Mix %",
+        "Boost %"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -344,6 +362,27 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_AP_DISTANCE:
         *cap = sizeof edit->ap_distance;
         return edit->ap_distance;
+    case FE_PH_PERIOD:
+        *cap = sizeof edit->ph_period;
+        return edit->ph_period;
+    case FE_PH_LOW:
+        *cap = sizeof edit->ph_low;
+        return edit->ph_low;
+    case FE_PH_HIGH:
+        *cap = sizeof edit->ph_high;
+        return edit->ph_high;
+    case FE_PH_STAGES:
+        *cap = sizeof edit->ph_stages;
+        return edit->ph_stages;
+    case FE_PH_FEEDBACK:
+        *cap = sizeof edit->ph_feedback;
+        return edit->ph_feedback;
+    case FE_PH_MIX:
+        *cap = sizeof edit->ph_mix;
+        return edit->ph_mix;
+    case FE_PH_BOOST:
+        *cap = sizeof edit->ph_boost;
+        return edit->ph_boost;
     default:
         *cap = 0;
         return NULL;
@@ -356,7 +395,8 @@ static int is_number_field(int id)
            id == FE_VOLUME || id == FE_LUFS || id == FE_RV_DECAY ||
            id == FE_RV_BW || id == FE_RV_DAMP || id == FE_RV_SEND ||
            id == FE_PS_PITCH || id == FE_PS_RANGE || id == FE_AP_PERIOD ||
-           id == FE_AP_SMOOTH || id == FE_AP_DISTANCE;
+           id == FE_AP_SMOOTH || id == FE_AP_DISTANCE ||
+           (id >= FE_PH_PERIOD && id <= FE_PH_BOOST);
 }
 
 static int is_key_field(int id)
@@ -539,7 +579,7 @@ static void toggle_check(struct Editor *ed, int id)
 static int tab_first(int tab)
 {
     static const int first[] = {
-        FE_FOLDER, FE_KEY_PAUSE, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD
+        FE_FOLDER, FE_KEY_PAUSE, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD, FE_PH_PERIOD
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -552,7 +592,7 @@ static int tab_last(int tab)
 {
     static const int last[] = {
         FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_RV_END - 1, FE_PS_END - 1,
-        FE_FIELD_COUNT - 1
+        FE_AP_END - 1, FE_FIELD_COUNT - 1
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -983,7 +1023,8 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
 
 static const char *tab_title(int tab)
 {
-    static const char *names[] = {"Main", "Buttons", "Reverb", "Chipmunk", "Autopan"};
+    static const char *names[] = {"Main", "Buttons", "Reverb", "Chipmunk", "Autopan",
+                                  "Phaser"};
 
     if (tab < 0 || tab >= TAB_COUNT) {
         return "";
@@ -998,7 +1039,8 @@ static const char *tab_note(int tab)
         "Buttons. Volume is on the dial.",
         "Room. Send is how much reverb is added.",
         "Pitch 1 is an octave up. 0 is unchanged.",
-        "Left to right and back. Period counts beats."
+        "Left to right and back. Period counts beats.",
+        "Notches sweep from Low to High. Period is in measures."
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {

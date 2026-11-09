@@ -114,6 +114,13 @@ typedef struct ConfigEdit {
     char ap_period[32];
     char ap_smooth[32];
     char ap_distance[32];
+    char ph_period[32];
+    char ph_low[32];
+    char ph_high[32];
+    char ph_stages[32];
+    char ph_feedback[32];
+    char ph_mix[32];
+    char ph_boost[32];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */
