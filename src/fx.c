@@ -897,10 +897,12 @@ static void process_phaser(FxState *st, float *left, float *right)
     stages = st->p.ph_stages < 1 ? 1 : st->p.ph_stages > PH_STAGES ? PH_STAGES : st->p.ph_stages;
     fb = st->p.ph_feedback < 0 ? 0 : st->p.ph_feedback > 0.9f ? 0.9f : st->p.ph_feedback;
     blend = clamp_unit(st->p.ph_blend * 0.01f);
-    /* 0.75 keeps the feedback peaks near the input level; boost then makes
-     * up for what the notches take out.
+    /* Boost makes up for what the notches take out. Turned on, it is there in
+     * full from the first sample. Turned off, it fades out with the phasing,
+     * so the song does not dip and then come back louder.
      */
-    gain = 0.75f * (1.0f + (st->p.ph_boost > 0 ? st->p.ph_boost * 0.01f : 0));
+    gain = st->p.ph_boost > 0 ? st->p.ph_boost * 0.01f : 0;
+    gain = 1.0f + (st->ph_on ? gain : gain * st->ph_mix);
     t = tanf(PV_PI * freq / (float)st->rate);
     a = (t - 1.0f) / (t + 1.0f);
 
@@ -918,8 +920,9 @@ static void process_phaser(FxState *st, float *left, float *right)
             v = y;
         }
         st->ph_fb[c] = v;
-        v = gain * (x + blend * (v - x));
-        *io[c] = fin(x + st->ph_mix * (v - x));
+        /* 0.75 keeps the feedback peaks near the input level. */
+        v = 0.75f * (x + blend * (v - x));
+        *io[c] = fin(gain * (x + st->ph_mix * (v - x)));
     }
 }
 
@@ -1390,6 +1393,18 @@ int fx_self_test(void)
         }
     }
     fx_set_beat(st, 0);
+
+    /* The boost is there from the first sample. */
+    fx_defaults(&p);
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 0, 1);
+    left = 0.5f;
+    right = 0.5f;
+    fx_process(st, &left, &right);
+    if (left < 0.57f || right < 0.57f) {
+        log_error("fx", "phaser boost not immediate (%.3f %.3f)", left, right);
+        goto done;
+    }
 
     /* The phaser notches sweep across a 1 kHz tone: deep dips, no big peaks. */
     fx_defaults(&p);

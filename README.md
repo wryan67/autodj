@@ -264,7 +264,7 @@ Moves the song from one speaker to the other and back. Each time it is turned on
 
 ### [Phaser]
 
-Sends the song through a chain of allpass filters and mixes the result with the original, so notches sweep up and down between Low and High for a swirling sound. The sweep follows the beat like autopan: Period counts measures of 4 beats, and when a song has no steady beat, autodj assumes 120 BPM. The phaser turns on at once, with a small volume boost to make up for what the notches take out. The settings of the old Mixxx-style phaser, `depth`, `range`, `triplets`, and `stereo`, are ignored, and `autodj --config` removes them when it saves. A value out of range is logged and the default is used.
+Sends the song through a chain of allpass filters and mixes the result with the original, so notches sweep up and down between Low and High for a swirling sound. The sweep follows the beat like autopan: Period counts measures of 4 beats, and when a song has no steady beat, autodj assumes 120 BPM. The volume boost, which makes up for what the notches take out, steps up the moment the phaser is turned on. When it is turned off, the boost fades out together with the phasing over a few milliseconds, so the volume stays even. The settings of the old Mixxx-style phaser, `depth`, `range`, `triplets`, and `stereo`, are ignored, and `autodj --config` removes them when it saves. A value out of range is logged and the default is used.
 
 `period`  
 `0.25` to `16`. Default `1`. Measures for one sweep up and back down.
@@ -285,7 +285,7 @@ A whole number from `1` to `12`. Default `6`. Allpass filters in the chain. Ever
 `0` to `100`. Default `50`. Percent of phased sound in the mix. `50` gives the deepest notches. `0` leaves the song unchanged.
 
 `boost`  
-`0` to `100`. Default `15`. Percent louder while the phaser is on.
+`0` to `100`. Default `15`. Percent louder while the phaser is on. The whole song steps up by this much at the press of the button, with no fade, and eases back down with the phasing when it is turned off.
 
 ### [Jog]
 
