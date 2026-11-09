@@ -24,8 +24,8 @@
 
 /*
  * Full-screen editor for master.cfg. The screen has tabs: Main, Buttons,
- * Reverb, Chipmunk, and Autopan. Tab and the arrow keys move between the fields
- * on the current tab. Up from the first field reaches the tabs, and left
+ * Reverb, Chipmunk, and Autopan. The phaser has a button but no settings
+ * tab. Tab and the arrow keys move between the fields on the current tab. Up from the first field reaches the tabs, and left
  * and right there switch tabs. Left and right move the cursor in a text
  * field, and step to the next field at either end. A key binding is captured
  * from the keypad, or from another keyboard if the press is not on the
@@ -66,6 +66,7 @@ enum {
     FE_KEY_REVERB,
     FE_KEY_PITCH,
     FE_KEY_AUTOPAN,
+    FE_KEY_PHASER,
     FE_BUTTON_END,
 
     FE_RV_DECAY = FE_BUTTON_END,
@@ -94,7 +95,7 @@ enum {
 enum {
     LABEL_W = 16,
     NUM_W = 10,
-    /* Tallest tab is Buttons, with 12 fields. */
+    /* Tallest tab is Buttons, with 13 fields. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_PAUSE,
     ROW_TABS = 1,
     ROW_NOTE = 2,
@@ -218,6 +219,7 @@ static const char *field_label(int id)
         "Reverb",
         "Chipmunk",
         "Autopan",
+        "Phaser",
         "Decay",
         "BW",
         "Damping",
@@ -306,6 +308,9 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_AUTOPAN:
         *cap = sizeof edit->key_autopan;
         return edit->key_autopan;
+    case FE_KEY_PHASER:
+        *cap = sizeof edit->key_phaser;
+        return edit->key_phaser;
     case FE_RV_DECAY:
         *cap = sizeof edit->rv_decay;
         return edit->rv_decay;
@@ -1784,6 +1789,8 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
         return edit->key_pitch;
     case FE_KEY_AUTOPAN:
         return edit->key_autopan;
+    case FE_KEY_PHASER:
+        return edit->key_phaser;
     default:
         return "";
     }
@@ -1794,7 +1801,8 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
     static const int ids[] = {
         FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
         FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
-        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN
+        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN,
+        FE_KEY_PHASER
     };
     int i;
 

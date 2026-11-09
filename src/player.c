@@ -46,7 +46,7 @@ static atomic_int g_skip_gen;
 static atomic_int g_back_gen;
 static atomic_int g_rewind_ms;
 static atomic_int g_volume = 1000;
-static atomic_int g_fx_on[3];
+static atomic_int g_fx_on[4];
 static FxState *g_fx;
 static FxParams g_fx_params;
 static atomic_int g_stop;
@@ -947,7 +947,8 @@ static void render_frame(int16_t *dst)
         }
         fx_set_on(g_fx, atomic_load(&g_fx_on[PLAYER_FX_REVERB]),
                   atomic_load(&g_fx_on[PLAYER_FX_PITCH]),
-                  atomic_load(&g_fx_on[PLAYER_FX_AUTOPAN]));
+                  atomic_load(&g_fx_on[PLAYER_FX_AUTOPAN]),
+                  atomic_load(&g_fx_on[PLAYER_FX_PHASER]));
         fx_process(g_fx, &left, &right);
     }
     if (left > 1) {
@@ -1300,14 +1301,16 @@ void player_set_fx(const FxParams *fx)
     g_fx_params.reverb_on = 0;
     g_fx_params.pitch_on = 0;
     g_fx_params.autopan_on = 0;
+    g_fx_params.phaser_on = 0;
     atomic_store(&g_fx_on[PLAYER_FX_REVERB], 0);
     atomic_store(&g_fx_on[PLAYER_FX_PITCH], 0);
     atomic_store(&g_fx_on[PLAYER_FX_AUTOPAN], 0);
+    atomic_store(&g_fx_on[PLAYER_FX_PHASER], 0);
 }
 
 int player_fx_enabled(int which)
 {
-    if (which < 0 || which > 2) {
+    if (which < 0 || which > PLAYER_FX_PHASER) {
         return 0;
     }
     return atomic_load(&g_fx_on[which]) ? 1 : 0;
@@ -1315,10 +1318,11 @@ int player_fx_enabled(int which)
 
 int player_fx_toggle(int which)
 {
-    static const char *names[] = {"reverb", "chipmunk", "autopan"};
+    static const char *names[] = {"reverb", "chipmunk", "autopan",
+                                   "phaser"};
     int next;
 
-    if (which < 0 || which > 2) {
+    if (which < 0 || which > PLAYER_FX_PHASER) {
         return 0;
     }
     next = !atomic_load(&g_fx_on[which]);

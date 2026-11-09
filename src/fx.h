@@ -1,7 +1,7 @@
 #ifndef AUTODJ_FX_H
 #define AUTODJ_FX_H
 
-/* Reverb, chipmunk (a pitch shifter), and autopan.
+/* Reverb, chipmunk (a pitch shifter), autopan, and phaser.
  *
  * The knob names and the default numbers are the ones Mixxx shows for its
  * built-in Reverb, Pitch Shift, and Autopan. The processing here is separate.
@@ -32,8 +32,8 @@ typedef struct FxParams {
     float ap_smooth; /* 0.25..0.5, default 0.5. 0.5 is a smooth swing, lower
                       * waits longer at each side. */
     float ap_distance; /* 0..100, default 75. Percent from the middle toward
-                        * each speaker. 100 is all the way. A phaser runs
-                        * with autopan, sweeping once per measure. */
+                        * each speaker. 100 is all the way. */
+    int phaser_on;     /* Notches sweep 300 Hz..3 kHz once per measure. */
 } FxParams;
 
 typedef struct FxState FxState;
@@ -45,7 +45,7 @@ FxState *fx_new(unsigned rate);
 void fx_free(FxState *st);
 void fx_setup(FxState *st, const FxParams *p);
 /* The power buttons. A change takes effect on the next sample. */
-void fx_set_on(FxState *st, int reverb, int pitch, int autopan);
+void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser);
 /* Length of one beat in seconds at the current playback speed, or 0 when
  * the tempo is unknown. The autopan period counts beats when this is set.
  */

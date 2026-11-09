@@ -10,9 +10,9 @@
  * two cross-fed tanks with slowly moving allpasses, read at several points
  * for a wide stereo tail. Pitch change is a phase vocoder, so a full mix
  * keeps its steady tones and only the pitch moves. Autopan moves the
- * balance from one side to the other and back, in time with the beat,
- * after a phaser: a chain of allpass filters whose notches sweep up and
- * down once per measure.
+ * balance from one side to the other and back, in time with the beat.
+ * The phaser is a chain of allpass filters whose notches sweep up and down
+ * once per measure.
  */
 
 #define AP_DELAY 512
@@ -88,6 +88,9 @@ struct FxState {
     float ph_y[2][PH_STAGES];
     float ph_fb[2];
     double ph_phase;
+    float ph_mix;
+    int ph_on;
+    int ph_live;
     float beat_sec;
     int ap_on;
     int ap_live;
@@ -369,6 +372,10 @@ static void ap_clear(FxState *st)
     memset(st->ap_buf, 0, sizeof st->ap_buf);
     st->ap_w = 0;
     st->ap_phase = 0;
+}
+
+static void ph_clear(FxState *st)
+{
     memset(st->ph_x, 0, sizeof st->ph_x);
     memset(st->ph_y, 0, sizeof st->ph_y);
     memset(st->ph_fb, 0, sizeof st->ph_fb);
@@ -388,6 +395,7 @@ void fx_setup(FxState *st, const FxParams *p)
     rv_clear(st);
     ps_clear(st);
     ap_clear(st);
+    ph_clear(st);
     st->rv_send = 0;
     st->rv_live = 0;
     st->rv_lfo[0] = 0;
@@ -395,12 +403,15 @@ void fx_setup(FxState *st, const FxParams *p)
     st->ps_mix = 0;
     st->ap_mix = 0;
     st->ap_live = 0;
+    st->ph_mix = 0;
+    st->ph_live = 0;
     st->rv_on = st->p.reverb_on ? 1 : 0;
     st->ps_on = st->p.pitch_on ? 1 : 0;
     st->ap_on = st->p.autopan_on ? 1 : 0;
+    st->ph_on = st->p.phaser_on ? 1 : 0;
 }
 
-void fx_set_on(FxState *st, int reverb, int pitch, int autopan)
+void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser)
 {
     if (!st) {
         return;
@@ -408,6 +419,7 @@ void fx_set_on(FxState *st, int reverb, int pitch, int autopan)
     st->rv_on = reverb ? 1 : 0;
     st->ps_on = pitch ? 1 : 0;
     st->ap_on = autopan ? 1 : 0;
+    st->ph_on = phaser ? 1 : 0;
 }
 
 void fx_set_beat(FxState *st, float beat_seconds)
@@ -827,6 +839,20 @@ static void process_phaser(FxState *st, float *left, float *right)
     int c;
     int k;
 
+    st->ph_mix += 0.003f * ((st->ph_on ? 1.0f : 0.0f) - st->ph_mix);
+    if (!st->ph_on && st->ph_mix < 0.0001f) {
+        st->ph_mix = 0;
+        if (st->ph_live) {
+            ph_clear(st);
+            st->ph_live = 0;
+        }
+        return;
+    }
+    if (st->ph_on && !st->ph_live) {
+        ph_clear(st);
+        st->ph_live = 1;
+    }
+
     sweep = 4.0 * (st->beat_sec > 0 ? st->beat_sec : 0.5);
     st->ph_phase += 1.0 / (sweep * (double)st->rate);
     if (st->ph_phase >= 1.0) {
@@ -855,7 +881,7 @@ static void process_phaser(FxState *st, float *left, float *right)
         st->ph_fb[c] = v;
         /* 0.75 keeps the feedback peaks near the input level. */
         v = 0.75f * 0.5f * (x + v);
-        *io[c] = fin(x + st->ap_mix * (v - x));
+        *io[c] = fin(x + st->ph_mix * (v - x));
     }
 }
 
@@ -888,7 +914,6 @@ static void process_autopan(FxState *st, float *left, float *right)
         ap_clear(st);
         st->ap_live = 1;
     }
-    process_phaser(st, left, right);
 
     /* Period counts 4-beat measures, snapped to whole beats. */
     period = round(st->p.ap_period * 4.0);
@@ -954,6 +979,7 @@ void fx_process(FxState *st, float *left, float *right)
     }
     process_reverb(st, left, right);
     process_pitch(st, left, right);
+    process_phaser(st, left, right);
     process_autopan(st, left, right);
 }
 
@@ -1014,7 +1040,7 @@ int fx_self_test(void)
 
     fx_defaults(&p);
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i] * 0.5f;
@@ -1029,7 +1055,7 @@ int fx_self_test(void)
     p.reverb_on = 1;
     p.rv_send = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -1044,7 +1070,7 @@ int fx_self_test(void)
     p.rv_send = 1;
     p.rv_decay = 0.8f;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0);
     left = 1;
     right = 1;
     fx_process(st, &left, &right);
@@ -1070,7 +1096,7 @@ int fx_self_test(void)
     p.pitch_on = 1;
     p.ps_pitch = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0);
+    fx_set_on(st, 0, 1, 0, 0);
     for (i = 0; i < 300; i++) {
         left = dry[i];
         right = dry[i];
@@ -1087,7 +1113,7 @@ int fx_self_test(void)
     p.ps_semi = 0;
     p.ps_formant = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0);
+    fx_set_on(st, 0, 1, 0, 0);
     for (i = 0; i < N; i++) {
         left = dry[i];
         right = dry[i];
@@ -1114,7 +1140,7 @@ int fx_self_test(void)
     p.ap_distance = 100;
     p.ap_period = 0.25f;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 1);
+    fx_set_on(st, 0, 0, 1, 0);
     fx_set_beat(st, 0.5f);
     {
         float at_left[2] = {0, 0};
@@ -1141,6 +1167,40 @@ int fx_self_test(void)
             at_right[1] < 0.55f || at_right[0] > 0.01f) {
             log_error("fx", "autopan did not swing with the beat (%.3f %.3f, %.3f %.3f)",
                       at_left[0], at_left[1], at_right[0], at_right[1]);
+            goto done;
+        }
+    }
+    fx_set_beat(st, 0);
+
+    /* The phaser notches sweep across a 1 kHz tone: deep dips, no big peaks. */
+    fx_defaults(&p);
+    p.phaser_on = 1;
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 0, 1);
+    fx_set_beat(st, 0.5f);
+    {
+        float lo = 9;
+        float hi = 0;
+        int blk;
+
+        for (blk = 0; blk < 200; blk++) {
+            double sum = 0;
+
+            for (i = 0; i < 441; i++) {
+                left = 0.5f * sinf(2.0f * PV_PI * 1000.0f * (float)(blk * 441 + i) / 44100.0f);
+                right = left;
+                fx_process(st, &left, &right);
+                sum += (double)left * left;
+            }
+            if (blk > 50) {
+                float rms = (float)sqrt(sum / 441) / 0.35355f;
+
+                lo = rms < lo ? rms : lo;
+                hi = rms > hi ? rms : hi;
+            }
+        }
+        if (lo > 0.25f || hi > 1.3f || hi < 0.8f) {
+            log_error("fx", "phaser 1 kHz gain from %.3f to %.3f", lo, hi);
             goto done;
         }
     }
