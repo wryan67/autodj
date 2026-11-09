@@ -1,6 +1,6 @@
 # autodj
 
-Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad or an XP-Pen ACK05 Shortcut Remote pauses, skips, replays an earlier song, rewinds a few seconds, and turns reverb, pitch shift, and autopan on or off. The shortcut remote's dial sets the volume, or jogs the song. The volume is stored in the config file and restored on the next start. Every effect is off when autodj starts.
+Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad or an XP-Pen ACK05 Shortcut Remote pauses, skips, replays an earlier song, rewinds a few seconds, and turns three effects on or off: reverb, chipmunk, and autopan. The shortcut remote's dial sets the volume, or jogs the song. The volume is stored in the config file and restored on the next start. Every effect is off when autodj starts.
 
 ## Compile
 
@@ -54,7 +54,7 @@ With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
 
-`--config` opens a full-screen editor for that file. The editor has five tabs: Main, Buttons, Reverb, Pitch, and Autopan. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, loudness, and where the dial starts. Buttons holds the key bindings, including one button each for reverb, pitch shift, and autopan. The other three tabs hold that effect's settings. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
+`--config` opens a full-screen editor for that file. The editor has five tabs: Main, Buttons, Reverb, Chipmunk, and Autopan. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, loudness, and where the dial starts. Buttons holds the key bindings, including one button each for effect 1 (reverb), effect 2 (chipmunk), and effect 3 (autopan). The other three tabs hold that effect's settings. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. A key already used by another action opens an error and keeps the old binding. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
 
 `--calibrate` opens a full-screen view of the `[Jog]` dial settings, with a short note beside each one about what it changes in the sound. Calibrate measures the dial in two steps. First, turn the dial exactly one full turn and press Enter; the click count becomes `clicks_per_turn`. Then spin the dial as fast as you can; timing starts at the first click and runs for 3 seconds. `max_speed` becomes the fastest measured speed plus 25%. Test plays a random song from `Folder`, so you can turn the dial and hear the result. A change to a setting takes effect in the test at once. Stop test ends playback. Save writes only the `[Jog]` section. Close or Esc leaves without writing; with unsaved changes, it asks you to press Close again. The view needs the remote, so stop a running autodj first.
 
@@ -102,7 +102,7 @@ bw=1
 damping=0
 send=0.5
 
-[Pitch Shift]
+[Chipmunk]
 pitch=1
 range=1
 semitones=true
@@ -193,10 +193,12 @@ Press to jump back 1 second. The position stops at the start of the song.
 `rewind_1_5`  
 Press to jump back 1.5 seconds. The position stops at the start of the song.
 
-`reverb`, `pitch_shift`, `autopan`  
-Press to turn that effect on or off. All effects are always off when autodj starts; the buttons turn them on for the current run only, and nothing is saved. Old `on=` lines in the effect sections are ignored, and `autodj --config` removes them when it saves.
+`reverb`, `chipmunk`, `autopan`  
+Press to turn effect 1 (reverb), effect 2 (chipmunk), or effect 3 (autopan) on or off. All effects are always off when autodj starts; the buttons turn them on for the current run only, and nothing is saved. Old `on=` lines in the effect sections are ignored, and `autodj --config` removes them when it saves.
 
 Autopan replaced the phaser. The old name `phaser` is still read as `autopan`, and `autodj --config` writes it back under the new name. An old `[Phaser]` section is ignored, and `autodj --config` removes its settings.
+
+Chipmunk was called pitch shift before. The old key `pitch_shift` is still read as `chipmunk`, and an old `[Pitch Shift]` section is still read as `[Chipmunk]`. `autodj --config` writes both back under the new names.
 
 `dial_forward`, `dial_back`  
 The shortcut remote's dial: `REMOTE_DIAL_CW` and `REMOTE_DIAL_CCW` in raw mode, or `CTRL+KEY_KPPLUS` and `CTRL+KEY_KPMINUS` with the factory shortcuts. The dial works like a hand on a record. With the default `[Jog]` settings, each click moves the song 90 ms, so one turn of 20 clicks moves it 1.8 seconds, which is one turn of a 33⅓ RPM record. The time between clicks sets the speed. A slow turn plays slowly, a fast spin plays up to 4 times as fast, and turning back plays the song backward. While the dial turns, normal playback is held. When the dial stops, the song spins back up to normal speed within 0.3 seconds. See `[Jog]` to change these numbers. If the music is paused, the dial still moves the song and you can hear it, but the song stays paused when the dial stops. The position stops at the start of the song.
@@ -222,9 +224,9 @@ A plate reverb added on top of the song. The tail lasts about two seconds at the
 `send`  
 `0` to `1`. Default `0.5`. How much of the song is sent into the reverb. `0` adds nothing.
 
-### [Pitch Shift]
+### [Chipmunk]
 
-Raises or lowers the pitch. The default pitch is one octave up, which is the chipmunk sound. `0` leaves the song unchanged. The shift is spectral, like Mixxx, so the beat and tempo stay put; it adds about 40 ms of delay while on.
+A pitch shifter. Raises or lowers the pitch. The default pitch is one octave up, which is the chipmunk sound. `0` leaves the song unchanged. The shift is spectral, like Mixxx, so the beat and tempo stay put; it adds about 40 ms of delay while on.
 
 `pitch`  
 `-1` to `1`. Default `1`. `0` is the original pitch. The ends of the knob are `range` octaves down and up.

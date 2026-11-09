@@ -24,7 +24,7 @@
 
 /*
  * Full-screen editor for master.cfg. The screen has tabs: Main, Buttons,
- * Reverb, Pitch, and Autopan. Tab and the arrow keys move between the fields
+ * Reverb, Chipmunk, and Autopan. Tab and the arrow keys move between the fields
  * on the current tab. Up from the first field reaches the tabs, and left
  * and right there switch tabs. Left and right move the cursor in a text
  * field, and step to the next field at either end. A key binding is captured
@@ -216,7 +216,7 @@ static const char *field_label(int id)
         "Dial back",
         "Dial mode",
         "Reverb",
-        "Pitch shift",
+        "Chipmunk",
         "Autopan",
         "Decay",
         "BW",
@@ -978,7 +978,7 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
 
 static const char *tab_title(int tab)
 {
-    static const char *names[] = {"Main", "Buttons", "Reverb", "Pitch", "Autopan"};
+    static const char *names[] = {"Main", "Buttons", "Reverb", "Chipmunk", "Autopan"};
 
     if (tab < 0 || tab >= TAB_COUNT) {
         return "";

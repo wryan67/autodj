@@ -1,7 +1,7 @@
 #ifndef AUTODJ_FX_H
 #define AUTODJ_FX_H
 
-/* Reverb, pitch shift, and autopan.
+/* Reverb, chipmunk (a pitch shifter), and autopan.
  *
  * The knob names and the default numbers are the ones Mixxx shows for its
  * built-in Reverb, Pitch Shift, and Autopan. The processing here is separate.

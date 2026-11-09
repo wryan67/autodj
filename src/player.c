@@ -1315,7 +1315,7 @@ int player_fx_enabled(int which)
 
 int player_fx_toggle(int which)
 {
-    static const char *names[] = {"reverb", "pitch shift", "autopan"};
+    static const char *names[] = {"reverb", "chipmunk", "autopan"};
     int next;
 
     if (which < 0 || which > 2) {

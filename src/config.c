@@ -183,6 +183,10 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         /* An autopan line wins over the old phaser name. */
         return;
     }
+    if (eq_ci(action, "pitch_shift") && cfg->key_pitch >= 0) {
+        /* A chipmunk line wins over the old pitch_shift name. */
+        return;
+    }
     if (key_from_name(keyname, &code) != 0) {
         log_warn("autodj", "unknown key name %s for %s", keyname, action);
         return;
@@ -208,7 +212,8 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     } else if (eq_ci(action, "reverb")) {
         cfg->key_reverb = code;
         snprintf(cfg->key_reverb_name, sizeof cfg->key_reverb_name, "%s", keyname);
-    } else if (eq_ci(action, "pitch_shift")) {
+    } else if (eq_ci(action, "chipmunk") || eq_ci(action, "pitch_shift")) {
+        /* pitch_shift is the old name of this button. */
         cfg->key_pitch = code;
         snprintf(cfg->key_pitch_name, sizeof cfg->key_pitch_name, "%s", keyname);
     } else if (eq_ci(action, "autopan") || eq_ci(action, "phaser")) {
@@ -261,7 +266,9 @@ static int fx_section(const char *section)
     if (eq_ci(section, "Reverb")) {
         return 0;
     }
-    if (eq_ci(section, "Pitch Shift") || eq_ci(section, "PitchShift")) {
+    /* Pitch Shift is the old name of the chipmunk section. */
+    if (eq_ci(section, "Chipmunk") || eq_ci(section, "Pitch Shift") ||
+        eq_ci(section, "PitchShift")) {
         return 1;
     }
     if (eq_ci(section, "Autopan")) {
@@ -274,7 +281,7 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
 {
     double v = 0;
     int on = 0;
-    const char *what = section == 0 ? "reverb" : section == 1 ? "pitch shift" : "autopan";
+    const char *what = section == 0 ? "reverb" : section == 1 ? "chipmunk" : "autopan";
 
     if (eq_ci(key, "on")) {
         /* Old configs stored the startup state here. Effects always start off. */
@@ -319,13 +326,13 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
         }
     } else if (section == 1 && eq_ci(key, "pitch")) {
         if (parse_real(val, -1, 1, &v) != 0) {
-            log_warn("autodj", "pitch must be from -1 to 1, got %s", val);
+            log_warn("autodj", "chipmunk pitch must be from -1 to 1, got %s", val);
         } else {
             cfg->fx.ps_pitch = (float)v;
         }
     } else if (section == 1 && eq_ci(key, "range")) {
         if (parse_real(val, 0, 2, &v) != 0) {
-            log_warn("autodj", "pitch range must be from 0 to 2, got %s", val);
+            log_warn("autodj", "chipmunk range must be from 0 to 2, got %s", val);
         } else {
             cfg->fx.ps_range = (float)v;
         }
@@ -888,7 +895,10 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_dial_mode, sizeof edit->key_dial_mode, val);
         } else if (eq_ci(key, "reverb")) {
             copy_raw(edit->key_reverb, sizeof edit->key_reverb, val);
-        } else if (eq_ci(key, "pitch_shift")) {
+        } else if (eq_ci(key, "chipmunk")) {
+            copy_raw(edit->key_pitch, sizeof edit->key_pitch, val);
+        } else if (eq_ci(key, "pitch_shift") && !edit->key_pitch[0]) {
+            /* The old name of the chipmunk button. */
             copy_raw(edit->key_pitch, sizeof edit->key_pitch, val);
         } else if (eq_ci(key, "autopan")) {
             copy_raw(edit->key_autopan, sizeof edit->key_autopan, val);
@@ -1291,7 +1301,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_REVERB] = take_key(err, err_n, in.key_reverb, "Reverb",
                                     &out.key_reverb, out.key_reverb_name,
                                     sizeof out.key_reverb_name) == 0;
-    key_ok[KEYID_PITCH] = take_key(err, err_n, in.key_pitch, "Pitch shift",
+    key_ok[KEYID_PITCH] = take_key(err, err_n, in.key_pitch, "Chipmunk",
                                    &out.key_pitch, out.key_pitch_name,
                                    sizeof out.key_pitch_name) == 0;
     key_ok[KEYID_AUTOPAN] = take_key(err, err_n, in.key_autopan, "Autopan",
@@ -1319,7 +1329,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_DIAL_BACK] = "dial back";
     labels[KEYID_DIAL_MODE] = "dial mode";
     labels[KEYID_REVERB] = "reverb";
-    labels[KEYID_PITCH] = "pitch shift";
+    labels[KEYID_PITCH] = "chipmunk";
     labels[KEYID_AUTOPAN] = "autopan";
     if (in.rv_decay[0] && take_real(err, err_n, in.rv_decay, 0, 1, "Decay", &out.fx.rv_decay) != 0) {
         failed = 1;
@@ -1480,7 +1490,7 @@ static int keys_id(const char *key)
     if (eq_ci(key, "reverb")) {
         return KEYID_REVERB;
     }
-    if (eq_ci(key, "pitch_shift")) {
+    if (eq_ci(key, "chipmunk")) {
         return KEYID_PITCH;
     }
     if (eq_ci(key, "autopan")) {
@@ -1896,7 +1906,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     static const char *key_names[] = {
         "pause_resume", "skip", "previous", "rewind_0_5", "rewind_1",
         "rewind_1_5", "dial_forward", "dial_back", "dial_mode",
-        "reverb", "pitch_shift", "autopan"
+        "reverb", "chipmunk", "autopan"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -1977,6 +1987,25 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             in_fx = fx_section(section);
             /* Autopan replaced the phaser, so its old section is dropped. */
             in_old_fx = eq_ci(section, "Phaser");
+            /* Pitch Shift is written again as Chipmunk, or dropped if both are there. */
+            if (!jog && in_fx == 1 && !eq_ci(section, "Chipmunk")) {
+                struct CfgLine *ck_header;
+                struct CfgLine *ck_last;
+                char *repl;
+
+                find_section(head, "Chipmunk", &ck_header, &ck_last);
+                if (ck_header) {
+                    in_old_fx = 1;
+                } else {
+                    repl = strdup("[Chipmunk]\n");
+                    if (!repl) {
+                        set_err(err, err_n, "out of memory updating %s", path);
+                        goto done;
+                    }
+                    free(line->text);
+                    line->text = repl;
+                }
+            }
             if (!jog && in_old_fx) {
                 unlink_line(&head, prev, line);
                 line = next;
@@ -2029,7 +2058,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
 
             /* The old names are written again under the new ones. */
             if (in_keys && (eq_ci(key, "jog_forward") || eq_ci(key, "jog_back") ||
-                            eq_ci(key, "phaser"))) {
+                            eq_ci(key, "phaser") || eq_ci(key, "pitch_shift"))) {
                 unlink_line(&head, prev, line);
                 line = next;
                 continue;
@@ -2115,7 +2144,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     }
 
     if (!jog) {
-        static const char *fx_names[] = {"Reverb", "Pitch Shift", "Autopan"};
+        static const char *fx_names[] = {"Reverb", "Chipmunk", "Autopan"};
         static const int fx_count[] = {4, 4, 3};
         int fx;
 
@@ -2283,8 +2312,11 @@ static int edit_self_test(void)
         "volume_down=KEY_KPMINUS\n"
         "custom=KEY_A\n"
         "phaser=KEY_B\n"
+        "pitch_shift=KEY_C\n"
         "[Reverb]\n"
         "on=true\n"
+        "[Pitch Shift]\n"
+        "pitch=0.5\n"
         "[Phaser]\n"
         "depth=0.7\n";
     const char *expect =
@@ -2306,12 +2338,13 @@ static int edit_self_test(void)
         "skip=KEY_KPDOT\n"
         "custom=KEY_A\n"
         "pause_resume=KEY_KP0\n"
+        "chipmunk=KEY_C\n"
         "[Reverb]\n"
         "decay=0.5\n"
         "bw=1\n"
         "damping=0\n"
         "send=0.5\n"
-        "[Pitch Shift]\n"
+        "[Chipmunk]\n"
         "pitch=1\n"
         "range=1\n"
         "semitones=true\n"
@@ -2347,7 +2380,8 @@ static int edit_self_test(void)
         strcmp(edit.shuffle, "true") != 0 || strcmp(edit.key_skip, "KEY_KPDOT") != 0 ||
         edit.key_reverb[0] != '\0' || edit.key_pause[0] != '\0' ||
         strcmp(edit.rv_decay, "0.5") != 0 || strcmp(edit.ap_distance, "75") != 0 ||
-        strcmp(edit.key_autopan, "KEY_B") != 0 || strcmp(edit.ps_semi, "true") != 0) {
+        strcmp(edit.key_autopan, "KEY_B") != 0 || strcmp(edit.ps_semi, "true") != 0 ||
+        strcmp(edit.key_pitch, "KEY_C") != 0 || strcmp(edit.ps_pitch, "0.5") != 0) {
         log_error("autodj", "config editor test loaded unexpected text");
         rc = -1;
     }
@@ -2365,6 +2399,7 @@ static int edit_self_test(void)
     cfg.dial_volume = 1;
     snprintf(cfg.key_pause_name, sizeof cfg.key_pause_name, "KEY_KP0");
     snprintf(cfg.key_skip_name, sizeof cfg.key_skip_name, "KEY_KPDOT");
+    snprintf(cfg.key_pitch_name, sizeof cfg.key_pitch_name, "KEY_C");
     if (rc == 0 && (config_save(path, &cfg, err, sizeof err) != 0 ||
                     read_text(path, got, sizeof got) != 0 || strcmp(got, expect) != 0)) {
         log_error("autodj", "config editor test did not keep the file layout: %s\n%s", err, got);
@@ -2378,6 +2413,20 @@ static int edit_self_test(void)
                     strstr(got, "pause_resume=KEY_KP0\n") == NULL ||
                     strstr(got, "custom=KEY_A\n") == NULL)) {
         log_error("autodj", "config editor test did not clear a key\n%s", got);
+        rc = -1;
+    }
+    /* With both section names present, the old one is dropped. */
+    fp = rc == 0 ? fopen(path, "w") : NULL;
+    if (fp) {
+        fputs("[Chipmunk]\npitch=0.25\n[Pitch Shift]\npitch=0.5\nrange=2\n", fp);
+        fclose(fp);
+    }
+    if (rc == 0 && (!fp || config_save(path, &cfg, err, sizeof err) != 0 ||
+                    read_text(path, got, sizeof got) != 0 ||
+                    strstr(got, "[Pitch Shift]") != NULL ||
+                    strstr(got, "[Chipmunk]\npitch=1\nrange=1\n") == NULL ||
+                    file_count(path, "[Chipmunk]") != 1)) {
+        log_error("autodj", "config editor test kept two chipmunk sections: %s\n%s", err, got);
         rc = -1;
     }
     remove(path);
@@ -2515,11 +2564,12 @@ int config_self_test(void)
     int kp2 = -1;
     int kp3 = -1;
     int key_a = -1;
+    int key_b = -1;
     int rc = 0;
 
     if (key_from_name("KEY_KPSLASH", &slash) != 0 || key_from_name("KEY_KP1", &kp1) != 0 ||
         key_from_name("KEY_KP2", &kp2) != 0 || key_from_name("KEY_KP3", &kp3) != 0 ||
-        key_from_name("KEY_A", &key_a) != 0) {
+        key_from_name("KEY_A", &key_a) != 0 || key_from_name("KEY_B", &key_b) != 0) {
         log_error("autodj", "config test could not resolve default key names");
         return -1;
     }
@@ -2548,8 +2598,11 @@ int config_self_test(void)
           "volume_up=KEY_KPPLUS\n"
           "volume_dn=KEY_KPMINUS\n"
           "phaser=KEY_A\n"
+          "pitch_shift=KEY_B\n"
           "[Reverb]\n"
           "on=true\n"
+          "[Pitch Shift]\n"
+          "pitch=-0.5\n"
           "[Autopan]\n"
           "on=true\n"
           "period=1.5\n"
@@ -2566,7 +2619,8 @@ int config_self_test(void)
                cfg.resume_sec != 4 || cfg.volume != 100 || cfg.volume_set != 0 ||
                cfg.loudness != 1 || cfg.loudness_lufs != -18 || cfg.dial_volume != 1 ||
                cfg.key_pause != 82 || cfg.key_skip != 83 ||
-               cfg.key_reverb != -1 || cfg.key_pitch != -1 || cfg.key_autopan != key_a ||
+               cfg.key_reverb != -1 || cfg.key_pitch != key_b || cfg.key_autopan != key_a ||
+               cfg.fx.ps_pitch != -0.5f ||
                cfg.fx.rv_decay != 0.5f || cfg.fx.ps_semi != 1 || cfg.fx.ap_period != 1.5f ||
                cfg.fx.ap_smooth != 0.3f || cfg.fx.ap_distance != 75 ||
                cfg.fx.reverb_on != 0 || cfg.fx.pitch_on != 0 || cfg.fx.autopan_on != 0 ||

@@ -179,7 +179,7 @@ int main(int argc, char **argv)
              cfg.key_pause_name[0] ? cfg.key_pause_name : "(none)",
              cfg.key_skip_name[0] ? cfg.key_skip_name : "(none)",
              cfg.key_prev_name[0] ? cfg.key_prev_name : "(none)");
-    log_info("autodj", "keys reverb %s, pitch shift %s, autopan %s",
+    log_info("autodj", "keys reverb %s, chipmunk %s, autopan %s",
              cfg.key_reverb_name[0] ? cfg.key_reverb_name : "(none)",
              cfg.key_pitch_name[0] ? cfg.key_pitch_name : "(none)",
              cfg.key_autopan_name[0] ? cfg.key_autopan_name : "(none)");

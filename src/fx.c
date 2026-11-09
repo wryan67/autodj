@@ -1034,7 +1034,7 @@ int fx_self_test(void)
         fx_process(st, &left, &right);
         wet[i] = left;
         if (left != left || fabsf(left) > 4.0f) {
-            log_error("fx", "pitch shift produced %f", left);
+            log_error("fx", "chipmunk produced %f", left);
             goto done;
         }
     }
