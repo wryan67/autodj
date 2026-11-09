@@ -244,7 +244,7 @@ A pitch shifter. Raises or lowers the pitch. The default pitch is one octave up,
 
 ### [Autopan]
 
-Moves the song from the left speaker to the right and back. The knob names come from Mixxx. The processing is autodj's own. The swing follows the beat: autodj finds each song's tempo when it loads it, and Period counts measures of 4 beats. When a song has no steady beat, autodj assumes 120 BPM. The far speaker also gets up to 1 ms of delay, which helps the ear place the sound.
+Moves the song from the left speaker to the right and back. Turned off, it keeps swinging until it reaches the middle, then stops there, so the song never jumps back to the center. The knob names come from Mixxx. The processing is autodj's own. The swing follows the beat: autodj finds each song's tempo when it loads it, and Period counts measures of 4 beats. When a song has no steady beat, autodj assumes 120 BPM. The far speaker also gets up to 1 ms of delay, which helps the ear place the sound.
 
 `period`  
 `0.25` to `16`. Default `4`. Measures for one full swing, left, right, and back, rounded to whole beats. At `4` the song moves out to the left and back to the middle over two measures, then out to the right and back over the next two, so it passes the middle every other measure.

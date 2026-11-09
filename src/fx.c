@@ -900,19 +900,19 @@ static void process_autopan(FxState *st, float *left, float *right)
     float delay;
     float l;
     float r;
+    double half;
 
-    st->ap_mix += 0.003f * ((st->ap_on ? 1.0f : 0.0f) - st->ap_mix);
-    if (!st->ap_on && st->ap_mix < 0.0001f) {
-        st->ap_mix = 0;
-        if (st->ap_live) {
-            ap_clear(st);
-            st->ap_live = 0;
+    if (!st->ap_live) {
+        if (!st->ap_on) {
+            return;
         }
-        return;
-    }
-    if (st->ap_on && !st->ap_live) {
+        /* Starts at the middle of the swing. */
         ap_clear(st);
+        st->ap_mix = 0;
         st->ap_live = 1;
+    }
+    if (st->ap_on) {
+        st->ap_mix += 0.003f * (1.0f - st->ap_mix);
     }
 
     /* Period counts 4-beat measures, snapped to whole beats. */
@@ -921,7 +921,17 @@ static void process_autopan(FxState *st, float *left, float *right)
         period = 1;
     }
     period *= st->beat_sec > 0 ? st->beat_sec : 0.5;
+    half = st->ap_phase < 0.5 ? 0.5 : 1.0;
     st->ap_phase += 1.0 / (period * (double)st->rate);
+    if (!st->ap_on && st->ap_phase >= half) {
+        /* Turned off: the swing ran on to the middle, where the song is
+         * back as it was, so stop here.
+         */
+        ap_clear(st);
+        st->ap_mix = 0;
+        st->ap_live = 0;
+        return;
+    }
     if (st->ap_phase >= 1.0) {
         st->ap_phase -= floor(st->ap_phase);
     }
@@ -1167,6 +1177,32 @@ int fx_self_test(void)
             at_right[1] < 0.55f || at_right[0] > 0.01f) {
             log_error("fx", "autopan did not swing with the beat (%.3f %.3f, %.3f %.3f)",
                       at_left[0], at_left[1], at_right[0], at_right[1]);
+            goto done;
+        }
+    }
+
+    /* Turned off at full left, it keeps swinging back to the middle, then
+     * passes the song through untouched.
+     */
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 1, 0);
+    for (i = 0; i < 5512; i++) {
+        left = 0.5f;
+        right = 0.5f;
+        fx_process(st, &left, &right);
+    }
+    fx_set_on(st, 0, 0, 0, 0);
+    for (i = 0; i < 6000; i++) {
+        left = 0.5f;
+        right = 0.5f;
+        fx_process(st, &left, &right);
+        if (i == 2000 && right > 0.2f) {
+            log_error("fx", "autopan snapped back when turned off (%.3f %.3f)", left, right);
+            goto done;
+        }
+        if (i >= 5600 && (left != 0.5f || right != 0.5f)) {
+            log_error("fx", "autopan still on after reaching the middle (%.3f %.3f)",
+                      left, right);
             goto done;
         }
     }
