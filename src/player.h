@@ -49,7 +49,7 @@ void player_volume_step(int direction);
 enum {
     PLAYER_FX_REVERB = 0,
     PLAYER_FX_PITCH = 1,
-    PLAYER_FX_PHASER = 2
+    PLAYER_FX_AUTOPAN = 2
 };
 
 /* Copy the effect settings. Call this before player_start. The power

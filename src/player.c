@@ -940,9 +940,14 @@ static void render_frame(int16_t *dst)
     left *= g_vol;
     right *= g_vol;
     if (g_fx) {
+        if (g_a && g_a->bpm > 0 && fabs(rate) > 0.05) {
+            fx_set_beat(g_fx, (float)(60.0 / (g_a->bpm * fabs(rate))));
+        } else if (!g_a || g_a->bpm <= 0) {
+            fx_set_beat(g_fx, 0);
+        }
         fx_set_on(g_fx, atomic_load(&g_fx_on[PLAYER_FX_REVERB]),
                   atomic_load(&g_fx_on[PLAYER_FX_PITCH]),
-                  atomic_load(&g_fx_on[PLAYER_FX_PHASER]));
+                  atomic_load(&g_fx_on[PLAYER_FX_AUTOPAN]));
         fx_process(g_fx, &left, &right);
     }
     if (left > 1) {
@@ -1291,9 +1296,13 @@ void player_set_fx(const FxParams *fx)
     } else {
         g_fx_params = *fx;
     }
-    atomic_store(&g_fx_on[PLAYER_FX_REVERB], g_fx_params.reverb_on ? 1 : 0);
-    atomic_store(&g_fx_on[PLAYER_FX_PITCH], g_fx_params.pitch_on ? 1 : 0);
-    atomic_store(&g_fx_on[PLAYER_FX_PHASER], g_fx_params.phaser_on ? 1 : 0);
+    /* Every effect starts off; only the buttons turn them on. */
+    g_fx_params.reverb_on = 0;
+    g_fx_params.pitch_on = 0;
+    g_fx_params.autopan_on = 0;
+    atomic_store(&g_fx_on[PLAYER_FX_REVERB], 0);
+    atomic_store(&g_fx_on[PLAYER_FX_PITCH], 0);
+    atomic_store(&g_fx_on[PLAYER_FX_AUTOPAN], 0);
 }
 
 int player_fx_enabled(int which)
@@ -1306,7 +1315,7 @@ int player_fx_enabled(int which)
 
 int player_fx_toggle(int which)
 {
-    static const char *names[] = {"reverb", "pitch shift", "phaser"};
+    static const char *names[] = {"reverb", "pitch shift", "autopan"};
     int next;
 
     if (which < 0 || which > 2) {
@@ -1321,7 +1330,7 @@ int player_fx_toggle(int which)
 void player_volume_step(int direction)
 {
     int volume = atomic_load(&g_volume);
-    int next = volume + direction * 50;
+    int next = volume + direction * 10;
 
     if (next < 0) {
         next = 0;

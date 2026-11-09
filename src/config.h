@@ -30,7 +30,7 @@ typedef struct Config {
     int key_dial_mode;
     int key_reverb;
     int key_pitch;
-    int key_phaser;
+    int key_autopan;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -42,7 +42,7 @@ typedef struct Config {
     char key_dial_mode_name[64];
     char key_reverb_name[64];
     char key_pitch_name[64];
-    char key_phaser_name[64];
+    char key_autopan_name[64];
     FxParams fx;
     /* [Jog] */
     double jog_turn_sec;   /* audio moved by one turn of the dial */
@@ -99,25 +99,18 @@ typedef struct ConfigEdit {
     char key_dial_mode[64];
     char key_reverb[64];
     char key_pitch[64];
-    char key_phaser[64];
-    char rv_on[32];
+    char key_autopan[64];
     char rv_decay[32];
     char rv_bw[32];
     char rv_damp[32];
     char rv_send[32];
-    char ps_on[32];
     char ps_pitch[32];
     char ps_range[32];
     char ps_semi[32];
     char ps_formant[32];
-    char ph_on[32];
-    char ph_period[32];
-    char ph_feedback[32];
-    char ph_range[32];
-    char ph_stages[32];
-    char ph_depth[32];
-    char ph_triplets[32];
-    char ph_stereo[32];
+    char ap_period[32];
+    char ap_smooth[32];
+    char ap_distance[32];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */

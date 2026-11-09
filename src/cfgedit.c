@@ -24,7 +24,7 @@
 
 /*
  * Full-screen editor for master.cfg. The screen has tabs: Main, Buttons,
- * Reverb, Pitch, and Phaser. Tab and the arrow keys move between the fields
+ * Reverb, Pitch, and Autopan. Tab and the arrow keys move between the fields
  * on the current tab. Up from the first field reaches the tabs, and left
  * and right there switch tabs. Left and right move the cursor in a text
  * field, and step to the next field at either end. A key binding is captured
@@ -37,7 +37,7 @@ enum {
     TAB_BUTTONS,
     TAB_REVERB,
     TAB_PITCH,
-    TAB_PHASER,
+    TAB_AUTOPAN,
     TAB_COUNT
 };
 
@@ -65,31 +65,24 @@ enum {
     FE_KEY_DIAL_MODE,
     FE_KEY_REVERB,
     FE_KEY_PITCH,
-    FE_KEY_PHASER,
+    FE_KEY_AUTOPAN,
     FE_BUTTON_END,
 
-    FE_RV_ON = FE_BUTTON_END,
-    FE_RV_DECAY,
+    FE_RV_DECAY = FE_BUTTON_END,
     FE_RV_BW,
     FE_RV_DAMP,
     FE_RV_SEND,
     FE_RV_END,
 
-    FE_PS_ON = FE_RV_END,
-    FE_PS_SEMI,
+    FE_PS_SEMI = FE_RV_END,
     FE_PS_FORMANT,
     FE_PS_PITCH,
     FE_PS_RANGE,
     FE_PS_END,
 
-    FE_PH_ON = FE_PS_END,
-    FE_PH_TRIP,
-    FE_PH_STEREO,
-    FE_PH_PERIOD,
-    FE_PH_FB,
-    FE_PH_RANGE,
-    FE_PH_STAGES,
-    FE_PH_DEPTH,
+    FE_AP_PERIOD = FE_PS_END,
+    FE_AP_SMOOTH,
+    FE_AP_DISTANCE,
     FE_FIELD_COUNT,
 
     FE_TABS = FE_FIELD_COUNT,
@@ -224,25 +217,18 @@ static const char *field_label(int id)
         "Dial mode",
         "Reverb",
         "Pitch shift",
-        "Phaser",
-        "On",
+        "Autopan",
         "Decay",
         "BW",
         "Damping",
         "Send",
-        "On",
         "Semitones",
         "Formant",
         "Pitch",
         "Range",
-        "On",
-        "Triplets",
-        "Stereo",
         "Period",
-        "Feedback",
-        "Range",
-        "Stages",
-        "Depth"
+        "Smoothing",
+        "Distance %"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -317,12 +303,9 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_PITCH:
         *cap = sizeof edit->key_pitch;
         return edit->key_pitch;
-    case FE_KEY_PHASER:
-        *cap = sizeof edit->key_phaser;
-        return edit->key_phaser;
-    case FE_RV_ON:
-        *cap = sizeof edit->rv_on;
-        return edit->rv_on;
+    case FE_KEY_AUTOPAN:
+        *cap = sizeof edit->key_autopan;
+        return edit->key_autopan;
     case FE_RV_DECAY:
         *cap = sizeof edit->rv_decay;
         return edit->rv_decay;
@@ -335,9 +318,6 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_RV_SEND:
         *cap = sizeof edit->rv_send;
         return edit->rv_send;
-    case FE_PS_ON:
-        *cap = sizeof edit->ps_on;
-        return edit->ps_on;
     case FE_PS_SEMI:
         *cap = sizeof edit->ps_semi;
         return edit->ps_semi;
@@ -350,30 +330,15 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_PS_RANGE:
         *cap = sizeof edit->ps_range;
         return edit->ps_range;
-    case FE_PH_ON:
-        *cap = sizeof edit->ph_on;
-        return edit->ph_on;
-    case FE_PH_TRIP:
-        *cap = sizeof edit->ph_triplets;
-        return edit->ph_triplets;
-    case FE_PH_STEREO:
-        *cap = sizeof edit->ph_stereo;
-        return edit->ph_stereo;
-    case FE_PH_PERIOD:
-        *cap = sizeof edit->ph_period;
-        return edit->ph_period;
-    case FE_PH_FB:
-        *cap = sizeof edit->ph_feedback;
-        return edit->ph_feedback;
-    case FE_PH_RANGE:
-        *cap = sizeof edit->ph_range;
-        return edit->ph_range;
-    case FE_PH_STAGES:
-        *cap = sizeof edit->ph_stages;
-        return edit->ph_stages;
-    case FE_PH_DEPTH:
-        *cap = sizeof edit->ph_depth;
-        return edit->ph_depth;
+    case FE_AP_PERIOD:
+        *cap = sizeof edit->ap_period;
+        return edit->ap_period;
+    case FE_AP_SMOOTH:
+        *cap = sizeof edit->ap_smooth;
+        return edit->ap_smooth;
+    case FE_AP_DISTANCE:
+        *cap = sizeof edit->ap_distance;
+        return edit->ap_distance;
     default:
         *cap = 0;
         return NULL;
@@ -385,9 +350,8 @@ static int is_number_field(int id)
     return id == FE_OVERLAP || id == FE_PAUSE || id == FE_RESUME ||
            id == FE_VOLUME || id == FE_LUFS || id == FE_RV_DECAY ||
            id == FE_RV_BW || id == FE_RV_DAMP || id == FE_RV_SEND ||
-           id == FE_PS_PITCH || id == FE_PS_RANGE || id == FE_PH_PERIOD ||
-           id == FE_PH_FB || id == FE_PH_RANGE || id == FE_PH_STAGES ||
-           id == FE_PH_DEPTH;
+           id == FE_PS_PITCH || id == FE_PS_RANGE || id == FE_AP_PERIOD ||
+           id == FE_AP_SMOOTH || id == FE_AP_DISTANCE;
 }
 
 static int is_key_field(int id)
@@ -402,9 +366,7 @@ static int is_check_field(const ConfigEdit *edit, int id)
     char *text;
 
     if (id != FE_SHUFFLE && id != FE_TRIM && id != FE_LOUDNESS &&
-        id != FE_RV_ON && id != FE_PS_ON && id != FE_PS_SEMI &&
-        id != FE_PS_FORMANT && id != FE_PH_ON && id != FE_PH_TRIP &&
-        id != FE_PH_STEREO) {
+        id != FE_PS_SEMI && id != FE_PS_FORMANT) {
         return 0;
     }
     text = field_text((ConfigEdit *)edit, id, &cap);
@@ -572,7 +534,7 @@ static void toggle_check(struct Editor *ed, int id)
 static int tab_first(int tab)
 {
     static const int first[] = {
-        FE_FOLDER, FE_KEY_PAUSE, FE_RV_ON, FE_PS_ON, FE_PH_ON
+        FE_FOLDER, FE_KEY_PAUSE, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1016,7 +978,7 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
 
 static const char *tab_title(int tab)
 {
-    static const char *names[] = {"Main", "Buttons", "Reverb", "Pitch", "Phaser"};
+    static const char *names[] = {"Main", "Buttons", "Reverb", "Pitch", "Autopan"};
 
     if (tab < 0 || tab >= TAB_COUNT) {
         return "";
@@ -1031,7 +993,7 @@ static const char *tab_note(int tab)
         "Buttons. Volume is on the dial.",
         "Room. Send is how much reverb is added.",
         "Pitch 1 is an octave up. 0 is unchanged.",
-        "Sweeping notches. Period is seconds."
+        "Left to right and back. Period counts beats."
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1820,8 +1782,8 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
         return edit->key_reverb;
     case FE_KEY_PITCH:
         return edit->key_pitch;
-    case FE_KEY_PHASER:
-        return edit->key_phaser;
+    case FE_KEY_AUTOPAN:
+        return edit->key_autopan;
     default:
         return "";
     }
@@ -1832,7 +1794,7 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
     static const int ids[] = {
         FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
         FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
-        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_PHASER
+        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN
     };
     int i;
 
@@ -3033,16 +2995,16 @@ int cfgedit_self_test(void)
         log_error("cfgedit", "the same field was treated as a duplicate");
         return -1;
     }
-    if (key_conflict(&edit, FE_KEY_PHASER, "KEY_KPPLUS", &who) != 1 ||
+    if (key_conflict(&edit, FE_KEY_AUTOPAN, "KEY_KPPLUS", &who) != 1 ||
         !who || strcmp(who, "Reverb") != 0) {
         log_error("cfgedit", "trimmed duplicate was not reported");
         return -1;
     }
-    if (key_conflict(&edit, FE_KEY_PHASER, "KEY_KPASTERISK", &who) != 0) {
+    if (key_conflict(&edit, FE_KEY_AUTOPAN, "KEY_KPASTERISK", &who) != 0) {
         log_error("cfgedit", "a free key was rejected");
         return -1;
     }
-    if (key_conflict(&edit, FE_KEY_PHASER, "", &who) != 0) {
+    if (key_conflict(&edit, FE_KEY_AUTOPAN, "", &who) != 0) {
         log_error("cfgedit", "an empty key was treated as a duplicate");
         return -1;
     }

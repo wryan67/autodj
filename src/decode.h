@@ -9,6 +9,7 @@ typedef struct Track {
     size_t start; /* first audible frame */
     size_t end;   /* one past the last audible frame */
     unsigned rate;
+    double bpm; /* 0 when no steady beat was found */
     char name[256];
     char path[4096];
 } Track;

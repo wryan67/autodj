@@ -9,11 +9,11 @@
 /* Reverb is a plate reverb: input smoothing, four diffusing allpasses, and
  * two cross-fed tanks with slowly moving allpasses, read at several points
  * for a wide stereo tail. Pitch change is a phase vocoder, so a full mix
- * keeps its steady tones and only the pitch moves. The phaser is a chain of
- * one-pole allpasses swept by a sine.
+ * keeps its steady tones and only the pitch moves. Autopan moves the
+ * balance from one side to the other and back, in time with the beat.
  */
 
-#define PH_MAX 12
+#define AP_DELAY 512
 #define PV_OSAMP 8
 #define PV_PI 3.14159265358979323846f
 
@@ -77,13 +77,13 @@ struct FxState {
     int ps_on;
     int ps_wet;
 
-    float ph_x1[2][PH_MAX];
-    float ph_y1[2][PH_MAX];
-    float ph_phase;
-    float ph_mix;
-    float ph_last[2];
-    int ph_on;
-    int ph_live;
+    float ap_buf[2][AP_DELAY];
+    int ap_w;
+    double ap_phase;
+    float ap_mix;
+    float beat_sec;
+    int ap_on;
+    int ap_live;
 };
 
 /* Plate reverb lengths in samples at 29761 Hz. */
@@ -115,11 +115,9 @@ void fx_defaults(FxParams *p)
     p->ps_range = 1.0f;
     p->ps_semi = 1;
     p->ps_formant = 0;
-    p->ph_period = 1.0f;
-    p->ph_feedback = 0.0f;
-    p->ph_range = 1.0f;
-    p->ph_stages = 7;
-    p->ph_depth = 0.5f;
+    p->ap_period = 4.0f;
+    p->ap_smooth = 0.5f;
+    p->ap_distance = 75.0f;
 }
 
 static int scaled(unsigned rate, int n)
@@ -359,13 +357,11 @@ static void ps_clear(FxState *st)
     st->ps_wet = 0;
 }
 
-static void ph_clear(FxState *st)
+static void ap_clear(FxState *st)
 {
-    memset(st->ph_x1, 0, sizeof st->ph_x1);
-    memset(st->ph_y1, 0, sizeof st->ph_y1);
-    st->ph_phase = 0;
-    st->ph_last[0] = 0;
-    st->ph_last[1] = 0;
+    memset(st->ap_buf, 0, sizeof st->ap_buf);
+    st->ap_w = 0;
+    st->ap_phase = 0;
 }
 
 void fx_setup(FxState *st, const FxParams *p)
@@ -380,27 +376,35 @@ void fx_setup(FxState *st, const FxParams *p)
     }
     rv_clear(st);
     ps_clear(st);
-    ph_clear(st);
+    ap_clear(st);
     st->rv_send = 0;
     st->rv_live = 0;
     st->rv_lfo[0] = 0;
     st->rv_lfo[1] = 1.7f;
     st->ps_mix = 0;
-    st->ph_mix = 0;
-    st->ph_live = 0;
+    st->ap_mix = 0;
+    st->ap_live = 0;
     st->rv_on = st->p.reverb_on ? 1 : 0;
     st->ps_on = st->p.pitch_on ? 1 : 0;
-    st->ph_on = st->p.phaser_on ? 1 : 0;
+    st->ap_on = st->p.autopan_on ? 1 : 0;
 }
 
-void fx_set_on(FxState *st, int reverb, int pitch, int phaser)
+void fx_set_on(FxState *st, int reverb, int pitch, int autopan)
 {
     if (!st) {
         return;
     }
     st->rv_on = reverb ? 1 : 0;
     st->ps_on = pitch ? 1 : 0;
-    st->ph_on = phaser ? 1 : 0;
+    st->ap_on = autopan ? 1 : 0;
+}
+
+void fx_set_beat(FxState *st, float beat_seconds)
+{
+    if (!st) {
+        return;
+    }
+    st->beat_sec = beat_seconds > 0 && beat_seconds < 10.0f ? beat_seconds : 0;
 }
 
 static float clamp_unit(float x)
@@ -779,137 +783,108 @@ static void process_pitch(FxState *st, float *left, float *right)
     *right = fin(dry_r * (1.0f - st->ps_mix) + wet_r * st->ps_mix);
 }
 
-static float allpass1(float x, float *x1, float *y1, float a)
+static float ap_read(const float *buf, int w, float delay)
 {
-    float y = a * x + *x1 - a * *y1;
+    float pos = (float)w - 1.0f - delay;
+    int i0;
+    int i1;
+    float frac;
 
-    *x1 = x;
-    *y1 = y;
-    return fin(y);
+    while (pos < 0) {
+        pos += (float)AP_DELAY;
+    }
+    i0 = (int)pos;
+    frac = pos - (float)i0;
+    i0 &= AP_DELAY - 1;
+    i1 = (i0 + 1) & (AP_DELAY - 1);
+    return buf[i0] + (buf[i1] - buf[i0]) * frac;
 }
 
-static void process_phaser(FxState *st, float *left, float *right)
+static void process_autopan(FxState *st, float *left, float *right)
 {
-    float in[2];
-    float depth;
-    float target;
-    float period;
-    float range;
-    float feedback;
-    float lo;
-    float hi;
-    float nyquist;
-    int stages;
-    int ch;
+    double period;
+    float width;
+    float smooth;
+    float hold;
+    float boost;
+    float pos;
+    float frac;
+    float gl;
+    float gr;
+    float shrink;
+    float delay;
+    float l;
+    float r;
 
-    in[0] = *left;
-    in[1] = *right;
-    depth = st->p.ph_depth;
-    if (depth < 0.5f) {
-        depth = 0.5f;
-    }
-    if (depth > 1.0f) {
-        depth = 1.0f;
-    }
-    target = st->ph_on ? depth : 0;
-    st->ph_mix += 0.003f * (target - st->ph_mix);
-    if (!st->ph_on && st->ph_mix < 0.00005f) {
-        st->ph_mix = 0;
-        if (st->ph_live) {
-            ph_clear(st);
-            st->ph_live = 0;
+    st->ap_mix += 0.003f * ((st->ap_on ? 1.0f : 0.0f) - st->ap_mix);
+    if (!st->ap_on && st->ap_mix < 0.0001f) {
+        st->ap_mix = 0;
+        if (st->ap_live) {
+            ap_clear(st);
+            st->ap_live = 0;
         }
         return;
     }
-    if (st->ph_on && !st->ph_live) {
-        ph_clear(st);
-        st->ph_live = 1;
+    if (st->ap_on && !st->ap_live) {
+        ap_clear(st);
+        st->ap_live = 1;
     }
 
-    period = st->p.ph_period;
-    if (st->p.ph_triplets) {
-        period /= 3.0f;
+    /* Period counts 4-beat measures, snapped to whole beats. */
+    period = round(st->p.ap_period * 4.0);
+    if (period < 1) {
+        period = 1;
     }
-    if (period < 0.25f) {
-        period = 0.25f;
-    }
-    st->ph_phase += (float)(2.0 * M_PI) / (period * (float)st->rate);
-    if (st->ph_phase > (float)(2.0 * M_PI)) {
-        st->ph_phase -= (float)(2.0 * M_PI);
-    }
-
-    range = st->p.ph_range;
-    if (range < 0.05f) {
-        range = 0.05f;
-    }
-    if (range > 1.0f) {
-        range = 1.0f;
-    }
-    lo = 180.0f;
-    hi = 180.0f * powf(40.0f, range);
-    nyquist = 0.45f * (float)st->rate * 0.5f;
-    if (hi > nyquist) {
-        hi = nyquist;
-    }
-    if (hi < lo + 20.0f) {
-        hi = lo + 20.0f;
-    }
-    feedback = st->p.ph_feedback;
-    if (feedback > 1.0f) {
-        feedback = 1.0f;
-    }
-    if (feedback < -1.0f) {
-        feedback = -1.0f;
-    }
-    feedback *= 0.9f;
-    stages = st->p.ph_stages;
-    if (stages < 1) {
-        stages = 1;
-    }
-    if (stages > PH_MAX) {
-        stages = PH_MAX;
+    period *= st->beat_sec > 0 ? st->beat_sec : 0.5;
+    st->ap_phase += 1.0 / (period * (double)st->rate);
+    if (st->ap_phase >= 1.0) {
+        st->ap_phase -= floor(st->ap_phase);
     }
 
-    for (ch = 0; ch < 2; ch++) {
-        float phase = st->ph_phase;
-        float lfo;
-        float freq;
-        float t;
-        float a;
-        float x;
-        int s;
-
-        if (ch == 1 && st->p.ph_stereo) {
-            phase += (float)M_PI;
-            if (phase > (float)(2.0 * M_PI)) {
-                phase -= (float)(2.0 * M_PI);
-            }
-        }
-        lfo = 0.5f + 0.5f * sinf(phase);
-        freq = lo * powf(hi / lo, lfo);
-        t = tanf((float)M_PI * freq / (float)st->rate);
-        if (t > 40.0f) {
-            t = 40.0f;
-        }
-        if (t < 0) {
-            t = 0;
-        }
-        a = (1.0f - t) / (1.0f + t);
-        x = in[ch] + feedback * st->ph_last[ch];
-        if (x > 1.5f) {
-            x = 1.5f;
-        }
-        if (x < -1.5f) {
-            x = -1.5f;
-        }
-        for (s = 0; s < stages; s++) {
-            x = allpass1(x, &st->ph_x1[ch][s], &st->ph_y1[ch][s], a);
-        }
-        st->ph_last[ch] = x;
-        in[ch] = fin(in[ch] * (1.0f - st->ph_mix) + x * st->ph_mix);
+    width = clamp_unit(st->p.ap_distance * 0.01f) * st->ap_mix;
+    smooth = st->p.ap_smooth;
+    if (smooth < 0.25f) {
+        smooth = 0.25f;
     }
-    *left = in[0];
-    *right = in[1];
+    if (smooth > 0.5f) {
+        smooth = 0.5f;
+    }
+    /* hold is the share of each half swing spent parked at the side. A sine
+     * scaled up by 1/cos(pi * hold) and clipped stays at 1 for that long.
+     */
+    hold = 0.5f - smooth;
+    boost = 1.0f / cosf(PV_PI * hold);
+    pos = boost * sinf(2.0f * PV_PI * (float)st->ap_phase);
+    if (pos > 1.0f) {
+        pos = 1.0f;
+    }
+    if (pos < -1.0f) {
+        pos = -1.0f;
+    }
+    pos *= width;
+
+    /* Equal power, so the song is as loud at the side as in the middle,
+     * trimmed a little at the sides so peaks do not clip.
+     */
+    frac = 0.5f * (pos + 1.0f);
+    shrink = 1.0f - 0.15f * fabsf(pos);
+    gl = 1.41421356f * sinf(frac * 0.5f * PV_PI) * shrink;
+    gr = 1.41421356f * cosf(frac * 0.5f * PV_PI) * shrink;
+
+    /* The far side also arrives up to 1 ms late, which the ear hears as
+     * direction.
+     */
+    st->ap_buf[0][st->ap_w] = *left;
+    st->ap_buf[1][st->ap_w] = *right;
+    st->ap_w = (st->ap_w + 1) & (AP_DELAY - 1);
+    delay = 0.001f * (float)st->rate * fabsf(pos);
+    if (delay > (float)(AP_DELAY - 4)) {
+        delay = (float)(AP_DELAY - 4);
+    }
+    l = ap_read(st->ap_buf[0], st->ap_w, pos < 0 ? delay : 0);
+    r = ap_read(st->ap_buf[1], st->ap_w, pos > 0 ? delay : 0);
+    *left = fin(l * gl);
+    *right = fin(r * gr);
 }
 
 void fx_process(FxState *st, float *left, float *right)
@@ -919,7 +894,7 @@ void fx_process(FxState *st, float *left, float *right)
     }
     process_reverb(st, left, right);
     process_pitch(st, left, right);
-    process_phaser(st, left, right);
+    process_autopan(st, left, right);
 }
 
 static int near_same(const float *a, const float *b, int n, float tol)
@@ -1070,32 +1045,46 @@ int fx_self_test(void)
         goto done;
     }
 
+    /* Distance 100%, one beat per swing at 120 BPM: half a second. A quarter of
+     * the way through a swing the song is all on the left, three quarters
+     * of the way all on the right.
+     */
     fx_defaults(&p);
-    p.phaser_on = 1;
-    p.ph_depth = 1;
-    p.ph_feedback = 0.6f;
-    p.ph_stages = 8;
-    p.ph_period = 0.5f;
-    p.ph_range = 1;
+    p.autopan_on = 1;
+    p.ap_distance = 100;
+    p.ap_period = 0.25f;
     fx_setup(st, &p);
     fx_set_on(st, 0, 0, 1);
-    energy = 0;
-    for (i = 0; i < 6000; i++) {
-        left = dry[i];
-        right = dry[i];
-        fx_process(st, &left, &right);
-        if (left != left || fabsf(left) > 4.0f) {
-            log_error("fx", "phaser produced %f", left);
+    fx_set_beat(st, 0.5f);
+    {
+        float at_left[2] = {0, 0};
+        float at_right[2] = {0, 0};
+
+        for (i = 0; i < 22050 * 2; i++) {
+            left = 0.5f;
+            right = 0.5f;
+            fx_process(st, &left, &right);
+            if (left != left || right != right || fabsf(left) > 1.0f || fabsf(right) > 1.0f) {
+                log_error("fx", "autopan produced %f %f", left, right);
+                goto done;
+            }
+            if (i == 22050 + 5512) {
+                at_left[0] = left;
+                at_left[1] = right;
+            }
+            if (i == 22050 + 16537) {
+                at_right[0] = left;
+                at_right[1] = right;
+            }
+        }
+        if (at_left[0] < 0.55f || at_left[1] > 0.01f ||
+            at_right[1] < 0.55f || at_right[0] > 0.01f) {
+            log_error("fx", "autopan did not swing with the beat (%.3f %.3f, %.3f %.3f)",
+                      at_left[0], at_left[1], at_right[0], at_right[1]);
             goto done;
         }
-        if (i > 2000) {
-            energy += fabsf(left - dry[i]);
-        }
     }
-    if (energy < 1.0f) {
-        log_error("fx", "phaser left the sine unchanged (%.4f)", energy);
-        goto done;
-    }
+    fx_set_beat(st, 0);
 
     rc = 0;
 done:

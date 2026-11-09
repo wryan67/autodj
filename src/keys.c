@@ -816,8 +816,8 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
         player_fx_toggle(PLAYER_FX_PITCH);
         return;
     }
-    if (key == cfg->key_phaser && value == 1) {
-        player_fx_toggle(PLAYER_FX_PHASER);
+    if (key == cfg->key_autopan && value == 1) {
+        player_fx_toggle(PLAYER_FX_AUTOPAN);
         return;
     }
     if (value == 1) {
@@ -982,7 +982,7 @@ static int debounce_self_test(void)
     cfg.key_dial_mode = -1;
     cfg.key_reverb = KEY_KPPLUS;
     cfg.key_pitch = -1;
-    cfg.key_phaser = -1;
+    cfg.key_autopan = -1;
     player_set_volume_percent(50);
     player_set_fx(NULL);
     g_press_seen = 0;
@@ -1062,8 +1062,8 @@ static int debounce_self_test(void)
         goto out;
     }
     keys_poll(&cfg);
-    if (!g_dial_volume || player_volume_percent() != 55) {
-        log_error("keys", "dial in volume mode left volume %d, expected 55",
+    if (!g_dial_volume || player_volume_percent() != 51) {
+        log_error("keys", "dial in volume mode left volume %d, expected 51",
                   player_volume_percent());
         goto out;
     }

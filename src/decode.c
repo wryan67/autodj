@@ -1,6 +1,7 @@
 #include "decode.h"
 
 #include "log.h"
+#include "tempo.h"
 
 #include <ebur128.h>
 #include <mpg123.h>
@@ -343,6 +344,7 @@ Track *track_decode(const char *path, unsigned rate, int trim, int loudness, int
         apply_loudness(track, loudness_lufs);
     }
     apply_trim(track, trim);
+    track->bpm = tempo_detect(track->pcm, track->frames, rate);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     {
@@ -356,8 +358,8 @@ Track *track_decode(const char *path, unsigned rate, int trim, int loudness, int
     }
     if (track->end > track->start) {
         unsigned sec = (unsigned)((track->end - track->start) / rate);
-        log_info("decode", "decoded %s in %u ms, %u:%02u audible",
-                 track->name, ms, sec / 60, sec % 60);
+        log_info("decode", "decoded %s in %u ms, %u:%02u audible, %.1f BPM",
+                 track->name, ms, sec / 60, sec % 60, track->bpm);
     } else {
         log_warn("decode", "decoded %s in %u ms, but it is silent", track->name, ms);
     }

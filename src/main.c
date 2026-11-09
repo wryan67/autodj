@@ -79,24 +79,6 @@ static int run_checks(const Config *cfg, Playlist *pl)
     return 0;
 }
 
-static void remember_fx(const char *path, Config *cfg)
-{
-    int reverb = player_fx_enabled(PLAYER_FX_REVERB);
-    int pitch = player_fx_enabled(PLAYER_FX_PITCH);
-    int phaser = player_fx_enabled(PLAYER_FX_PHASER);
-
-    if (reverb == cfg->fx.reverb_on && pitch == cfg->fx.pitch_on &&
-        phaser == cfg->fx.phaser_on) {
-        return;
-    }
-    cfg->fx.reverb_on = reverb;
-    cfg->fx.pitch_on = pitch;
-    cfg->fx.phaser_on = phaser;
-    if (config_save(path, cfg, NULL, 0) != 0) {
-        log_warn("autodj", "could not store the sound effect buttons");
-    }
-}
-
 static void remember_volume(const char *path, Config *cfg)
 {
     int volume = player_volume_percent();
@@ -197,14 +179,11 @@ int main(int argc, char **argv)
              cfg.key_pause_name[0] ? cfg.key_pause_name : "(none)",
              cfg.key_skip_name[0] ? cfg.key_skip_name : "(none)",
              cfg.key_prev_name[0] ? cfg.key_prev_name : "(none)");
-    log_info("autodj", "keys reverb %s, pitch shift %s, phaser %s",
+    log_info("autodj", "keys reverb %s, pitch shift %s, autopan %s",
              cfg.key_reverb_name[0] ? cfg.key_reverb_name : "(none)",
              cfg.key_pitch_name[0] ? cfg.key_pitch_name : "(none)",
-             cfg.key_phaser_name[0] ? cfg.key_phaser_name : "(none)");
-    log_info("autodj", "effects reverb %s, pitch shift %s, phaser %s",
-             cfg.fx.reverb_on ? "on" : "off",
-             cfg.fx.pitch_on ? "on" : "off",
-             cfg.fx.phaser_on ? "on" : "off");
+             cfg.key_autopan_name[0] ? cfg.key_autopan_name : "(none)");
+    log_info("autodj", "effects off");
     log_info("autodj", "keys rewind 0.5s %s, rewind 1s %s, rewind 1.5s %s",
              cfg.key_rew05_name[0] ? cfg.key_rew05_name : "(none)",
              cfg.key_rew10_name[0] ? cfg.key_rew10_name : "(none)",
@@ -293,11 +272,9 @@ int main(int argc, char **argv)
         /* Also on timeout, for held remote buttons and reconnects. */
         keys_poll(&cfg);
         remember_volume(path, &cfg);
-        remember_fx(path, &cfg);
     }
 
     remember_volume(path, &cfg);
-    remember_fx(path, &cfg);
     log_info("autodj", "stopping");
     player_stop();
     keys_close();
