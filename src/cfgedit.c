@@ -76,6 +76,7 @@ enum {
     FE_KEY_PHASER,
     FE_KEY_CHORUS,
     FE_KEY_FLANGER,
+    FE_KEY_EFFECTS_OFF,
     FE_BUTTON_END,
 
     FE_RV_DECAY = FE_BUTTON_END,
@@ -127,7 +128,7 @@ enum {
 enum {
     LABEL_W = 16,
     NUM_W = 10,
-    /* Tallest tab is Buttons, with 15 fields, under one row of tabs.
+    /* Tallest tab is Buttons, with 16 fields, under one row of tabs.
      * A wrapped tab row adds one line, checked in layout_ui. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_PAUSE,
     ROW_TABS = 1,
@@ -266,6 +267,7 @@ static const char *field_label(int id)
         "Phaser",
         "Chorus",
         "Flanger",
+        "All effects off",
         "Decay",
         "BW",
         "Damping",
@@ -380,6 +382,9 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_FLANGER:
         *cap = sizeof edit->key_flanger;
         return edit->key_flanger;
+    case FE_KEY_EFFECTS_OFF:
+        *cap = sizeof edit->key_effects_off;
+        return edit->key_effects_off;
     case FE_RV_DECAY:
         *cap = sizeof edit->rv_decay;
         return edit->rv_decay;
@@ -2010,6 +2015,8 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
         return edit->key_chorus;
     case FE_KEY_FLANGER:
         return edit->key_flanger;
+    case FE_KEY_EFFECTS_OFF:
+        return edit->key_effects_off;
     default:
         return "";
     }
@@ -2021,7 +2028,7 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
         FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
         FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
         FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN,
-        FE_KEY_PHASER, FE_KEY_CHORUS, FE_KEY_FLANGER
+        FE_KEY_PHASER, FE_KEY_CHORUS, FE_KEY_FLANGER, FE_KEY_EFFECTS_OFF
     };
     int i;
 
@@ -3447,10 +3454,12 @@ static int screen_self_test(void)
     }
     if (ed.ui.field_r[FE_KEY_CHORUS] < 0 ||
         ed.ui.field_r[FE_KEY_FLANGER] <= ed.ui.field_r[FE_KEY_PHASER] ||
+        ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_FLANGER] ||
         ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_MAIN] ||
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_MAIN] ||
         !buf || strstr(buf, "[ Chorus ]") == NULL || strstr(buf, "[ Flanger ]") == NULL ||
-        strstr(buf, "Chorus") == NULL || strstr(buf, "Flanger") == NULL) {
+        strstr(buf, "Chorus") == NULL || strstr(buf, "Flanger") == NULL ||
+        strstr(buf, "All effects off") == NULL) {
         log_error("cfgedit", "wide Buttons screen is missing chorus and flanger");
         free(buf);
         return -1;

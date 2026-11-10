@@ -61,6 +61,8 @@ void player_set_fx(const FxParams *fx);
 int player_fx_enabled(int which);
 /* Returns the new state, 1 on and 0 off. */
 int player_fx_toggle(int which);
+/* Turn every effect off. A second press leaves them off. */
+void player_fx_all_off(void);
 
 int player_self_test(void);
 

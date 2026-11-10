@@ -1337,6 +1337,16 @@ int player_fx_toggle(int which)
     return next;
 }
 
+void player_fx_all_off(void)
+{
+    int i;
+
+    for (i = 0; i <= PLAYER_FX_FLANGER; i++) {
+        atomic_store(&g_fx_on[i], 0);
+    }
+    log_info("keys", "effects off");
+}
+
 void player_volume_step(int direction)
 {
     int volume = atomic_load(&g_volume);

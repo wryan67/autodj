@@ -34,6 +34,7 @@ typedef struct Config {
     int key_phaser;
     int key_chorus;
     int key_flanger;
+    int key_effects_off;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -49,6 +50,7 @@ typedef struct Config {
     char key_phaser_name[64];
     char key_chorus_name[64];
     char key_flanger_name[64];
+    char key_effects_off_name[64];
     FxParams fx;
     /* [Jog] */
     double jog_turn_sec;   /* audio moved by one turn of the dial */
@@ -109,6 +111,7 @@ typedef struct ConfigEdit {
     char key_phaser[64];
     char key_chorus[64];
     char key_flanger[64];
+    char key_effects_off[64];
     char rv_decay[32];
     char rv_bw[32];
     char rv_damp[32];

@@ -832,6 +832,10 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
         player_fx_toggle(PLAYER_FX_FLANGER);
         return;
     }
+    if (key == cfg->key_effects_off && value == 1) {
+        player_fx_all_off();
+        return;
+    }
     if (value == 1) {
         name = key_name(key);
         log_info("keys", "key %s is not mapped", name ? name : "unknown");
@@ -998,6 +1002,7 @@ static int debounce_self_test(void)
     cfg.key_phaser = -1;
     cfg.key_chorus = -1;
     cfg.key_flanger = -1;
+    cfg.key_effects_off = -1;
     player_set_volume_percent(50);
     player_set_fx(NULL);
     g_press_seen = 0;
@@ -1080,6 +1085,37 @@ static int debounce_self_test(void)
     if (!g_dial_volume || player_volume_percent() != 51) {
         log_error("keys", "dial in volume mode left volume %d, expected 51",
                   player_volume_percent());
+        goto out;
+    }
+
+    /* One button turns every effect off, and does not turn them back on. */
+    cfg.key_effects_off = KEY_F;
+    player_fx_toggle(PLAYER_FX_REVERB);
+    player_fx_toggle(PLAYER_FX_CHORUS);
+    player_fx_toggle(PLAYER_FX_PHASER);
+    if (!player_fx_enabled(PLAYER_FX_REVERB) || !player_fx_enabled(PLAYER_FX_CHORUS) ||
+        !player_fx_enabled(PLAYER_FX_PHASER)) {
+        log_error("keys", "could not turn effects on for the all-off button");
+        goto out;
+    }
+    if (put_key(pipefd[1], 10300, KEY_F, 1) != 0) {
+        log_error("keys", "cannot write the all-off press");
+        goto out;
+    }
+    keys_poll(&cfg);
+    if (player_fx_enabled(PLAYER_FX_REVERB) || player_fx_enabled(PLAYER_FX_CHORUS) ||
+        player_fx_enabled(PLAYER_FX_PHASER) || player_fx_enabled(PLAYER_FX_FLANGER)) {
+        log_error("keys", "all-off left an effect on");
+        goto out;
+    }
+    player_fx_toggle(PLAYER_FX_FLANGER);
+    if (put_key(pipefd[1], 10340, KEY_F, 1) != 0) {
+        log_error("keys", "cannot write a second all-off press");
+        goto out;
+    }
+    keys_poll(&cfg);
+    if (player_fx_enabled(PLAYER_FX_FLANGER) || player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "a second all-off press left an effect on");
         goto out;
     }
     rc = 0;

@@ -28,6 +28,7 @@ enum {
     KEYID_PHASER,
     KEYID_CHORUS,
     KEYID_FLANGER,
+    KEYID_EFFECTS_OFF,
     KEYID_COUNT
 };
 
@@ -242,6 +243,10 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         slot = &cfg->key_flanger;
         name = cfg->key_flanger_name;
         name_n = sizeof cfg->key_flanger_name;
+    } else if (eq_ci(action, "effects_off")) {
+        slot = &cfg->key_effects_off;
+        name = cfg->key_effects_off_name;
+        name_n = sizeof cfg->key_effects_off_name;
     } else if (eq_ci(action, "dial_forward") || eq_ci(action, "jog_forward")) {
         slot = &cfg->key_dial_fwd;
         name = cfg->key_dial_fwd_name;
@@ -282,7 +287,7 @@ static int key_code_used(const Config *cfg, int code)
            cfg->key_dial_mode == code || cfg->key_reverb == code ||
            cfg->key_pitch == code || cfg->key_autopan == code ||
            cfg->key_phaser == code || cfg->key_chorus == code ||
-           cfg->key_flanger == code;
+           cfg->key_flanger == code || cfg->key_effects_off == code;
 }
 
 /* A missing previous or rewind binding takes the keypad default, unless
@@ -639,6 +644,7 @@ int config_load(const char *path, Config *cfg)
     cfg->key_phaser = -1;
     cfg->key_chorus = -1;
     cfg->key_flanger = -1;
+    cfg->key_effects_off = -1;
     config_jog_defaults(cfg);
     fx_defaults(&cfg->fx);
     section[0] = '\0';
@@ -702,7 +708,7 @@ int config_load(const char *path, Config *cfg)
             &cfg->key_rew10, &cfg->key_rew15, &cfg->key_dial_fwd,
             &cfg->key_dial_back, &cfg->key_dial_mode, &cfg->key_reverb,
             &cfg->key_pitch, &cfg->key_autopan, &cfg->key_phaser,
-            &cfg->key_chorus, &cfg->key_flanger
+            &cfg->key_chorus, &cfg->key_flanger, &cfg->key_effects_off
         };
         int i;
 
@@ -1148,6 +1154,8 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_chorus, sizeof edit->key_chorus, val);
         } else if (eq_ci(key, "flanger")) {
             copy_raw(edit->key_flanger, sizeof edit->key_flanger, val);
+        } else if (eq_ci(key, "effects_off")) {
+            copy_raw(edit->key_effects_off, sizeof edit->key_effects_off, val);
         }
         return;
     }
@@ -1229,7 +1237,7 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
 /* Drop a keypad default when the file already gave that key to another action. */
 static void release_taken_default(ConfigEdit *edit, char *field, const char *defname)
 {
-    char *fields[15];
+    char *fields[16];
     int i;
     int hits = 0;
 
@@ -1251,7 +1259,8 @@ static void release_taken_default(ConfigEdit *edit, char *field, const char *def
     fields[12] = edit->key_phaser;
     fields[13] = edit->key_chorus;
     fields[14] = edit->key_flanger;
-    for (i = 0; i < 15; i++) {
+    fields[15] = edit->key_effects_off;
+    for (i = 0; i < 16; i++) {
         if (strcmp(fields[i], defname) == 0) {
             hits++;
         }
@@ -1480,6 +1489,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_phaser);
     trim(in.key_chorus);
     trim(in.key_flanger);
+    trim(in.key_effects_off);
     trim(in.rv_decay);
     trim(in.rv_bw);
     trim(in.rv_damp);
@@ -1525,6 +1535,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_phaser = -1;
     out.key_chorus = -1;
     out.key_flanger = -1;
+    out.key_effects_off = -1;
     fx_defaults(&out.fx);
     out.volume_set = 1;
 
@@ -1625,6 +1636,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_FLANGER] = take_key(err, err_n, in.key_flanger, "Flanger",
                                      &out.key_flanger, out.key_flanger_name,
                                      sizeof out.key_flanger_name) == 0;
+    key_ok[KEYID_EFFECTS_OFF] = take_key(err, err_n, in.key_effects_off, "All effects off",
+                                         &out.key_effects_off, out.key_effects_off_name,
+                                         sizeof out.key_effects_off_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
@@ -1640,6 +1654,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     keys[KEYID_PHASER] = in.key_phaser;
     keys[KEYID_CHORUS] = in.key_chorus;
     keys[KEYID_FLANGER] = in.key_flanger;
+    keys[KEYID_EFFECTS_OFF] = in.key_effects_off;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
@@ -1655,6 +1670,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_PHASER] = "phaser";
     labels[KEYID_CHORUS] = "chorus";
     labels[KEYID_FLANGER] = "flanger";
+    labels[KEYID_EFFECTS_OFF] = "all effects off";
     if (in.rv_decay[0] && take_real(err, err_n, in.rv_decay, 0, 1, "Decay", &out.fx.rv_decay) != 0) {
         failed = 1;
     }
@@ -1920,6 +1936,9 @@ static int keys_id(const char *key)
     }
     if (eq_ci(key, "flanger")) {
         return KEYID_FLANGER;
+    }
+    if (eq_ci(key, "effects_off")) {
+        return KEYID_EFFECTS_OFF;
     }
     return -1;
 }
@@ -2204,6 +2223,9 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
     case KEYID_FLANGER:
         s = cfg->key_flanger_name;
         break;
+    case KEYID_EFFECTS_OFF:
+        s = cfg->key_effects_off_name;
+        break;
     default:
         break;
     }
@@ -2406,7 +2428,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     static const char *key_names[] = {
         "pause_resume", "skip", "previous", "rewind_0_5", "rewind_1",
         "rewind_1_5", "dial_forward", "dial_back", "dial_mode",
-        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger"
+        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
+        "effects_off"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -2992,7 +3015,8 @@ static int edit_self_test(void)
                     strcmp(edit.fl_depth, "0.5") != 0 ||
                     edit.key_reverb[0] != '\0' ||
                     edit.key_chorus[0] != '\0' ||
-                    edit.key_flanger[0] != '\0')) {
+                    edit.key_flanger[0] != '\0' ||
+                    edit.key_effects_off[0] != '\0')) {
         log_error("autodj", "config editor test rejected a missing file");
         rc = -1;
     }
@@ -3021,7 +3045,8 @@ static int edit_self_test(void)
                     cfg.fx.ph_low != 300 || cfg.fx.ph_stages != 6 ||
                     cfg.fx.ch_delay != 20 || cfg.fx.ch_voices != 2 ||
                     cfg.fx.fl_delay != 1 || cfg.fx.fl_depth != 0.5f ||
-                    cfg.key_chorus != -1 || cfg.key_flanger != -1)) {
+                    cfg.key_chorus != -1 || cfg.key_flanger != -1 ||
+                    cfg.key_effects_off != -1)) {
         log_error("autodj", "config editor test rejected a valid form: %s", err);
         rc = -1;
     }
@@ -3054,11 +3079,13 @@ static int edit_self_test(void)
     snprintf(edit.folder, sizeof edit.folder, "/tmp/autodj-missing-folder");
     snprintf(edit.shuffle, sizeof edit.shuffle, "maybe");
     snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KP0");
+    snprintf(edit.key_effects_off, sizeof edit.key_effects_off, "KEY_KP0");
     if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) == 0 ||
                     strstr(err, "Folder does not exist.") == NULL ||
                     strstr(err, "Shuffle must be true or false.") == NULL ||
                     strstr(err, "Volume must be a whole number from 0 to 100.") == NULL ||
-                    strstr(err, "KEY_KP0 is used for pause/resume and skip.") == NULL)) {
+                    strstr(err, "KEY_KP0 is used for pause/resume and skip.") == NULL ||
+                    strstr(err, "all effects off") == NULL)) {
         log_error("autodj", "config editor test missed a bad form: %s", err);
         rc = -1;
     }
@@ -3213,6 +3240,7 @@ int config_self_test(void)
                cfg.fx.ch_delay != 20 || cfg.fx.ch_voices != 2 || cfg.fx.ch_depth != 5 ||
                cfg.fx.fl_delay != 1 || cfg.fx.fl_depth != 0.5f || cfg.fx.fl_feedback != 0.5f ||
                cfg.key_chorus != -1 || cfg.key_flanger != -1 ||
+               cfg.key_effects_off != -1 ||
                cfg.fx.reverb_on != 0 || cfg.fx.pitch_on != 0 || cfg.fx.autopan_on != 0 ||
                cfg.key_prev != slash || cfg.key_rew05 != kp1 ||
                cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3) {
