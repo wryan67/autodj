@@ -171,9 +171,16 @@ static void apply_jog(Config *cfg, const char *key, const char *val)
     }
 }
 
+/* The file named this action and left the value empty. A missing previous
+ * or rewind line still receives a keypad default. An empty one must not. */
+enum { KEY_EXPLICIT_UNBOUND = -2 };
+
 static void set_key(Config *cfg, const char *action, const char *keyname)
 {
     int code = -1;
+    int *slot = NULL;
+    char *name = NULL;
+    size_t name_n = 0;
 
     if (eq_ci(action, "volume_up") || eq_ci(action, "brake_delayvolume_up") ||
         eq_ci(action, "volume_dn") || eq_ci(action, "volume_down")) {
@@ -184,53 +191,74 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         /* A chipmunk line wins over the old pitch_shift name. */
         return;
     }
+    if (eq_ci(action, "pause_resume")) {
+        slot = &cfg->key_pause;
+        name = cfg->key_pause_name;
+        name_n = sizeof cfg->key_pause_name;
+    } else if (eq_ci(action, "skip")) {
+        slot = &cfg->key_skip;
+        name = cfg->key_skip_name;
+        name_n = sizeof cfg->key_skip_name;
+    } else if (eq_ci(action, "previous")) {
+        slot = &cfg->key_prev;
+        name = cfg->key_prev_name;
+        name_n = sizeof cfg->key_prev_name;
+    } else if (eq_ci(action, "rewind_0_5")) {
+        slot = &cfg->key_rew05;
+        name = cfg->key_rew05_name;
+        name_n = sizeof cfg->key_rew05_name;
+    } else if (eq_ci(action, "rewind_1")) {
+        slot = &cfg->key_rew10;
+        name = cfg->key_rew10_name;
+        name_n = sizeof cfg->key_rew10_name;
+    } else if (eq_ci(action, "rewind_1_5")) {
+        slot = &cfg->key_rew15;
+        name = cfg->key_rew15_name;
+        name_n = sizeof cfg->key_rew15_name;
+    } else if (eq_ci(action, "reverb")) {
+        slot = &cfg->key_reverb;
+        name = cfg->key_reverb_name;
+        name_n = sizeof cfg->key_reverb_name;
+    } else if (eq_ci(action, "chipmunk") || eq_ci(action, "pitch_shift")) {
+        /* pitch_shift is the old name of this button. */
+        slot = &cfg->key_pitch;
+        name = cfg->key_pitch_name;
+        name_n = sizeof cfg->key_pitch_name;
+    } else if (eq_ci(action, "autopan")) {
+        slot = &cfg->key_autopan;
+        name = cfg->key_autopan_name;
+        name_n = sizeof cfg->key_autopan_name;
+    } else if (eq_ci(action, "phaser")) {
+        slot = &cfg->key_phaser;
+        name = cfg->key_phaser_name;
+        name_n = sizeof cfg->key_phaser_name;
+    } else if (eq_ci(action, "dial_forward") || eq_ci(action, "jog_forward")) {
+        slot = &cfg->key_dial_fwd;
+        name = cfg->key_dial_fwd_name;
+        name_n = sizeof cfg->key_dial_fwd_name;
+    } else if (eq_ci(action, "dial_back") || eq_ci(action, "jog_back")) {
+        slot = &cfg->key_dial_back;
+        name = cfg->key_dial_back_name;
+        name_n = sizeof cfg->key_dial_back_name;
+    } else if (eq_ci(action, "dial_mode")) {
+        slot = &cfg->key_dial_mode;
+        name = cfg->key_dial_mode_name;
+        name_n = sizeof cfg->key_dial_mode_name;
+    } else {
+        log_warn("autodj", "unknown key action %s", action);
+        return;
+    }
+    if (!keyname[0]) {
+        *slot = KEY_EXPLICIT_UNBOUND;
+        name[0] = '\0';
+        return;
+    }
     if (key_from_name(keyname, &code) != 0) {
         log_warn("autodj", "unknown key name %s for %s", keyname, action);
         return;
     }
-    if (eq_ci(action, "pause_resume")) {
-        cfg->key_pause = code;
-        snprintf(cfg->key_pause_name, sizeof cfg->key_pause_name, "%s", keyname);
-    } else if (eq_ci(action, "skip")) {
-        cfg->key_skip = code;
-        snprintf(cfg->key_skip_name, sizeof cfg->key_skip_name, "%s", keyname);
-    } else if (eq_ci(action, "previous")) {
-        cfg->key_prev = code;
-        snprintf(cfg->key_prev_name, sizeof cfg->key_prev_name, "%s", keyname);
-    } else if (eq_ci(action, "rewind_0_5")) {
-        cfg->key_rew05 = code;
-        snprintf(cfg->key_rew05_name, sizeof cfg->key_rew05_name, "%s", keyname);
-    } else if (eq_ci(action, "rewind_1")) {
-        cfg->key_rew10 = code;
-        snprintf(cfg->key_rew10_name, sizeof cfg->key_rew10_name, "%s", keyname);
-    } else if (eq_ci(action, "rewind_1_5")) {
-        cfg->key_rew15 = code;
-        snprintf(cfg->key_rew15_name, sizeof cfg->key_rew15_name, "%s", keyname);
-    } else if (eq_ci(action, "reverb")) {
-        cfg->key_reverb = code;
-        snprintf(cfg->key_reverb_name, sizeof cfg->key_reverb_name, "%s", keyname);
-    } else if (eq_ci(action, "chipmunk") || eq_ci(action, "pitch_shift")) {
-        /* pitch_shift is the old name of this button. */
-        cfg->key_pitch = code;
-        snprintf(cfg->key_pitch_name, sizeof cfg->key_pitch_name, "%s", keyname);
-    } else if (eq_ci(action, "autopan")) {
-        cfg->key_autopan = code;
-        snprintf(cfg->key_autopan_name, sizeof cfg->key_autopan_name, "%s", keyname);
-    } else if (eq_ci(action, "phaser")) {
-        cfg->key_phaser = code;
-        snprintf(cfg->key_phaser_name, sizeof cfg->key_phaser_name, "%s", keyname);
-    } else if (eq_ci(action, "dial_forward") || eq_ci(action, "jog_forward")) {
-        cfg->key_dial_fwd = code;
-        snprintf(cfg->key_dial_fwd_name, sizeof cfg->key_dial_fwd_name, "%s", keyname);
-    } else if (eq_ci(action, "dial_back") || eq_ci(action, "jog_back")) {
-        cfg->key_dial_back = code;
-        snprintf(cfg->key_dial_back_name, sizeof cfg->key_dial_back_name, "%s", keyname);
-    } else if (eq_ci(action, "dial_mode")) {
-        cfg->key_dial_mode = code;
-        snprintf(cfg->key_dial_mode_name, sizeof cfg->key_dial_mode_name, "%s", keyname);
-    } else {
-        log_warn("autodj", "unknown key action %s", action);
-    }
+    *slot = code;
+    snprintf(name, name_n, "%s", keyname);
 }
 
 static int key_code_used(const Config *cfg, int code)
@@ -247,12 +275,13 @@ static int key_code_used(const Config *cfg, int code)
 }
 
 /* A missing previous or rewind binding takes the keypad default, unless
- * that key is already used by another action. */
+ * that key is already used by another action. An empty value in the file
+ * stays unbound. */
 static void bind_default(Config *cfg, int *slot, const char *action, const char *keyname)
 {
     int code = -1;
 
-    if (!slot || *slot >= 0) {
+    if (!slot || *slot != -1) {
         return;
     }
     if (key_from_name(keyname, &code) != 0 || key_code_used(cfg, code)) {
@@ -575,6 +604,23 @@ int config_load(const char *path, Config *cfg)
     bind_default(cfg, &cfg->key_rew05, "rewind_0_5", "KEY_KP1");
     bind_default(cfg, &cfg->key_rew10, "rewind_1", "KEY_KP2");
     bind_default(cfg, &cfg->key_rew15, "rewind_1_5", "KEY_KP3");
+    /* Editors and the player treat "no key" as -1. -2 only means the file
+     * asked for that, so the defaults above leave it alone. */
+    {
+        int *slots[] = {
+            &cfg->key_pause, &cfg->key_skip, &cfg->key_prev, &cfg->key_rew05,
+            &cfg->key_rew10, &cfg->key_rew15, &cfg->key_dial_fwd,
+            &cfg->key_dial_back, &cfg->key_dial_mode, &cfg->key_reverb,
+            &cfg->key_pitch, &cfg->key_autopan, &cfg->key_phaser
+        };
+        int i;
+
+        for (i = 0; i < (int)(sizeof slots / sizeof slots[0]); i++) {
+            if (*slots[i] < -1) {
+                *slots[i] = -1;
+            }
+        }
+    }
     cfg->fx.reverb_on = 0;
     cfg->fx.pitch_on = 0;
     cfg->fx.autopan_on = 0;
@@ -2245,11 +2291,9 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             } else if (is_key) {
                 keys_seen[id] = 1;
                 key_value(cfg, id, value, sizeof value);
-                if (!value[0]) {
-                    unlink_line(&head, prev, line);
-                    line = next;
-                    continue;
-                }
+                /* An empty value stays in the file. Deleting the line would
+                 * look like "never set", and previous/rewind would gain a
+                 * keypad default on the next start. */
                 if (rewrite_value(line, value) != 0) {
                     set_err(err, err_n, "out of memory updating %s", path);
                     goto done;
@@ -2283,8 +2327,11 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     }
 
     for (id = 0; id < KEYID_COUNT && !jog; id++) {
+        int keep_blank = id == KEYID_PREV || id == KEYID_REW05 ||
+                         id == KEYID_REW10 || id == KEYID_REW15;
+
         key_value(cfg, id, value, sizeof value);
-        if (!keys_seen[id] && value[0]) {
+        if (!keys_seen[id] && (value[0] || keep_blank)) {
             break;
         }
     }
@@ -2295,12 +2342,14 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         }
         for (id = 0; id < KEYID_COUNT; id++) {
             char text[160];
+            int keep_blank = id == KEYID_PREV || id == KEYID_REW05 ||
+                             id == KEYID_REW10 || id == KEYID_REW15;
 
             if (keys_seen[id]) {
                 continue;
             }
             key_value(cfg, id, value, sizeof value);
-            if (!value[0]) {
+            if (!value[0] && !keep_blank) {
                 continue;
             }
             if (snprintf(text, sizeof text, "%s=%s\n", key_names[id], value) >= (int)sizeof text) {
@@ -2514,6 +2563,10 @@ static int edit_self_test(void)
         "custom=KEY_A\n"
         "phaser=KEY_B\n"
         "pause_resume=KEY_KP0\n"
+        "previous=\n"
+        "rewind_0_5=\n"
+        "rewind_1=\n"
+        "rewind_1_5=\n"
         "chipmunk=KEY_C\n"
         "[Reverb]\n"
         "decay=0.5\n"
@@ -2594,14 +2647,19 @@ static int edit_self_test(void)
         rc = -1;
     }
     cfg.key_skip_name[0] = '\0';
+    cfg.key_rew15_name[0] = '\0';
     if (rc == 0 && (config_save(path, &cfg, err, sizeof err) != 0 ||
                     read_text(path, got, sizeof got) != 0 ||
                     strstr(got, "volume_down=") != NULL ||
-                    strstr(got, "skip=") != NULL ||
+                    strstr(got, "skip=\n") == NULL ||
+                    strstr(got, "skip=KEY_KPDOT") != NULL ||
+                    strstr(got, "rewind_1_5=\n") == NULL ||
                     strstr(got, "pause_resume=KEY_KP0\n") == NULL ||
                     strstr(got, "phaser=KEY_B\n") == NULL ||
                     strstr(got, "autopan=") != NULL ||
-                    strstr(got, "custom=KEY_A\n") == NULL)) {
+                    strstr(got, "custom=KEY_A\n") == NULL ||
+                    config_load(path, &cfg) != 0 || cfg.key_skip != -1 ||
+                    cfg.key_rew15 != -1 || cfg.key_pause != 82)) {
         log_error("autodj", "config editor test did not clear a key\n%s", got);
         rc = -1;
     }
@@ -2762,6 +2820,7 @@ int config_self_test(void)
     int fd;
     FILE *fp;
     Config cfg;
+    ConfigEdit edit;
     int slash = -1;
     int kp1 = -1;
     int kp2 = -1;
@@ -2939,6 +2998,30 @@ int config_self_test(void)
                         cfg.key_prev != -1 || cfg.key_rew05 != kp1 ||
                         cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3)) {
             log_error("autodj", "config test applied a previous key that was already used");
+            rc = -1;
+        }
+        fp = rc == 0 ? fopen(path3, "w") : NULL;
+        if (fp) {
+            fputs("[Main]\n"
+                  "Folder=/tmp\n"
+                  "[Keys]\n"
+                  "rewind_1_5=\n"
+                  "previous=\n",
+                  fp);
+            fclose(fp);
+        }
+        if (rc == 0 && (!fp || config_load(path3, &cfg) != 0 || cfg.key_prev != -1 ||
+                        cfg.key_prev_name[0] != '\0' || cfg.key_rew15 != -1 ||
+                        cfg.key_rew15_name[0] != '\0' || cfg.key_rew05 != kp1 ||
+                        cfg.key_rew10 != kp2)) {
+            log_error("autodj", "config test filled a key that was left blank");
+            rc = -1;
+        }
+        if (rc == 0 && (config_load_edit(path3, &edit) != 0 ||
+                        edit.key_prev[0] != '\0' || edit.key_rew15[0] != '\0' ||
+                        strcmp(edit.key_rew05, "KEY_KP1") != 0 ||
+                        strcmp(edit.key_rew10, "KEY_KP2") != 0)) {
+            log_error("autodj", "config editor filled a key that was left blank");
             rc = -1;
         }
         remove(path3);

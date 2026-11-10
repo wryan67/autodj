@@ -29,7 +29,8 @@
  * and right there switch tabs. Left and right move the cursor in a text
  * field, and step to the next field at either end. A key binding is captured
  * from the keypad, or from another keyboard if the press is not on the
- * keypad. Esc cancels. Save validates before it writes.
+ * keypad. Esc or Cancel leaves that binding unchanged. Delete on the key
+ * prompt removes it. Save validates before it writes.
  */
 
 enum {
@@ -120,6 +121,12 @@ enum {
     CANCEL_W = 10
 };
 
+/* Which button of the key prompt is highlighted. Cancel is the default. */
+enum {
+    CAP_CANCEL = 0,
+    CAP_DELETE = 1
+};
+
 enum {
     EV_NONE = 0,
     EV_CHAR,
@@ -174,6 +181,10 @@ struct Ui {
     int ok_r;
     int ok_c;
     int ok_w;
+    int del_on;
+    int del_r;
+    int del_c;
+    int del_w;
 };
 
 struct Editor {
@@ -185,6 +196,7 @@ struct Editor {
     int dialog;
     int capture;
     int capture_id;
+    int capture_btn;
     int tab;
     int saved;
     char dialog_title[64];
@@ -933,8 +945,10 @@ static int wrap_lines(const char *msg, int width, char lines[][96], int max_line
     return n;
 }
 
+/* extra is an optional button drawn to the left of button. focus is 1 when
+ * extra is highlighted, and 0 when button is highlighted. */
 static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *msg,
-                        const char *button)
+                        const char *button, const char *extra, int focus)
 {
     char lines[16][96];
     int max_lines = ui->rows - 8;
@@ -944,6 +958,7 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
     int box_h;
     int box_r;
     int box_c;
+    int buttons;
     int r;
     int i;
 
@@ -965,8 +980,19 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
     if (!button || !button[0]) {
         button = "[ OK ]";
     }
+    if (!extra || !extra[0]) {
+        extra = NULL;
+        focus = 0;
+    }
     if (!msg || !msg[0]) {
         msg = "Cannot save.";
+    }
+    buttons = (int)strlen(button);
+    if (extra) {
+        buttons += 2 + (int)strlen(extra);
+    }
+    if (text_w < buttons) {
+        text_w = buttons;
     }
     nlines = wrap_lines(msg, text_w, lines, max_lines);
     if (nlines < 1) {
@@ -1011,14 +1037,39 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
         cup(fp, box_r + 3 + i, box_c + 2);
         fputs(lines[i], fp);
     }
-    ui->ok_on = 1;
-    ui->ok_w = (int)strlen(button);
+    ui->del_on = 0;
     ui->ok_r = box_r + nlines + 4;
-    ui->ok_c = box_c + (box_w - ui->ok_w) / 2;
-    if (ui->ok_c < box_c + 1) {
-        ui->ok_c = box_c + 1;
+    if (extra) {
+        int gap = 2;
+        int ew = (int)strlen(extra);
+        int bw = (int)strlen(button);
+        int total = ew + gap + bw;
+        int left = box_c + (box_w - total) / 2;
+
+        if (left < box_c + 1) {
+            left = box_c + 1;
+        }
+        ui->del_on = 1;
+        ui->del_r = ui->ok_r;
+        ui->del_c = left;
+        ui->del_w = ew;
+        ui->ok_on = 1;
+        ui->ok_w = bw;
+        ui->ok_c = left + ew + gap;
+        if (ui->ok_c + ui->ok_w > box_c + box_w - 1) {
+            ui->ok_c = box_c + box_w - 1 - ui->ok_w;
+        }
+        draw_button(fp, ui->del_r, ui->del_c, extra, focus == 1);
+        draw_button(fp, ui->ok_r, ui->ok_c, button, focus == 0);
+    } else {
+        ui->ok_on = 1;
+        ui->ok_w = (int)strlen(button);
+        ui->ok_c = box_c + (box_w - ui->ok_w) / 2;
+        if (ui->ok_c < box_c + 1) {
+            ui->ok_c = box_c + 1;
+        }
+        draw_button(fp, ui->ok_r, ui->ok_c, button, 1);
     }
-    draw_button(fp, ui->ok_r, ui->ok_c, button, 1);
 }
 
 static const char *tab_title(int tab)
@@ -1141,9 +1192,10 @@ static void draw_screen(struct Editor *ed, FILE *fp)
     }
     if (ed->capture) {
         draw_dialog(fp, ui, "Select a key",
-                    ed->err[0] ? ed->err : "Press a new key.", "[ Cancel ]");
+                    ed->err[0] ? ed->err : "Press a new key.", "[ Cancel ]",
+                    "[ Delete ]", ed->capture_btn == CAP_DELETE);
     } else if (ed->dialog) {
-        draw_dialog(fp, ui, ed->dialog_title, ed->err, "[ OK ]");
+        draw_dialog(fp, ui, ed->dialog_title, ed->err, "[ OK ]", NULL, 0);
     }
 }
 
@@ -1696,6 +1748,12 @@ static int hit_ok(const struct Ui *ui, int x, int y)
            x >= ui->ok_c && x < ui->ok_c + ui->ok_w;
 }
 
+static int hit_del(const struct Ui *ui, int x, int y)
+{
+    return ui->del_on && ui->del_w > 0 && y == ui->del_r &&
+           x >= ui->del_c && x < ui->del_c + ui->del_w;
+}
+
 static int hit_tab(const struct Ui *ui, int x, int y)
 {
     int i;
@@ -1879,6 +1937,43 @@ static void stop_capture(struct Editor *ed)
     }
 }
 
+static void clear_key_binding(struct Editor *ed)
+{
+    size_t cap;
+    char *text = field_text(&ed->edit, ed->capture_id, &cap);
+
+    if (text && cap > 0) {
+        text[0] = '\0';
+    }
+    stop_capture(ed);
+    ed->err[0] = '\0';
+}
+
+static void set_capture_prompt(struct Editor *ed, int busy)
+{
+    char shown[64];
+    const char *cur = key_field_value(&ed->edit, ed->capture_id);
+    const char *extra = NULL;
+
+    trim_copy(shown, sizeof shown, cur ? cur : "");
+    if (g_key_n == 0) {
+        extra = "No keypad or keyboard was found.";
+    } else if (busy) {
+        extra = "Keypad is in use by playback. Use another keyboard, or cancel.";
+    }
+    if (shown[0] && extra) {
+        snprintf(ed->err, sizeof ed->err,
+                 "Press a new key, or Delete to remove %s.\n%s", shown, extra);
+    } else if (shown[0]) {
+        snprintf(ed->err, sizeof ed->err,
+                 "Press a new key, or Delete to remove %s.", shown);
+    } else if (extra) {
+        snprintf(ed->err, sizeof ed->err, "Press a new key.\n%s", extra);
+    } else {
+        snprintf(ed->err, sizeof ed->err, "Press a new key.");
+    }
+}
+
 static void begin_capture(struct Editor *ed, int id)
 {
     int pad = 0;
@@ -1887,6 +1982,7 @@ static void begin_capture(struct Editor *ed, int id)
 
     ed->focus = id;
     ed->capture_id = id;
+    ed->capture_btn = CAP_CANCEL;
     ed->dialog = 0;
     release_keys();
     g_key_n = keys_open_capture(g_key_fds, (int)(sizeof g_key_fds / sizeof g_key_fds[0]), &pad);
@@ -1900,15 +1996,7 @@ static void begin_capture(struct Editor *ed, int id)
             busy = 1;
         }
     }
-    if (g_key_n == 0) {
-        snprintf(ed->err, sizeof ed->err,
-                 "Press a new key.\nNo keypad or keyboard was found.");
-    } else if (busy) {
-        snprintf(ed->err, sizeof ed->err,
-                 "Press a new key.\nKeypad is in use by playback. Use another keyboard, or cancel.");
-    } else {
-        snprintf(ed->err, sizeof ed->err, "Press a new key.");
-    }
+    set_capture_prompt(ed, busy);
     ed->capture = 1;
 }
 
@@ -1940,11 +2028,34 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
     if (ed->capture) {
         const char *name;
         const char *who = NULL;
+        int delete_it = 0;
+        int cancel_it = 0;
 
-        if (ev->kind == EV_ESC ||
-            (ev->kind == EV_HWKEY && key_name(ev->code) &&
-             strcmp(key_name(ev->code), "KEY_ESC") == 0) ||
-            (ev->kind == EV_MOUSE && hit_ok(&ed->ui, ev->x, ev->y))) {
+        if (ev->kind == EV_LEFT || ev->kind == EV_RIGHT ||
+            ev->kind == EV_TAB || ev->kind == EV_STAB) {
+            ed->capture_btn = ed->capture_btn == CAP_DELETE ? CAP_CANCEL : CAP_DELETE;
+            return 0;
+        }
+        if (ev->kind == EV_MOUSE && hit_del(&ed->ui, ev->x, ev->y)) {
+            delete_it = 1;
+        } else if (ev->kind == EV_MOUSE && hit_ok(&ed->ui, ev->x, ev->y)) {
+            cancel_it = 1;
+        } else if (activate_key(ev)) {
+            if (ed->capture_btn == CAP_DELETE) {
+                delete_it = 1;
+            } else {
+                cancel_it = 1;
+            }
+        } else if (ev->kind == EV_ESC ||
+                   (ev->kind == EV_HWKEY && key_name(ev->code) &&
+                    strcmp(key_name(ev->code), "KEY_ESC") == 0)) {
+            cancel_it = 1;
+        }
+        if (delete_it) {
+            clear_key_binding(ed);
+            return 0;
+        }
+        if (cancel_it) {
             stop_capture(ed);
             ed->err[0] = '\0';
             return 0;
@@ -3027,11 +3138,171 @@ done:
     return rc;
 }
 
+static int dialog_button_self_test(void)
+{
+    struct Ui ui;
+    struct Editor ed;
+    struct Event ev;
+    char *buf = NULL;
+    size_t n = 0;
+    FILE *fp;
+    int code = 0;
+
+    memset(&ui, 0, sizeof ui);
+    ui.rows = 24;
+    ui.cols = 80;
+    fp = open_memstream(&buf, &n);
+    if (!fp) {
+        log_error("cfgedit", "cannot draw the key prompt");
+        return -1;
+    }
+    draw_dialog(fp, &ui, "Select a key", "Press a new key, or Delete to remove KEY_KP0.",
+                "[ Cancel ]", "[ Delete ]", 0);
+    if (fclose(fp) != 0) {
+        free(buf);
+        log_error("cfgedit", "cannot finish the key prompt");
+        return -1;
+    }
+    if (!buf || !strstr(buf, "[ Delete ]") || !strstr(buf, "\033[7m[ Cancel ]") ||
+        strstr(buf, "\033[7m[ Delete ]") != NULL) {
+        log_error("cfgedit", "the key prompt did not show Delete and Cancel");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    buf = NULL;
+    n = 0;
+    if (!ui.del_on || !ui.ok_on || ui.del_r != ui.ok_r ||
+        ui.del_w != 10 || ui.ok_w != 10 || ui.del_c + ui.del_w >= ui.ok_c) {
+        log_error("cfgedit", "Delete and Cancel overlap");
+        return -1;
+    }
+    if (!hit_del(&ui, ui.del_c, ui.del_r) ||
+        !hit_del(&ui, ui.del_c + ui.del_w - 1, ui.del_r) ||
+        hit_del(&ui, ui.del_c + ui.del_w, ui.del_r) ||
+        hit_ok(&ui, ui.del_c, ui.del_r)) {
+        log_error("cfgedit", "a click on Delete missed the button");
+        return -1;
+    }
+    if (!hit_ok(&ui, ui.ok_c, ui.ok_r) ||
+        !hit_ok(&ui, ui.ok_c + ui.ok_w - 1, ui.ok_r) ||
+        hit_ok(&ui, ui.ok_c - 1, ui.ok_r) ||
+        hit_del(&ui, ui.ok_c, ui.ok_r)) {
+        log_error("cfgedit", "a click on Cancel missed the button");
+        return -1;
+    }
+
+    memset(&ui, 0, sizeof ui);
+    ui.rows = 24;
+    ui.cols = 80;
+    fp = open_memstream(&buf, &n);
+    if (!fp) {
+        log_error("cfgedit", "cannot draw the message dialog");
+        return -1;
+    }
+    draw_dialog(fp, &ui, "Cannot save", "Folder is required.", "[ OK ]", NULL, 0);
+    fclose(fp);
+    free(buf);
+    if (ui.del_on || !ui.ok_on || !hit_ok(&ui, ui.ok_c, ui.ok_r)) {
+        log_error("cfgedit", "the message dialog grew a Delete button");
+        return -1;
+    }
+
+    if (g_key_n != 0) {
+        log_error("cfgedit", "key capture was already open");
+        return -1;
+    }
+    memset(&ed, 0, sizeof ed);
+    snprintf(ed.edit.key_skip, sizeof ed.edit.key_skip, "KEY_KPDOT");
+    snprintf(ed.edit.key_pause, sizeof ed.edit.key_pause, "KEY_KP0");
+    ed.capture = 1;
+    ed.capture_id = FE_KEY_SKIP;
+    ed.capture_btn = CAP_DELETE;
+    ed.ui = ui;
+    ed.ui.del_on = 1;
+    ed.ui.del_r = 10;
+    ed.ui.del_c = 20;
+    ed.ui.del_w = 10;
+    ed.ui.ok_on = 1;
+    ed.ui.ok_r = 10;
+    ed.ui.ok_c = 32;
+    ed.ui.ok_w = 10;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_MOUSE;
+    ev.x = 20;
+    ev.y = 10;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 || ed.edit.key_skip[0] != '\0' ||
+        strcmp(ed.edit.key_pause, "KEY_KP0") != 0) {
+        log_error("cfgedit", "Delete did not remove the current key");
+        return -1;
+    }
+
+    snprintf(ed.edit.key_skip, sizeof ed.edit.key_skip, "KEY_KPDOT");
+    ed.capture = 1;
+    ed.capture_id = FE_KEY_SKIP;
+    ed.capture_btn = CAP_CANCEL;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_MOUSE;
+    ev.x = 32;
+    ev.y = 10;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 ||
+        strcmp(ed.edit.key_skip, "KEY_KPDOT") != 0) {
+        log_error("cfgedit", "Cancel removed the current key");
+        return -1;
+    }
+
+    ed.capture = 1;
+    ed.capture_btn = CAP_DELETE;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_ENTER;
+    if (handle_event(&ed, &ev) != 0 || ed.edit.key_skip[0] != '\0') {
+        log_error("cfgedit", "Enter on Delete left the key in place");
+        return -1;
+    }
+
+    snprintf(ed.edit.key_skip, sizeof ed.edit.key_skip, "KEY_KPDOT");
+    ed.capture = 1;
+    ed.capture_btn = CAP_CANCEL;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_LEFT;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 1 || ed.capture_btn != CAP_DELETE ||
+        strcmp(ed.edit.key_skip, "KEY_KPDOT") != 0) {
+        log_error("cfgedit", "Left did not move to Delete");
+        return -1;
+    }
+    ev.kind = EV_ESC;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 ||
+        strcmp(ed.edit.key_skip, "KEY_KPDOT") != 0) {
+        log_error("cfgedit", "Esc removed the current key");
+        return -1;
+    }
+
+    snprintf(ed.edit.key_skip, sizeof ed.edit.key_skip, "KEY_KPDOT");
+    ed.capture = 1;
+    ed.capture_id = FE_KEY_SKIP;
+    if (key_from_name("KEY_A", &code) != 0) {
+        log_error("cfgedit", "KEY_A lookup failed");
+        return -1;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_HWKEY;
+    ev.code = code;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 ||
+        strcmp(ed.edit.key_skip, "KEY_A") != 0) {
+        log_error("cfgedit", "a new key was not stored");
+        return -1;
+    }
+    return 0;
+}
+
 int cfgedit_self_test(void)
 {
     ConfigEdit edit;
     const char *who = "x";
 
+    if (dialog_button_self_test() != 0) {
+        return -1;
+    }
     memset(&edit, 0, sizeof edit);
     snprintf(edit.key_pause, sizeof edit.key_pause, "KEY_KP0");
     snprintf(edit.key_skip, sizeof edit.key_skip, "KEY_KPDOT");
