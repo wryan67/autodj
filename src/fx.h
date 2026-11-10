@@ -1,7 +1,7 @@
 #ifndef AUTODJ_FX_H
 #define AUTODJ_FX_H
 
-/* Reverb, chipmunk (a pitch shifter), autopan, and phaser.
+/* Reverb, chipmunk (a pitch shifter), autopan, phaser, chorus, and flanger.
  *
  * The knob names and the default numbers are the ones Mixxx shows for its
  * built-in Reverb, Pitch Shift, and Autopan. The processing here is separate.
@@ -44,6 +44,24 @@ typedef struct FxParams {
                         * mix. 50 gives the deepest notches. */
     float ph_boost;    /* 0..100, default 15. Percent louder while on, to
                         * make up for what the notches take out. */
+    int chorus_on;
+    float ch_period; /* 0.25..16, default 1. Measures for one pitch drift
+                      * up and down. 120 BPM when the tempo is unknown. */
+    float ch_delay;  /* 5..40 ms, default 20. How late the copies are. */
+    float ch_depth;  /* 0..10 ms, default 5, and below ch_delay. How far
+                      * the delay swings, which is the pitch drift. */
+    int ch_voices;   /* 1..4, default 2. Separate copies of the song. */
+    float ch_mix;    /* 0..100, default 50. Percent of the copies in the
+                      * mix. 0 leaves the song unchanged. */
+    int flanger_on;
+    float fl_period;   /* 0.25..16, default 2. Measures for one sweep. */
+    float fl_delay;    /* 0.2..5 ms, default 1. Much shorter than chorus. */
+    float fl_depth;    /* 0..4 ms, default 0.5, and below fl_delay. How far
+                        * the short delay sweeps. */
+    float fl_feedback; /* 0..0.9, default 0.5. Feeds the delay back on
+                        * itself. Higher is the jet-plane ring. */
+    float fl_mix;      /* 0..100, default 50. Percent of delayed sound.
+                        * 50 gives the deepest notches. 0 is dry. */
 } FxParams;
 
 typedef struct FxState FxState;
@@ -55,7 +73,8 @@ FxState *fx_new(unsigned rate);
 void fx_free(FxState *st);
 void fx_setup(FxState *st, const FxParams *p);
 /* The power buttons. A change takes effect on the next sample. */
-void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser);
+void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
+               int chorus, int flanger);
 /* Length of one beat in seconds at the current playback speed, or 0 when
  * the tempo is unknown. The autopan period counts beats when this is set.
  */

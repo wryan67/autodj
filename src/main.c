@@ -184,6 +184,9 @@ int main(int argc, char **argv)
              cfg.key_pitch_name[0] ? cfg.key_pitch_name : "(none)",
              cfg.key_autopan_name[0] ? cfg.key_autopan_name : "(none)",
              cfg.key_phaser_name[0] ? cfg.key_phaser_name : "(none)");
+    log_info("autodj", "keys chorus %s, flanger %s",
+             cfg.key_chorus_name[0] ? cfg.key_chorus_name : "(none)",
+             cfg.key_flanger_name[0] ? cfg.key_flanger_name : "(none)");
     log_info("autodj", "effects off");
     log_info("autodj", "keys rewind 0.5s %s, rewind 1s %s, rewind 1.5s %s",
              cfg.key_rew05_name[0] ? cfg.key_rew05_name : "(none)",

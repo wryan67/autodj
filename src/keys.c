@@ -824,6 +824,14 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
         player_fx_toggle(PLAYER_FX_PHASER);
         return;
     }
+    if (key == cfg->key_chorus && value == 1) {
+        player_fx_toggle(PLAYER_FX_CHORUS);
+        return;
+    }
+    if (key == cfg->key_flanger && value == 1) {
+        player_fx_toggle(PLAYER_FX_FLANGER);
+        return;
+    }
     if (value == 1) {
         name = key_name(key);
         log_info("keys", "key %s is not mapped", name ? name : "unknown");
@@ -988,6 +996,8 @@ static int debounce_self_test(void)
     cfg.key_pitch = -1;
     cfg.key_autopan = -1;
     cfg.key_phaser = -1;
+    cfg.key_chorus = -1;
+    cfg.key_flanger = -1;
     player_set_volume_percent(50);
     player_set_fx(NULL);
     g_press_seen = 0;

@@ -14,6 +14,10 @@
  * balance from one side to the other and back, in time with the beat.
  * The phaser is a chain of allpass filters whose notches sweep up and down
  * once per measure.
+ * Chorus mixes in a few copies that are a little late and slowly drifting
+ * in pitch, so one part sounds like several. Flanger does the same kind of
+ * mix with a much shorter delay, so the copy cancels the original in a
+ * comb that sweeps and whooshes.
  */
 
 #define AP_DELAY 512
@@ -100,6 +104,21 @@ struct FxState {
     float beat_sec;
     int ap_on;
     int ap_live;
+
+    float *ch_buf[2];
+    int ch_len;
+    int ch_w;
+    double ch_phase;
+    float ch_mix;
+    int ch_on;
+    int ch_live;
+    float *fl_buf[2];
+    int fl_len;
+    int fl_w;
+    double fl_phase;
+    float fl_mix;
+    int fl_on;
+    int fl_live;
 };
 
 /* Plate reverb lengths in samples at 29761 Hz. */
@@ -141,6 +160,16 @@ void fx_defaults(FxParams *p)
     p->ph_feedback = 0.5f;
     p->ph_blend = 50.0f;
     p->ph_boost = 15.0f;
+    p->ch_period = 1.0f;
+    p->ch_delay = 20.0f;
+    p->ch_depth = 5.0f;
+    p->ch_voices = 2;
+    p->ch_mix = 50.0f;
+    p->fl_period = 2.0f;
+    p->fl_delay = 1.0f;
+    p->fl_depth = 0.5f;
+    p->fl_feedback = 0.5f;
+    p->fl_mix = 50.0f;
 }
 
 static int scaled(unsigned rate, int n)
@@ -332,6 +361,24 @@ FxState *fx_new(unsigned rate)
         st->pv_cos[i] = cosf(2.0f * PV_PI * (float)i / (float)n);
         st->pv_sin[i] = sinf(2.0f * PV_PI * (float)i / (float)n);
     }
+    /* Chorus needs room for a 40 ms delay plus its swing. Flanger stays
+     * under 10 ms, which is what keeps its notches up in the audible band.
+     */
+    st->ch_len = (int)((double)rate * 0.070) + 8;
+    st->fl_len = (int)((double)rate * 0.020) + 8;
+    st->ch_buf[0] = calloc((size_t)st->ch_len * 2, sizeof(float));
+    st->fl_buf[0] = calloc((size_t)st->fl_len * 2, sizeof(float));
+    if (!st->ch_buf[0] || !st->fl_buf[0]) {
+        free(st->ch_buf[0]);
+        free(st->fl_buf[0]);
+        free(st->pv_block);
+        free(st->pv_rev);
+        free(st->rv_block);
+        free(st);
+        return NULL;
+    }
+    st->ch_buf[1] = st->ch_buf[0] + st->ch_len;
+    st->fl_buf[1] = st->fl_buf[0] + st->fl_len;
     fx_defaults(&st->p);
     return st;
 }
@@ -344,6 +391,8 @@ void fx_free(FxState *st)
     free(st->rv_block);
     free(st->pv_block);
     free(st->pv_rev);
+    free(st->ch_buf[0]);
+    free(st->fl_buf[0]);
     free(st);
 }
 
@@ -403,6 +452,24 @@ static void ph_clear(FxState *st)
     st->ph_phase = 0;
 }
 
+static void ch_clear(FxState *st)
+{
+    if (st->ch_buf[0] && st->ch_len > 0) {
+        memset(st->ch_buf[0], 0, (size_t)st->ch_len * 2 * sizeof(float));
+    }
+    st->ch_w = 0;
+    st->ch_phase = 0;
+}
+
+static void fl_clear(FxState *st)
+{
+    if (st->fl_buf[0] && st->fl_len > 0) {
+        memset(st->fl_buf[0], 0, (size_t)st->fl_len * 2 * sizeof(float));
+    }
+    st->fl_w = 0;
+    st->fl_phase = 0;
+}
+
 void fx_setup(FxState *st, const FxParams *p)
 {
     if (!st) {
@@ -417,6 +484,8 @@ void fx_setup(FxState *st, const FxParams *p)
     ps_clear(st);
     ap_clear(st);
     ph_clear(st);
+    ch_clear(st);
+    fl_clear(st);
     st->rv_send = 0;
     st->rv_live = 0;
     st->rv_lfo[0] = 0;
@@ -426,13 +495,20 @@ void fx_setup(FxState *st, const FxParams *p)
     st->ap_live = 0;
     st->ph_mix = 0;
     st->ph_live = 0;
+    st->ch_mix = 0;
+    st->ch_live = 0;
+    st->fl_mix = 0;
+    st->fl_live = 0;
     st->rv_on = st->p.reverb_on ? 1 : 0;
     st->ps_on = st->p.pitch_on ? 1 : 0;
     st->ap_on = st->p.autopan_on ? 1 : 0;
     st->ph_on = st->p.phaser_on ? 1 : 0;
+    st->ch_on = st->p.chorus_on ? 1 : 0;
+    st->fl_on = st->p.flanger_on ? 1 : 0;
 }
 
-void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser)
+void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
+               int chorus, int flanger)
 {
     if (!st) {
         return;
@@ -441,6 +517,8 @@ void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser)
     st->ps_on = pitch ? 1 : 0;
     st->ap_on = autopan ? 1 : 0;
     st->ph_on = phaser ? 1 : 0;
+    st->ch_on = chorus ? 1 : 0;
+    st->fl_on = flanger ? 1 : 0;
 }
 
 void fx_set_beat(FxState *st, float beat_seconds)
@@ -1104,6 +1182,263 @@ static void process_autopan(FxState *st, float *left, float *right)
     *right = fin(r * gr);
 }
 
+/* One up-and-down of the delay, in samples. Period counts 4-beat measures
+ * and snaps to whole beats, the same way autopan and the phaser do.
+ */
+static double mod_step(const FxState *st, float measures)
+{
+    double beats = round((double)measures * 4.0);
+
+    if (beats < 1) {
+        beats = 1;
+    }
+    beats *= st->beat_sec > 0 ? (double)st->beat_sec : 0.5;
+    return 1.0 / (beats * (double)st->rate);
+}
+
+static float mod_lfo(double phase, float offset)
+{
+    float p = (float)phase + offset;
+
+    p -= floorf(p);
+    return sinf(2.0f * PV_PI * p);
+}
+
+/* delay is in samples behind the write head. Linear interpolation. */
+static float line_read(const float *buf, int len, int w, float delay)
+{
+    int back;
+    int i0;
+    int i1;
+    float frac;
+
+    if (delay < 1.0f) {
+        delay = 1.0f;
+    }
+    if (delay > (float)(len - 3)) {
+        delay = (float)(len - 3);
+    }
+    back = (int)delay;
+    frac = delay - (float)back;
+    i0 = w - back;
+    i1 = i0 - 1;
+    while (i0 < 0) {
+        i0 += len;
+    }
+    while (i1 < 0) {
+        i1 += len;
+    }
+    if (i0 >= len) {
+        i0 %= len;
+    }
+    if (i1 >= len) {
+        i1 %= len;
+    }
+    return buf[i0] * (1.0f - frac) + buf[i1] * frac;
+}
+
+static void line_store(float *buf, int w, float x)
+{
+    buf[w] = x;
+}
+
+static void line_advance(int *w, int len)
+{
+    *w += 1;
+    if (*w >= len) {
+        *w = 0;
+    }
+}
+
+/* Bends peaks above full scale instead of letting the feedback run away. */
+static float soft_clip(float x)
+{
+    float a = fabsf(x);
+    float y;
+
+    if (a <= 1.0f) {
+        return x;
+    }
+    y = 1.0f + (a - 1.0f) / (1.0f + (a - 1.0f));
+    return x < 0 ? -y : y;
+}
+
+static void mod_ramp(float *mix, int on)
+{
+    *mix += 0.003f * ((on ? 1.0f : 0.0f) - *mix);
+    if (*mix < 0.0001f) {
+        *mix = 0;
+    }
+    if (*mix > 0.9999f) {
+        *mix = 1;
+    }
+}
+
+/* Voice v of n sits this far from the center delay, in milliseconds, so
+ * the copies arrive separately instead of piling up into one.
+ */
+static float chorus_delay_ms(float center, float depth, int voice, int voices, float lfo)
+{
+    float spread = 0;
+    float d;
+
+    if (voices > 1) {
+        spread = center * 0.12f * ((float)voice - 0.5f * (float)(voices - 1));
+    }
+    d = center + spread + depth * lfo;
+    if (d < 0.2f) {
+        d = 0.2f;
+    }
+    if (d > 60.0f) {
+        d = 60.0f;
+    }
+    return d;
+}
+
+/* The right speaker's oscillator is a quarter turn ahead of the left, so
+ * the copies drift apart and the one part sounds like several players.
+ */
+static void process_chorus(FxState *st, float *left, float *right)
+{
+    float amount;
+    float center;
+    float depth;
+    int voices;
+    float *io[2];
+    int c;
+    int v;
+
+    mod_ramp(&st->ch_mix, st->ch_on);
+    if (!st->ch_on && st->ch_mix == 0) {
+        if (st->ch_live) {
+            ch_clear(st);
+            st->ch_live = 0;
+        }
+        return;
+    }
+    if (st->ch_on && !st->ch_live) {
+        ch_clear(st);
+        st->ch_live = 1;
+    }
+    amount = clamp_unit(st->p.ch_mix * 0.01f) * st->ch_mix;
+    if (amount == 0) {
+        return;
+    }
+    center = st->p.ch_delay;
+    if (center < 5.0f) {
+        center = 5.0f;
+    }
+    if (center > 40.0f) {
+        center = 40.0f;
+    }
+    depth = st->p.ch_depth;
+    if (depth < 0) {
+        depth = 0;
+    }
+    if (depth > 10.0f) {
+        depth = 10.0f;
+    }
+    voices = st->p.ch_voices < 1 ? 1 : st->p.ch_voices > 4 ? 4 : st->p.ch_voices;
+    io[0] = left;
+    io[1] = right;
+    for (c = 0; c < 2; c++) {
+        float dry = *io[c];
+        float wet = 0;
+        float side = c ? 0.25f : 0;
+
+        for (v = 0; v < voices; v++) {
+            float lfo = mod_lfo(st->ch_phase, side + (float)v / (float)voices);
+            float ms = chorus_delay_ms(center, depth, v, voices, lfo);
+            float samples = ms * 0.001f * (float)st->rate;
+
+            wet += line_read(st->ch_buf[c], st->ch_len, st->ch_w, samples);
+        }
+        wet /= (float)voices;
+        line_store(st->ch_buf[c], st->ch_w, dry);
+        *io[c] = fin(dry * (1.0f - amount) + wet * amount);
+    }
+    line_advance(&st->ch_w, st->ch_len);
+    st->ch_phase += mod_step(st, st->p.ch_period);
+    if (st->ch_phase >= 1.0) {
+        st->ch_phase -= floor(st->ch_phase);
+    }
+}
+
+/* Same mix as chorus, but the delay is only a millisecond or two, so the
+ * copy lines up against the original and carves moving notches. Feedback
+ * makes those notches ring, which is the jet-plane sweep.
+ */
+static void process_flanger(FxState *st, float *left, float *right)
+{
+    float amount;
+    float center;
+    float depth;
+    float fb;
+    float *io[2];
+    int c;
+
+    mod_ramp(&st->fl_mix, st->fl_on);
+    if (!st->fl_on && st->fl_mix == 0) {
+        if (st->fl_live) {
+            fl_clear(st);
+            st->fl_live = 0;
+        }
+        return;
+    }
+    if (st->fl_on && !st->fl_live) {
+        fl_clear(st);
+        st->fl_live = 1;
+    }
+    amount = clamp_unit(st->p.fl_mix * 0.01f) * st->fl_mix;
+    center = st->p.fl_delay;
+    if (center < 0.2f) {
+        center = 0.2f;
+    }
+    if (center > 5.0f) {
+        center = 5.0f;
+    }
+    depth = st->p.fl_depth;
+    if (depth < 0) {
+        depth = 0;
+    }
+    if (depth > 4.0f) {
+        depth = 4.0f;
+    }
+    fb = st->p.fl_feedback;
+    if (fb < 0) {
+        fb = 0;
+    }
+    if (fb > 0.9f) {
+        fb = 0.9f;
+    }
+    io[0] = left;
+    io[1] = right;
+    for (c = 0; c < 2; c++) {
+        float dry = *io[c];
+        float lfo = mod_lfo(st->fl_phase, c ? 0.25f : 0);
+        float ms = center + depth * lfo;
+        float delayed;
+
+        if (ms < 0.05f) {
+            ms = 0.05f;
+        }
+        if (ms > 12.0f) {
+            ms = 12.0f;
+        }
+        delayed = line_read(st->fl_buf[c], st->fl_len, st->fl_w,
+                            ms * 0.001f * (float)st->rate);
+        line_store(st->fl_buf[c], st->fl_w, soft_clip(dry + fb * delayed));
+        if (amount != 0) {
+            *io[c] = fin(dry * (1.0f - amount) + delayed * amount);
+        }
+    }
+    line_advance(&st->fl_w, st->fl_len);
+    st->fl_phase += mod_step(st, st->p.fl_period);
+    if (st->fl_phase >= 1.0) {
+        st->fl_phase -= floor(st->fl_phase);
+    }
+}
+
 void fx_process(FxState *st, float *left, float *right)
 {
     if (!st || !left || !right) {
@@ -1111,6 +1446,8 @@ void fx_process(FxState *st, float *left, float *right)
     }
     process_reverb(st, left, right);
     process_pitch(st, left, right);
+    process_chorus(st, left, right);
+    process_flanger(st, left, right);
     process_phaser(st, left, right);
     process_autopan(st, left, right);
 }
@@ -1172,7 +1509,7 @@ int fx_self_test(void)
 
     fx_defaults(&p);
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i] * 0.5f;
@@ -1187,7 +1524,7 @@ int fx_self_test(void)
     p.reverb_on = 1;
     p.rv_send = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -1202,7 +1539,7 @@ int fx_self_test(void)
     p.rv_send = 1;
     p.rv_decay = 0.8f;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0, 0, 0);
     left = 1;
     right = 1;
     fx_process(st, &left, &right);
@@ -1228,7 +1565,7 @@ int fx_self_test(void)
     p.pitch_on = 1;
     p.ps_pitch = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0, 0);
+    fx_set_on(st, 0, 1, 0, 0, 0, 0);
     for (i = 0; i < 300; i++) {
         left = dry[i];
         right = dry[i];
@@ -1245,7 +1582,7 @@ int fx_self_test(void)
     p.ps_semi = 0;
     p.ps_formant = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0, 0);
+    fx_set_on(st, 0, 1, 0, 0, 0, 0);
     for (i = 0; i < N; i++) {
         left = dry[i];
         right = dry[i];
@@ -1273,7 +1610,7 @@ int fx_self_test(void)
     p.ap_period = 0.25f;
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0);
     fx_set_beat(st, 0.5f);
     {
         float at_left[2] = {0, 0};
@@ -1309,13 +1646,13 @@ int fx_self_test(void)
      */
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0);
     for (i = 0; i < 5512; i++) {
         left = 0.5f;
         right = 0.5f;
         fx_process(st, &left, &right);
     }
-    fx_set_on(st, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 6000; i++) {
         left = 0.5f;
         right = 0.5f;
@@ -1337,13 +1674,13 @@ int fx_self_test(void)
      */
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0);
     for (i = 0; i < 2205; i++) {
         left = 0.5f;
         right = 0.5f;
         fx_process(st, &left, &right);
     }
-    fx_set_on(st, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0);
     {
         float low_r = 1;
 
@@ -1371,7 +1708,7 @@ int fx_self_test(void)
 
         st->ap_rng = 12345;
         for (run = 0; run < 16; run++) {
-            fx_set_on(st, 0, 0, 1, 0);
+            fx_set_on(st, 0, 0, 1, 0, 0, 0);
             for (i = 0; i < 2000; i++) {
                 left = 0.5f;
                 right = 0.5f;
@@ -1379,7 +1716,7 @@ int fx_self_test(void)
             }
             went_left += left > right;
             went_right += right > left;
-            fx_set_on(st, 0, 0, 0, 0);
+            fx_set_on(st, 0, 0, 0, 0, 0, 0);
             for (i = 0; i < 30000; i++) {
                 left = 0.5f;
                 right = 0.5f;
@@ -1397,7 +1734,7 @@ int fx_self_test(void)
     /* The boost is there from the first sample. */
     fx_defaults(&p);
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 1);
+    fx_set_on(st, 0, 0, 0, 1, 0, 0);
     left = 0.5f;
     right = 0.5f;
     fx_process(st, &left, &right);
@@ -1410,7 +1747,7 @@ int fx_self_test(void)
     fx_defaults(&p);
     p.phaser_on = 1;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 1);
+    fx_set_on(st, 0, 0, 0, 1, 0, 0);
     fx_set_beat(st, 0.5f);
     {
         float lo = 9;
@@ -1439,6 +1776,316 @@ int fx_self_test(void)
         }
     }
     fx_set_beat(st, 0);
+
+    /* Chorus and flanger off, and with mix 0, leave the song alone. */
+    fx_defaults(&p);
+    p.chorus_on = 1;
+    p.ch_mix = 0;
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 0, 0, 1, 0);
+    for (i = 0; i < 200; i++) {
+        left = dry[i];
+        right = dry[i];
+        fx_process(st, &left, &right);
+        wet[i] = left;
+    }
+    if (!near_same(dry, wet, 200, 0.00001f)) {
+        log_error("fx", "chorus with mix 0 was not dry");
+        goto done;
+    }
+    fx_defaults(&p);
+    p.flanger_on = 1;
+    p.fl_mix = 0;
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 0, 0, 0, 1);
+    for (i = 0; i < 200; i++) {
+        left = dry[i];
+        right = dry[i];
+        fx_process(st, &left, &right);
+        wet[i] = left;
+    }
+    if (!near_same(dry, wet, 200, 0.00001f)) {
+        log_error("fx", "flanger with mix 0 was not dry");
+        goto done;
+    }
+
+    /* One chorus voice is one late copy. Two voices are two copies, a
+     * little apart. The right side drifts ahead when depth is up.
+     */
+    {
+        enum { M = 2000 };
+        float *cl = calloc(M, sizeof(float));
+        float *cr = calloc(M, sizeof(float));
+        int lag_l;
+        int lag_r;
+        float amp;
+
+        if (!cl || !cr) {
+            free(cl);
+            free(cr);
+            log_error("fx", "out of memory");
+            goto done;
+        }
+        fx_defaults(&p);
+        p.chorus_on = 1;
+        p.ch_delay = 20;
+        p.ch_depth = 0;
+        p.ch_voices = 1;
+        p.ch_mix = 100;
+        fx_setup(st, &p);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0);
+        left = 0;
+        right = 0;
+        fx_process(st, &left, &right);
+        st->ch_phase = 0;
+        st->ch_mix = 1;
+        memset(st->ch_buf[0], 0, (size_t)st->ch_len * 2 * sizeof(float));
+        st->ch_w = 0;
+        for (i = 0; i < M; i++) {
+            left = i == 0 ? 1.0f : 0;
+            right = left;
+            fx_process(st, &left, &right);
+            cl[i] = left;
+            cr[i] = right;
+        }
+        lag_l = 0;
+        amp = 0;
+        for (i = 1; i < M; i++) {
+            if (fabsf(cl[i]) > amp) {
+                amp = fabsf(cl[i]);
+                lag_l = i;
+            }
+        }
+        if (lag_l != 882 || amp < 0.9f) {
+            log_error("fx", "chorus copy landed at %d (%.3f), wanted sample 882", lag_l, amp);
+            free(cl);
+            free(cr);
+            goto done;
+        }
+
+        p.ch_voices = 2;
+        fx_setup(st, &p);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0);
+        left = 0;
+        right = 0;
+        fx_process(st, &left, &right);
+        st->ch_phase = 0;
+        st->ch_mix = 1;
+        memset(st->ch_buf[0], 0, (size_t)st->ch_len * 2 * sizeof(float));
+        st->ch_w = 0;
+        for (i = 0; i < M; i++) {
+            left = i == 0 ? 1.0f : 0;
+            right = left;
+            fx_process(st, &left, &right);
+            cl[i] = left;
+        }
+        /* 20 ms ± 1.2 ms at 44100 Hz: peaks near 829 and 935. */
+        if (cl[829] < 0.3f || cl[935] < 0.3f || fabsf(cl[880]) > 0.05f) {
+            log_error("fx", "chorus voices were not separate (%.3f %.3f %.3f)",
+                      cl[829], cl[880], cl[935]);
+            free(cl);
+            free(cr);
+            goto done;
+        }
+
+        p.ch_voices = 1;
+        p.ch_depth = 8;
+        fx_setup(st, &p);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0);
+        left = 0;
+        right = 0;
+        fx_process(st, &left, &right);
+        st->ch_phase = 0;
+        st->ch_mix = 1;
+        memset(st->ch_buf[0], 0, (size_t)st->ch_len * 2 * sizeof(float));
+        st->ch_w = 0;
+        for (i = 0; i < M; i++) {
+            left = i == 0 ? 1.0f : 0;
+            right = left;
+            /* Hold the oscillator at the start of its cycle. Otherwise it
+             * moves while the copy is in the delay and the landing shifts.
+             */
+            st->ch_phase = 0;
+            fx_process(st, &left, &right);
+            cl[i] = left;
+            cr[i] = right;
+        }
+        lag_l = 0;
+        lag_r = 0;
+        amp = 0;
+        for (i = 1; i < M; i++) {
+            if (fabsf(cl[i]) > amp) {
+                amp = fabsf(cl[i]);
+                lag_l = i;
+            }
+        }
+        amp = 0;
+        for (i = 1; i < M; i++) {
+            if (fabsf(cr[i]) > amp) {
+                amp = fabsf(cr[i]);
+                lag_r = i;
+            }
+        }
+        if (lag_l != 882 || lag_r != 1235) {
+            log_error("fx", "chorus pitch drift lags %d and %d", lag_l, lag_r);
+            free(cl);
+            free(cr);
+            goto done;
+        }
+        free(cl);
+        free(cr);
+    }
+
+    /* Flanger delay is about a millisecond, not the chorus's 20 ms.
+     * Half a millisecond against a 1 kHz tone cancels; a full millisecond
+     * adds. Sweeping between them is the whoosh.
+     */
+    {
+        fx_defaults(&p);
+        p.flanger_on = 1;
+        p.fl_delay = 1;
+        p.fl_depth = 0;
+        p.fl_feedback = 0;
+        p.fl_mix = 100;
+        fx_setup(st, &p);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        left = 0;
+        right = 0;
+        fx_process(st, &left, &right);
+        st->fl_phase = 0;
+        st->fl_mix = 1;
+        memset(st->fl_buf[0], 0, (size_t)st->fl_len * 2 * sizeof(float));
+        st->fl_w = 0;
+        {
+            int lag = 0;
+            float amp = 0;
+
+            for (i = 0; i < 200; i++) {
+                left = i == 0 ? 1.0f : 0;
+                right = left;
+                fx_process(st, &left, &right);
+                if (fabsf(left) > amp) {
+                    amp = fabsf(left);
+                    lag = i;
+                }
+            }
+            if (lag != 44 || amp < 0.8f) {
+                log_error("fx", "flanger copy landed at %d (%.3f), wanted sample 44", lag, amp);
+                goto done;
+            }
+        }
+
+        fx_defaults(&p);
+        p.flanger_on = 1;
+        p.fl_delay = 0.5f;
+        p.fl_depth = 0;
+        p.fl_feedback = 0;
+        p.fl_mix = 50;
+        fx_setup(st, &p);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        {
+            double sum = 0;
+
+            for (i = 0; i < 4000; i++) {
+                left = 0.5f * sinf(2.0f * PV_PI * 1000.0f * (float)i / 44100.0f);
+                right = left;
+                fx_process(st, &left, &right);
+                if (i >= 2000) {
+                    sum += (double)left * left;
+                }
+            }
+            sum = sqrt(sum / 2000) / 0.35355;
+            if (sum > 0.2) {
+                log_error("fx", "flanger half-millisecond delay did not cancel (gain %.3f)", sum);
+                goto done;
+            }
+        }
+
+        p.fl_delay = 1;
+        fx_setup(st, &p);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        {
+            double plain = 0;
+            double fed = 0;
+
+            for (i = 0; i < 8000; i++) {
+                left = 0.25f * sinf(2.0f * PV_PI * 1000.0f * (float)i / 44100.0f);
+                right = left;
+                fx_process(st, &left, &right);
+                if (i >= 4000) {
+                    plain += (double)left * left;
+                }
+                if (left != left) {
+                    log_error("fx", "flanger produced a non-number");
+                    goto done;
+                }
+            }
+            p.fl_feedback = 0.6f;
+            fx_setup(st, &p);
+            fx_set_on(st, 0, 0, 0, 0, 0, 1);
+            for (i = 0; i < 8000; i++) {
+                left = 0.25f * sinf(2.0f * PV_PI * 1000.0f * (float)i / 44100.0f);
+                right = left;
+                fx_process(st, &left, &right);
+                if (i >= 4000) {
+                    fed += (double)left * left;
+                }
+                if (left != left || fabsf(left) > 2.0f) {
+                    log_error("fx", "flanger feedback ran away (%.3f)", left);
+                    goto done;
+                }
+            }
+            if (fed < plain * 1.3) {
+                log_error("fx", "flanger feedback did not strengthen the comb (%.4f vs %.4f)",
+                          fed, plain);
+                goto done;
+            }
+        }
+
+        fx_defaults(&p);
+        p.flanger_on = 1;
+        p.fl_period = 0.25f;
+        p.fl_delay = 1;
+        p.fl_depth = 0.7f;
+        p.fl_feedback = 0;
+        p.fl_mix = 50;
+        fx_setup(st, &p);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        fx_set_beat(st, 0.5f);
+        {
+            float lo = 9;
+            float hi = 0;
+            int blk;
+
+            for (blk = 0; blk < 80; blk++) {
+                double sum = 0;
+
+                for (i = 0; i < 441; i++) {
+                    int n = blk * 441 + i;
+
+                    left = 0.5f * sinf(2.0f * PV_PI * 1000.0f * (float)n / 44100.0f);
+                    right = left;
+                    fx_process(st, &left, &right);
+                    sum += (double)left * left;
+                    if (left != left || fabsf(left) > 2.0f) {
+                        log_error("fx", "flanger sweep produced %.3f", left);
+                        goto done;
+                    }
+                }
+                if (blk > 8) {
+                    float rms = (float)sqrt(sum / 441) / 0.35355f;
+
+                    lo = rms < lo ? rms : lo;
+                    hi = rms > hi ? rms : hi;
+                }
+            }
+            if (lo > 0.45f || hi < 0.75f) {
+                log_error("fx", "flanger sweep gain from %.3f to %.3f", lo, hi);
+                goto done;
+            }
+        }
+        fx_set_beat(st, 0);
+    }
 
     rc = 0;
 done:

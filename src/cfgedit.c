@@ -23,14 +23,17 @@
 #include <sys/ioctl.h>
 
 /*
- * Full-screen editor for master.cfg. The screen has tabs: Main, Buttons,
- * Reverb, Chipmunk, Autopan, and Phaser.
- * Tab and the arrow keys move between the fields on the current tab. Up from the first field reaches the tabs, and left
- * and right there switch tabs. Left and right move the cursor in a text
- * field, and step to the next field at either end. A key binding is captured
- * from the keypad, or from another keyboard if the press is not on the
- * keypad. Esc or Cancel leaves that binding unchanged. Delete on the key
- * prompt removes it. Save validates before it writes.
+ * Full-screen editor for master.cfg. The tabs are Main, Buttons, Reverb,
+ * Chipmunk, Autopan, Phaser, Chorus, and Flanger. They stay on one row when
+ * the window is wide enough. Chorus and Flanger wrap onto a second row when
+ * it is not.
+ * Tab and the arrow keys move between the fields on the current tab. Up from
+ * the first field reaches the tabs, and left and right there switch tabs.
+ * Left and right move the cursor in a text field, and step to the next field
+ * at either end. A key binding is captured from the keypad, or from another
+ * keyboard if the press is not on the keypad. Esc or Cancel leaves that
+ * binding unchanged. Delete on the key prompt removes it. Save validates
+ * before it writes.
  */
 
 enum {
@@ -40,6 +43,8 @@ enum {
     TAB_PITCH,
     TAB_AUTOPAN,
     TAB_PHASER,
+    TAB_CHORUS,
+    TAB_FLANGER,
     TAB_COUNT
 };
 
@@ -69,6 +74,8 @@ enum {
     FE_KEY_PITCH,
     FE_KEY_AUTOPAN,
     FE_KEY_PHASER,
+    FE_KEY_CHORUS,
+    FE_KEY_FLANGER,
     FE_BUTTON_END,
 
     FE_RV_DECAY = FE_BUTTON_END,
@@ -95,6 +102,20 @@ enum {
     FE_PH_FEEDBACK,
     FE_PH_MIX,
     FE_PH_BOOST,
+    FE_PH_END,
+
+    FE_CH_PERIOD = FE_PH_END,
+    FE_CH_DELAY,
+    FE_CH_DEPTH,
+    FE_CH_VOICES,
+    FE_CH_MIX,
+    FE_CH_END,
+
+    FE_FL_PERIOD = FE_CH_END,
+    FE_FL_DELAY,
+    FE_FL_DEPTH,
+    FE_FL_FEEDBACK,
+    FE_FL_MIX,
     FE_FIELD_COUNT,
 
     FE_TABS = FE_FIELD_COUNT,
@@ -106,7 +127,8 @@ enum {
 enum {
     LABEL_W = 16,
     NUM_W = 10,
-    /* Tallest tab is Buttons, with 13 fields. */
+    /* Tallest tab is Buttons, with 15 fields, under one row of tabs.
+     * A wrapped tab row adds one line, checked in layout_ui. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_PAUSE,
     ROW_TABS = 1,
     ROW_NOTE = 2,
@@ -115,7 +137,6 @@ enum {
     FRAME_H = ROW_BUTTONS + 2,
     /* The hint line below the frame is left out when it does not fit. */
     MIN_ROWS = FRAME_H,
-    /* Wide enough for the six tab buttons inside the frame. */
     MIN_COLS = 72,
     SAVE_W = 8,
     CANCEL_W = 10
@@ -166,7 +187,7 @@ struct Ui {
     int frame_h;
     int label_c;
     int box_c;
-    int tab_r;
+    int tab_y[TAB_COUNT];
     int tab_c[TAB_COUNT];
     int tab_w[TAB_COUNT];
     int note_r;
@@ -243,6 +264,8 @@ static const char *field_label(int id)
         "Chipmunk",
         "Autopan",
         "Phaser",
+        "Chorus",
+        "Flanger",
         "Decay",
         "BW",
         "Damping",
@@ -260,7 +283,17 @@ static const char *field_label(int id)
         "Stages",
         "Feedback",
         "Mix %",
-        "Boost %"
+        "Boost %",
+        "Period",
+        "Delay ms",
+        "Depth ms",
+        "Voices",
+        "Mix %",
+        "Period",
+        "Delay ms",
+        "Depth ms",
+        "Feedback",
+        "Mix %"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -341,6 +374,12 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_KEY_PHASER:
         *cap = sizeof edit->key_phaser;
         return edit->key_phaser;
+    case FE_KEY_CHORUS:
+        *cap = sizeof edit->key_chorus;
+        return edit->key_chorus;
+    case FE_KEY_FLANGER:
+        *cap = sizeof edit->key_flanger;
+        return edit->key_flanger;
     case FE_RV_DECAY:
         *cap = sizeof edit->rv_decay;
         return edit->rv_decay;
@@ -395,6 +434,36 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_PH_BOOST:
         *cap = sizeof edit->ph_boost;
         return edit->ph_boost;
+    case FE_CH_PERIOD:
+        *cap = sizeof edit->ch_period;
+        return edit->ch_period;
+    case FE_CH_DELAY:
+        *cap = sizeof edit->ch_delay;
+        return edit->ch_delay;
+    case FE_CH_DEPTH:
+        *cap = sizeof edit->ch_depth;
+        return edit->ch_depth;
+    case FE_CH_VOICES:
+        *cap = sizeof edit->ch_voices;
+        return edit->ch_voices;
+    case FE_CH_MIX:
+        *cap = sizeof edit->ch_mix;
+        return edit->ch_mix;
+    case FE_FL_PERIOD:
+        *cap = sizeof edit->fl_period;
+        return edit->fl_period;
+    case FE_FL_DELAY:
+        *cap = sizeof edit->fl_delay;
+        return edit->fl_delay;
+    case FE_FL_DEPTH:
+        *cap = sizeof edit->fl_depth;
+        return edit->fl_depth;
+    case FE_FL_FEEDBACK:
+        *cap = sizeof edit->fl_feedback;
+        return edit->fl_feedback;
+    case FE_FL_MIX:
+        *cap = sizeof edit->fl_mix;
+        return edit->fl_mix;
     default:
         *cap = 0;
         return NULL;
@@ -408,7 +477,9 @@ static int is_number_field(int id)
            id == FE_RV_BW || id == FE_RV_DAMP || id == FE_RV_SEND ||
            id == FE_PS_PITCH || id == FE_PS_RANGE || id == FE_AP_PERIOD ||
            id == FE_AP_SMOOTH || id == FE_AP_DISTANCE ||
-           (id >= FE_PH_PERIOD && id <= FE_PH_BOOST);
+           (id >= FE_PH_PERIOD && id <= FE_PH_BOOST) ||
+           (id >= FE_CH_PERIOD && id <= FE_CH_MIX) ||
+           (id >= FE_FL_PERIOD && id <= FE_FL_MIX);
 }
 
 static int is_key_field(int id)
@@ -591,7 +662,8 @@ static void toggle_check(struct Editor *ed, int id)
 static int tab_first(int tab)
 {
     static const int first[] = {
-        FE_FOLDER, FE_KEY_PAUSE, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD, FE_PH_PERIOD
+        FE_FOLDER, FE_KEY_PAUSE, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD,
+        FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -604,7 +676,7 @@ static int tab_last(int tab)
 {
     static const int last[] = {
         FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_RV_END - 1, FE_PS_END - 1,
-        FE_AP_END - 1, FE_FIELD_COUNT - 1
+        FE_AP_END - 1, FE_PH_END - 1, FE_CH_END - 1, FE_FIELD_COUNT - 1
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -698,6 +770,34 @@ static int field_on_tab(int id, int tab)
     return id >= tab_first(tab) && id <= tab_last(tab);
 }
 
+static const char *tab_title(int tab);
+
+/* "[ Name ]" plus the space before the next tab. */
+static int tab_width(int tab)
+{
+    return (int)strlen(tab_title(tab)) + 4;
+}
+
+/* How many rows the tabs need inside a frame of this width. */
+static int tab_row_count(int frame_w)
+{
+    int limit = frame_w - 3;
+    int c = 0;
+    int rows = 1;
+    int i;
+
+    for (i = 0; i < TAB_COUNT; i++) {
+        int w = tab_width(i);
+
+        if (c > 0 && c + w > limit) {
+            rows++;
+            c = 0;
+        }
+        c += w + 1;
+    }
+    return rows;
+}
+
 static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols, int tab)
 {
     int avail;
@@ -705,6 +805,7 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
     int row;
     int total;
     int start;
+    int extra;
 
     memset(ui, 0, sizeof *ui);
     ui->rows = rows;
@@ -717,16 +818,20 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
     if (ui->frame_w > 96) {
         ui->frame_w = 96;
     }
-    ui->frame_h = FRAME_H;
-    ui->frame_r = (rows - FRAME_H - 1) / 2 + 1;
+    extra = tab_row_count(ui->frame_w) - 1;
+    ui->frame_h = FRAME_H + extra;
+    if (rows < ui->frame_h) {
+        ui->too_small = 1;
+        return;
+    }
+    ui->frame_r = (rows - ui->frame_h - 1) / 2 + 1;
     if (ui->frame_r < 1) {
         ui->frame_r = 1;
     }
     ui->frame_c = (cols - ui->frame_w) / 2 + 1;
     ui->label_c = ui->frame_c + 2;
     ui->box_c = ui->label_c + LABEL_W + 1;
-    ui->tab_r = ui->frame_r + ROW_TABS;
-    ui->note_r = ui->frame_r + ROW_NOTE;
+    ui->note_r = ui->frame_r + ROW_NOTE + extra;
     avail = ui->frame_w - 4 - LABEL_W - 1;
     if (avail < NUM_W) {
         ui->too_small = 1;
@@ -739,7 +844,7 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
             ui->box_w[i] = 0;
             continue;
         }
-        ui->field_r[i] = ui->frame_r + ROW_FIELD0 + row;
+        ui->field_r[i] = ui->frame_r + ROW_FIELD0 + extra + row;
         row++;
         if (is_check_field(edit, i)) {
             ui->box_w[i] = 3;
@@ -749,7 +854,7 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
             ui->box_w[i] = avail;
         }
     }
-    ui->save_r = ui->frame_r + ROW_BUTTONS;
+    ui->save_r = ui->frame_r + ROW_BUTTONS + extra;
     ui->cancel_r = ui->save_r;
     total = SAVE_W + 4 + CANCEL_W;
     start = ui->frame_c + (ui->frame_w - total) / 2;
@@ -1074,8 +1179,10 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
 
 static const char *tab_title(int tab)
 {
-    static const char *names[] = {"Main", "Buttons", "Reverb", "Chipmunk", "Autopan",
-                                  "Phaser"};
+    static const char *names[] = {
+        "Main", "Buttons", "Reverb", "Chipmunk",
+        "Autopan", "Phaser", "Chorus", "Flanger"
+    };
 
     if (tab < 0 || tab >= TAB_COUNT) {
         return "";
@@ -1091,7 +1198,9 @@ static const char *tab_note(int tab)
         "Room. Send is how much reverb is added.",
         "Pitch 1 is an octave up. 0 is unchanged.",
         "Left to right and back. Period counts beats.",
-        "Notches sweep from Low to High. Period is in measures."
+        "Notches sweep from Low to High. Period is in measures.",
+        "Several slightly late copies, drifting in pitch.",
+        "A very short delay. The sweep makes a jet-like whoosh."
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1103,17 +1212,26 @@ static const char *tab_note(int tab)
 static void draw_tabs(struct Editor *ed, FILE *fp)
 {
     struct Ui *ui = &ed->ui;
+    int limit = ui->frame_c + ui->frame_w - 2;
     int c = ui->label_c;
+    int row = ui->frame_r + ROW_TABS;
     int i;
 
     for (i = 0; i < TAB_COUNT; i++) {
         char label[24];
+        int w;
 
         snprintf(label, sizeof label, "[ %s ]", tab_title(i));
+        w = (int)strlen(label);
+        if (c > ui->label_c && c + w - 1 > limit) {
+            c = ui->label_c;
+            row++;
+        }
+        ui->tab_y[i] = row;
         ui->tab_c[i] = c;
-        ui->tab_w[i] = (int)strlen(label);
-        draw_button(fp, ui->tab_r, c, label, ed->tab == i);
-        c += ui->tab_w[i] + 1;
+        ui->tab_w[i] = w;
+        draw_button(fp, row, c, label, ed->tab == i);
+        c += w + 1;
     }
 }
 
@@ -1758,11 +1876,8 @@ static int hit_tab(const struct Ui *ui, int x, int y)
 {
     int i;
 
-    if (y != ui->tab_r) {
-        return -1;
-    }
     for (i = 0; i < TAB_COUNT; i++) {
-        if (x >= ui->tab_c[i] && x < ui->tab_c[i] + ui->tab_w[i]) {
+        if (y == ui->tab_y[i] && x >= ui->tab_c[i] && x < ui->tab_c[i] + ui->tab_w[i]) {
             return i;
         }
     }
@@ -1891,6 +2006,10 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
         return edit->key_autopan;
     case FE_KEY_PHASER:
         return edit->key_phaser;
+    case FE_KEY_CHORUS:
+        return edit->key_chorus;
+    case FE_KEY_FLANGER:
+        return edit->key_flanger;
     default:
         return "";
     }
@@ -1902,7 +2021,7 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
         FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
         FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
         FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN,
-        FE_KEY_PHASER
+        FE_KEY_PHASER, FE_KEY_CHORUS, FE_KEY_FLANGER
     };
     int i;
 
@@ -3295,12 +3414,108 @@ static int dialog_button_self_test(void)
     return 0;
 }
 
+static int render_tab(struct Editor *ed, int rows, int cols, int tab, char **buf, size_t *n)
+{
+    FILE *fp;
+
+    memset(ed, 0, sizeof *ed);
+    ed->path = "master.cfg";
+    ed->tab = tab;
+    layout_ui(&ed->ui, &ed->edit, rows, cols, tab);
+    if (ed->ui.too_small) {
+        log_error("cfgedit", "layout %dx%d was too small", cols, rows);
+        return -1;
+    }
+    fp = open_memstream(buf, n);
+    if (!fp) {
+        log_error("cfgedit", "could not capture the screen");
+        return -1;
+    }
+    draw_screen(ed, fp);
+    fclose(fp);
+    return 0;
+}
+
+static int screen_self_test(void)
+{
+    struct Editor ed;
+    char *buf = NULL;
+    size_t n = 0;
+
+    if (render_tab(&ed, 24, 100, TAB_BUTTONS, &buf, &n) != 0) {
+        return -1;
+    }
+    if (ed.ui.field_r[FE_KEY_CHORUS] < 0 ||
+        ed.ui.field_r[FE_KEY_FLANGER] <= ed.ui.field_r[FE_KEY_PHASER] ||
+        ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_MAIN] ||
+        ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_MAIN] ||
+        !buf || strstr(buf, "[ Chorus ]") == NULL || strstr(buf, "[ Flanger ]") == NULL ||
+        strstr(buf, "Chorus") == NULL || strstr(buf, "Flanger") == NULL) {
+        log_error("cfgedit", "wide Buttons screen is missing chorus and flanger");
+        free(buf);
+        return -1;
+    }
+    if (hit_tab(&ed.ui, ed.ui.tab_c[TAB_CHORUS], ed.ui.tab_y[TAB_CHORUS]) != TAB_CHORUS ||
+        hit_tab(&ed.ui, ed.ui.tab_c[TAB_FLANGER], ed.ui.tab_y[TAB_FLANGER]) != TAB_FLANGER) {
+        log_error("cfgedit", "chorus or flanger tab could not be clicked");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    buf = NULL;
+    n = 0;
+
+    if (render_tab(&ed, 24, 80, TAB_BUTTONS, &buf, &n) != 0) {
+        return -1;
+    }
+    if (ed.ui.tab_y[TAB_PHASER] != ed.ui.tab_y[TAB_MAIN] ||
+        ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_MAIN] + 1 ||
+        ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_CHORUS]) {
+        log_error("cfgedit", "narrow window did not wrap chorus and flanger");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    buf = NULL;
+    n = 0;
+
+    if (render_tab(&ed, 24, 100, TAB_CHORUS, &buf, &n) != 0) {
+        return -1;
+    }
+    if (ed.ui.field_r[FE_CH_DELAY] < 0 || ed.ui.field_r[FE_CH_VOICES] < 0 ||
+        !buf || strstr(buf, "Delay ms") == NULL || strstr(buf, "Voices") == NULL ||
+        strstr(buf, "drifting in pitch") == NULL) {
+        log_error("cfgedit", "Chorus screen is missing its settings");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    buf = NULL;
+    n = 0;
+
+    if (render_tab(&ed, 24, 100, TAB_FLANGER, &buf, &n) != 0) {
+        return -1;
+    }
+    if (ed.ui.field_r[FE_FL_DELAY] < 0 || ed.ui.field_r[FE_FL_FEEDBACK] < 0 ||
+        !buf || strstr(buf, "Delay ms") == NULL || strstr(buf, "Feedback") == NULL ||
+        strstr(buf, "jet-like whoosh") == NULL) {
+        log_error("cfgedit", "Flanger screen is missing its settings");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    return 0;
+}
+
 int cfgedit_self_test(void)
 {
     ConfigEdit edit;
     const char *who = "x";
 
     if (dialog_button_self_test() != 0) {
+        return -1;
+    }
+    if (screen_self_test() != 0) {
         return -1;
     }
     memset(&edit, 0, sizeof edit);
