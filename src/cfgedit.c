@@ -30,10 +30,13 @@
  * Tab and the arrow keys move between the fields on the current tab. Up from
  * the first field reaches the tabs, and left and right there switch tabs.
  * Left and right move the cursor in a text field, and step to the next field
- * at either end. A key binding is captured from the keypad, or from another
- * keyboard if the press is not on the keypad. Esc or Cancel leaves that
- * binding unchanged. Delete on the key prompt removes it. Save validates
- * before it writes.
+ * at either end. On the Buttons tab each action has a keyboard box and then
+ * a keypad box. Each box is only as wide as its title or its longest value.
+ * The keyboard box is the next key typed on this terminal. The keypad box is
+ * captured from the USB keypad or the shortcut remote.
+ * Esc or Cancel leaves a binding unchanged. Delete on the keypad prompt
+ * removes it. On the keyboard prompt, click Delete to remove it. Save
+ * validates before it writes.
  */
 
 enum {
@@ -128,6 +131,11 @@ enum {
 enum {
     LABEL_W = 16,
     NUM_W = 10,
+    /* Column titles. A box is at least this wide so the title is not clipped. */
+    KBD_HDR_W = 8,
+    PAD_HDR_W = 6,
+    /* Brackets plus one character. Used only when a value cannot fit. */
+    BOX_MIN_W = 4,
     /* Tallest tab is Buttons, with 16 fields, under one row of tabs.
      * A wrapped tab row adds one line, checked in layout_ui. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_PAUSE,
@@ -188,6 +196,10 @@ struct Ui {
     int frame_h;
     int label_c;
     int box_c;
+    /* Keyboard box on the Buttons tab. kbd_w is 0 on the other tabs.
+     * The keypad box is the next column; its width is box_w[] for key fields. */
+    int kbd_c;
+    int kbd_w;
     int tab_y[TAB_COUNT];
     int tab_c[TAB_COUNT];
     int tab_w[TAB_COUNT];
@@ -215,8 +227,11 @@ struct Editor {
     struct Ui ui;
     int focus;
     int cursor;
+    /* 0 is the left box (keyboard). 1 is the right box (keypad). */
+    int col;
     int dialog;
     int capture;
+    int capture_kbd;
     int capture_id;
     int capture_btn;
     int tab;
@@ -721,6 +736,7 @@ static void move_focus(struct Editor *ed, int delta)
         } else {
             ed->focus = FE_CANCEL;
         }
+        ed->col = 0;
         return;
     }
     if (id == FE_SAVE) {
@@ -729,6 +745,7 @@ static void move_focus(struct Editor *ed, int delta)
         } else {
             focus_field(ed, tab_last(ed->tab));
         }
+        ed->col = 0;
         return;
     }
     if (id == FE_CANCEL) {
@@ -737,10 +754,12 @@ static void move_focus(struct Editor *ed, int delta)
         } else {
             ed->focus = FE_SAVE;
         }
+        ed->col = 0;
         return;
     }
     if (id < tab_first(ed->tab) || id > tab_last(ed->tab)) {
         focus_field(ed, tab_first(ed->tab));
+        ed->col = 0;
         return;
     }
     if (delta > 0) {
@@ -753,6 +772,9 @@ static void move_focus(struct Editor *ed, int delta)
         ed->focus = FE_TABS;
     } else {
         focus_field(ed, id - 1);
+    }
+    if (!is_key_field(ed->focus)) {
+        ed->col = 0;
     }
 }
 
@@ -803,9 +825,101 @@ static int tab_row_count(int frame_w)
     return rows;
 }
 
+static const char *key_field_value(const ConfigEdit *edit, int id);
+static const char *kbd_field_value(const ConfigEdit *edit, int id);
+
+static int value_cols(const char *text)
+{
+    if (!text || !text[0]) {
+        return 0;
+    }
+    return utf8_cols(text, (int)strlen(text));
+}
+
+/* Width of a Buttons box: brackets around the longest value, or the title. */
+static int box_for_values(int header, int longest)
+{
+    int w = longest + 2;
+
+    if (w < header) {
+        w = header;
+    }
+    if (w < BOX_MIN_W) {
+        w = BOX_MIN_W;
+    }
+    return w;
+}
+
+static void button_box_widths(const ConfigEdit *edit, int *kbd_w, int *pad_w)
+{
+    int longest_kbd = 0;
+    int longest_pad = 0;
+    int i;
+
+    for (i = FE_KEY_PAUSE; i < FE_BUTTON_END; i++) {
+        int kc = value_cols(kbd_field_value(edit, i));
+        int pc = value_cols(key_field_value(edit, i));
+
+        if (kc > longest_kbd) {
+            longest_kbd = kc;
+        }
+        if (pc > longest_pad) {
+            longest_pad = pc;
+        }
+    }
+    *kbd_w = box_for_values(KBD_HDR_W, longest_kbd);
+    *pad_w = box_for_values(PAD_HDR_W, longest_pad);
+}
+
+/* Shrink so the two boxes and the gap between them fit. Do not grow them. */
+static void fit_button_boxes(int *kbd_w, int *pad_w, int avail)
+{
+    int over;
+    int *wide;
+    int *narrow;
+
+    if (*kbd_w < BOX_MIN_W) {
+        *kbd_w = BOX_MIN_W;
+    }
+    if (*pad_w < BOX_MIN_W) {
+        *pad_w = BOX_MIN_W;
+    }
+    over = *kbd_w + 1 + *pad_w - avail;
+    if (over <= 0) {
+        return;
+    }
+    if (*pad_w >= *kbd_w) {
+        wide = pad_w;
+        narrow = kbd_w;
+    } else {
+        wide = kbd_w;
+        narrow = pad_w;
+    }
+    if (*wide - BOX_MIN_W < over) {
+        over -= *wide - BOX_MIN_W;
+        *wide = BOX_MIN_W;
+    } else {
+        *wide -= over;
+        over = 0;
+    }
+    if (over > 0) {
+        if (*narrow - BOX_MIN_W < over) {
+            *narrow = BOX_MIN_W;
+        } else {
+            *narrow -= over;
+        }
+    }
+}
+
+static int pad_col(const struct Ui *ui)
+{
+    return ui->box_c + ui->kbd_w + 1;
+}
+
 static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols, int tab)
 {
     int avail;
+    int pad_w = 0;
     int i;
     int row;
     int total;
@@ -842,6 +956,20 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
         ui->too_small = 1;
         return;
     }
+    ui->kbd_w = 0;
+    ui->kbd_c = 0;
+    if (tab == TAB_BUTTONS) {
+        int kbd_w = 0;
+
+        button_box_widths(edit, &kbd_w, &pad_w);
+        fit_button_boxes(&kbd_w, &pad_w, avail);
+        if (kbd_w + 1 + pad_w > avail) {
+            ui->too_small = 1;
+            return;
+        }
+        ui->kbd_w = kbd_w;
+        ui->kbd_c = ui->box_c;
+    }
     row = 0;
     for (i = 0; i < FE_FIELD_COUNT; i++) {
         if (!field_on_tab(i, tab)) {
@@ -855,6 +983,8 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
             ui->box_w[i] = 3;
         } else if (is_number_field(i) || i == FE_DIAL_DEFAULT) {
             ui->box_w[i] = NUM_W;
+        } else if (is_key_field(i) && ui->kbd_w > 0) {
+            ui->box_w[i] = pad_w;
         } else {
             ui->box_w[i] = avail;
         }
@@ -1199,7 +1329,7 @@ static const char *tab_note(int tab)
 {
     static const char *notes[] = {
         "Folder, loudness, and the dial.",
-        "Buttons. Volume is on the dial.",
+        "Volume on dial.",
         "Room. Send is how much reverb is added.",
         "Pitch 1 is an octave up. 0 is unchanged.",
         "Left to right and back. Period counts beats.",
@@ -1240,6 +1370,24 @@ static void draw_tabs(struct Editor *ed, FILE *fp)
     }
 }
 
+static void draw_clipped(FILE *fp, int row, int col, int width, const char *text)
+{
+    int n = 0;
+    int i = 0;
+
+    cup(fp, row, col);
+    if (!text || width < 1) {
+        return;
+    }
+    while (text[i] && n < width) {
+        int span = utf8_span((const unsigned char *)text + i);
+
+        fwrite(text + i, 1, (size_t)span, fp);
+        i += span;
+        n++;
+    }
+}
+
 static void draw_screen(struct Editor *ed, FILE *fp)
 {
     struct Ui *ui = &ed->ui;
@@ -1275,6 +1423,10 @@ static void draw_screen(struct Editor *ed, FILE *fp)
     draw_tabs(ed, fp);
     cup(fp, ui->note_r, ui->label_c);
     fputs(tab_note(ed->tab), fp);
+    if (ed->tab == TAB_BUTTONS && ui->kbd_w > 0) {
+        draw_clipped(fp, ui->note_r, ui->kbd_c, ui->kbd_w, "Keyboard");
+        draw_clipped(fp, ui->note_r, pad_col(ui), ui->box_w[FE_KEY_PAUSE], "Keypad");
+    }
     for (i = 0; i < FE_FIELD_COUNT; i++) {
         size_t cap;
         char *text = field_text(&ed->edit, i, &cap);
@@ -1293,7 +1445,19 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         if (is_check_field(&ed->edit, i)) {
             config_parse_bool(text, &on);
             draw_check(fp, ui->field_r[i], ui->box_c, on, focused);
-        } else if (is_key_field(i) || is_choice_field(&ed->edit, i)) {
+        } else if (is_key_field(i)) {
+            const char *kbd = kbd_field_value(&ed->edit, i);
+
+            if (ui->kbd_w > 0) {
+                draw_text_box(fp, ui->field_r[i], ui->kbd_c, ui->kbd_w,
+                              kbd ? kbd : "", 0, focused && ed->col == 0, 0);
+                draw_text_box(fp, ui->field_r[i], pad_col(ui), ui->box_w[i],
+                              text ? text : "", 0, focused && ed->col == 1, 0);
+            } else {
+                draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i],
+                              text ? text : "", 0, focused && ed->col == 0, 0);
+            }
+        } else if (is_choice_field(&ed->edit, i)) {
             draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i],
                           text ? text : "", 0, focused, 0);
         } else {
@@ -1314,8 +1478,12 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         fputs(hint, fp);
     }
     if (ed->capture) {
-        draw_dialog(fp, ui, "Select a key",
-                    ed->err[0] ? ed->err : "Press a new key.", "[ Cancel ]",
+        const char *title = ed->capture_kbd ? "Keyboard" : "Keypad";
+        const char *fallback = ed->capture_kbd
+            ? "Press a keyboard key. Esc cancels. Click Delete to clear."
+            : "Press a keypad or remote button.";
+
+        draw_dialog(fp, ui, title, ed->err[0] ? ed->err : fallback, "[ Cancel ]",
                     "[ Delete ]", ed->capture_btn == CAP_DELETE);
     } else if (ed->dialog) {
         draw_dialog(fp, ui, ed->dialog_title, ed->err, "[ OK ]", NULL, 0);
@@ -1900,6 +2068,17 @@ static int hit_focus(const struct Ui *ui, int x, int y)
             continue;
         }
         right = ui->box_c + ui->box_w[i] - 1;
+        if (is_key_field(i) && ui->kbd_w > 0) {
+            int pend = pad_col(ui) + ui->box_w[i] - 1;
+            int kend = ui->kbd_c + ui->kbd_w - 1;
+
+            if (kend > right) {
+                right = kend;
+            }
+            if (pend > right) {
+                right = pend;
+            }
+        }
         if (y == ui->field_r[i] && x >= ui->label_c && x <= right) {
             return i;
         }
@@ -2022,6 +2201,58 @@ static const char *key_field_value(const ConfigEdit *edit, int id)
     }
 }
 
+static const char *kbd_field_value(const ConfigEdit *edit, int id)
+{
+    switch (id) {
+    case FE_KEY_PAUSE:
+        return edit->kbd_pause;
+    case FE_KEY_SKIP:
+        return edit->kbd_skip;
+    case FE_KEY_PREV:
+        return edit->kbd_prev;
+    case FE_KEY_REW05:
+        return edit->kbd_rew05;
+    case FE_KEY_REW10:
+        return edit->kbd_rew10;
+    case FE_KEY_REW15:
+        return edit->kbd_rew15;
+    case FE_KEY_DIAL_FWD:
+        return edit->kbd_dial_fwd;
+    case FE_KEY_DIAL_BACK:
+        return edit->kbd_dial_back;
+    case FE_KEY_DIAL_MODE:
+        return edit->kbd_dial_mode;
+    case FE_KEY_REVERB:
+        return edit->kbd_reverb;
+    case FE_KEY_PITCH:
+        return edit->kbd_pitch;
+    case FE_KEY_AUTOPAN:
+        return edit->kbd_autopan;
+    case FE_KEY_PHASER:
+        return edit->kbd_phaser;
+    case FE_KEY_CHORUS:
+        return edit->kbd_chorus;
+    case FE_KEY_FLANGER:
+        return edit->kbd_flanger;
+    case FE_KEY_EFFECTS_OFF:
+        return edit->kbd_effects_off;
+    default:
+        return "";
+    }
+}
+
+static char *kbd_field_text(ConfigEdit *edit, int id, size_t *cap)
+{
+    char *text = (char *)kbd_field_value(edit, id);
+
+    if (id < FE_KEY_PAUSE || id >= FE_BUTTON_END) {
+        *cap = 0;
+        return NULL;
+    }
+    *cap = AUTODJ_KBD_LEN;
+    return text;
+}
+
 static int key_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
 {
     static const int ids[] = {
@@ -2055,19 +2286,65 @@ static int key_conflict(const ConfigEdit *edit, int self, const char *name, cons
     return 0;
 }
 
+static int kbd_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
+{
+    static const int ids[] = {
+        FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
+        FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
+        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN,
+        FE_KEY_PHASER, FE_KEY_CHORUS, FE_KEY_FLANGER, FE_KEY_EFFECTS_OFF
+    };
+    static char who_buf[64];
+    char want[AUTODJ_KBD_LEN];
+    int i;
+
+    if (who) {
+        *who = "";
+    }
+    if (!edit || !name || keys_kbd_canon(name, want, sizeof want) != 0) {
+        return 0;
+    }
+    for (i = 0; i < (int)(sizeof ids / sizeof ids[0]); i++) {
+        char raw[AUTODJ_KBD_LEN];
+        char got[AUTODJ_KBD_LEN];
+
+        if (ids[i] == self) {
+            continue;
+        }
+        trim_copy(raw, sizeof raw, kbd_field_value(edit, ids[i]));
+        if (!raw[0] || keys_kbd_canon(raw, got, sizeof got) != 0) {
+            continue;
+        }
+        if (strcmp(got, want) == 0) {
+            if (who) {
+                snprintf(who_buf, sizeof who_buf, "%s keyboard", field_label(ids[i]));
+                *who = who_buf;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void stop_capture(struct Editor *ed)
 {
     release_keys();
     if (ed) {
         ed->capture = 0;
+        ed->capture_kbd = 0;
     }
 }
 
 static void clear_key_binding(struct Editor *ed)
 {
     size_t cap;
-    char *text = field_text(&ed->edit, ed->capture_id, &cap);
+    char *text;
 
+    if (ed->capture_kbd) {
+        text = kbd_field_text(&ed->edit, ed->capture_id, &cap);
+    } else {
+        text = field_text(&ed->edit, ed->capture_id, &cap);
+    }
     if (text && cap > 0) {
         text[0] = '\0';
     }
@@ -2083,20 +2360,37 @@ static void set_capture_prompt(struct Editor *ed, int busy)
 
     trim_copy(shown, sizeof shown, cur ? cur : "");
     if (g_key_n == 0) {
-        extra = "No keypad or keyboard was found.";
+        extra = "No keypad or remote was found.";
     } else if (busy) {
-        extra = "Keypad is in use by playback. Use another keyboard, or cancel.";
+        extra = "Keypad is in use by playback.";
     }
     if (shown[0] && extra) {
         snprintf(ed->err, sizeof ed->err,
-                 "Press a new key, or Delete to remove %s.\n%s", shown, extra);
+                 "Press a keypad or remote button, or Delete to remove %s.\n%s",
+                 shown, extra);
     } else if (shown[0]) {
         snprintf(ed->err, sizeof ed->err,
-                 "Press a new key, or Delete to remove %s.", shown);
+                 "Press a keypad or remote button, or Delete to remove %s.", shown);
     } else if (extra) {
-        snprintf(ed->err, sizeof ed->err, "Press a new key.\n%s", extra);
+        snprintf(ed->err, sizeof ed->err, "Press a keypad or remote button.\n%s", extra);
     } else {
-        snprintf(ed->err, sizeof ed->err, "Press a new key.");
+        snprintf(ed->err, sizeof ed->err, "Press a keypad or remote button.");
+    }
+}
+
+static void set_kbd_prompt(struct Editor *ed)
+{
+    char shown[AUTODJ_KBD_LEN];
+    const char *cur = kbd_field_value(&ed->edit, ed->capture_id);
+
+    trim_copy(shown, sizeof shown, cur ? cur : "");
+    if (shown[0]) {
+        snprintf(ed->err, sizeof ed->err,
+                 "Press a keyboard key. Esc cancels. Click Delete to clear %s.",
+                 shown);
+    } else {
+        snprintf(ed->err, sizeof ed->err,
+                 "Press a keyboard key. Esc cancels. Click Delete to clear.");
     }
 }
 
@@ -2110,12 +2404,25 @@ static void begin_capture(struct Editor *ed, int id)
     ed->capture_id = id;
     ed->capture_btn = CAP_CANCEL;
     ed->dialog = 0;
+    ed->capture_kbd = ed->col == 0;
     release_keys();
+    if (ed->capture_kbd) {
+        set_kbd_prompt(ed);
+        ed->capture = 1;
+        return;
+    }
     g_key_n = keys_open_capture(g_key_fds, (int)(sizeof g_key_fds / sizeof g_key_fds[0]), &pad);
     if (g_key_n < 0) {
         g_key_n = 0;
     }
-    for (i = 0; i < pad && i < g_key_n; i++) {
+    for (i = pad; i < g_key_n; i++) {
+        if (g_key_fds[i] >= 0) {
+            close(g_key_fds[i]);
+            g_key_fds[i] = -1;
+        }
+    }
+    compact_key_fds();
+    for (i = 0; i < g_key_n; i++) {
         if (keys_grab(g_key_fds[i]) == 0) {
             g_key_grabbed[i] = 1;
         } else if (errno == EBUSY) {
@@ -2124,6 +2431,146 @@ static void begin_capture(struct Editor *ed, int id)
     }
     set_capture_prompt(ed, busy);
     ed->capture = 1;
+}
+
+static int kbd_event_name(const struct Event *ev, char *dest, size_t n)
+{
+    const char *word = NULL;
+
+    switch (ev->kind) {
+    case EV_ENTER:
+        word = "Enter";
+        break;
+    case EV_TAB:
+        word = "Tab";
+        break;
+    case EV_BACKSPACE:
+        word = "Backspace";
+        break;
+    case EV_DELETE:
+        word = "Delete";
+        break;
+    case EV_UP:
+        word = "Up";
+        break;
+    case EV_DOWN:
+        word = "Down";
+        break;
+    case EV_LEFT:
+        word = "Left";
+        break;
+    case EV_RIGHT:
+        word = "Right";
+        break;
+    case EV_HOME:
+        word = "Home";
+        break;
+    case EV_END:
+        word = "End";
+        break;
+    case EV_CHAR:
+        return keys_kbd_canon(ev->text, dest, n);
+    default:
+        return -1;
+    }
+    return keys_kbd_canon(word, dest, n);
+}
+
+static int handle_kbd_capture(struct Editor *ed, const struct Event *ev)
+{
+    char name[AUTODJ_KBD_LEN];
+    const char *who = NULL;
+    size_t cap;
+    char *text;
+
+    if (ev->kind == EV_MOUSE && hit_del(&ed->ui, ev->x, ev->y)) {
+        clear_key_binding(ed);
+        return 0;
+    }
+    if (ev->kind == EV_MOUSE && hit_ok(&ed->ui, ev->x, ev->y)) {
+        stop_capture(ed);
+        ed->err[0] = '\0';
+        return 0;
+    }
+    if (ev->kind == EV_ESC) {
+        stop_capture(ed);
+        ed->err[0] = '\0';
+        return 0;
+    }
+    if (kbd_event_name(ev, name, sizeof name) != 0) {
+        return 0;
+    }
+    if (kbd_conflict(&ed->edit, ed->capture_id, name, &who)) {
+        stop_capture(ed);
+        snprintf(ed->err, sizeof ed->err, "%s is already used for %s.", name,
+                 who && who[0] ? who : "another action");
+        snprintf(ed->dialog_title, sizeof ed->dialog_title, "Key in use");
+        ed->dialog = 1;
+        return 0;
+    }
+    text = kbd_field_text(&ed->edit, ed->capture_id, &cap);
+    if (text) {
+        snprintf(text, cap, "%s", name);
+    }
+    stop_capture(ed);
+    ed->err[0] = '\0';
+    return 0;
+}
+
+static int activate_key(const struct Event *ev);
+
+/* Returns 1 when the event was used by a button row. Mouse clicks fall
+ * through so the click handler can choose the column. */
+static int handle_key_nav(struct Editor *ed, const struct Event *ev)
+{
+    if (ev->kind == EV_MOUSE) {
+        return 0;
+    }
+    if (ev->kind == EV_LEFT) {
+        if (ed->col > 0) {
+            ed->col = 0;
+        }
+        return 1;
+    }
+    if (ev->kind == EV_RIGHT) {
+        if (ed->col < 1) {
+            ed->col = 1;
+        }
+        return 1;
+    }
+    if (ev->kind == EV_UP) {
+        move_focus(ed, -1);
+        return 1;
+    }
+    if (ev->kind == EV_DOWN) {
+        move_focus(ed, 1);
+        return 1;
+    }
+    if (ev->kind == EV_STAB) {
+        if (ed->col > 0) {
+            ed->col = 0;
+            return 1;
+        }
+        move_focus(ed, -1);
+        if (is_key_field(ed->focus)) {
+            ed->col = 1;
+        }
+        return 1;
+    }
+    if (ev->kind == EV_TAB) {
+        if (ed->col == 0) {
+            ed->col = 1;
+            return 1;
+        }
+        ed->col = 0;
+        move_focus(ed, 1);
+        return 1;
+    }
+    if (activate_key(ev)) {
+        begin_capture(ed, ed->focus);
+        return 1;
+    }
+    return 1;
 }
 
 static int activate_key(const struct Event *ev)
@@ -2157,6 +2604,9 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
         int delete_it = 0;
         int cancel_it = 0;
 
+        if (ed->capture_kbd) {
+            return handle_kbd_capture(ed, ev);
+        }
         if (ev->kind == EV_LEFT || ev->kind == EV_RIGHT ||
             ev->kind == EV_TAB || ev->kind == EV_STAB) {
             ed->capture_btn = ed->capture_btn == CAP_DELETE ? CAP_CANCEL : CAP_DELETE;
@@ -2221,6 +2671,9 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
         ed->saved = 0;
         return 1;
     }
+    if (is_key_field(ed->focus) && handle_key_nav(ed, ev)) {
+        return 0;
+    }
     if (ev->kind == EV_UP || ev->kind == EV_STAB) {
         move_focus(ed, -1);
         return 0;
@@ -2235,6 +2688,7 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
 
         if (tab >= 0) {
             change_tab(ed, tab);
+            ed->col = 0;
             focus_field(ed, tab_first(tab));
             return 0;
         }
@@ -2257,6 +2711,7 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
             return 0;
         }
         if (is_key_field(id)) {
+            ed->col = (ed->ui.kbd_w > 0 && ev->x >= pad_col(&ed->ui)) ? 1 : 0;
             begin_capture(ed, id);
             return 0;
         }
@@ -2293,18 +2748,6 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
     if (is_toggle_field(&ed->edit, ed->focus)) {
         if (ev->kind == EV_ENTER || (ev->kind == EV_CHAR && ev->text[0] == ' ')) {
             toggle_check(ed, ed->focus);
-            return 0;
-        }
-        if (ev->kind == EV_LEFT) {
-            move_focus(ed, -1);
-        } else if (ev->kind == EV_RIGHT) {
-            move_focus(ed, 1);
-        }
-        return 0;
-    }
-    if (is_key_field(ed->focus)) {
-        if (activate_key(ev)) {
-            begin_capture(ed, ed->focus);
             return 0;
         }
         if (ev->kind == EV_LEFT) {
@@ -3479,7 +3922,9 @@ static int screen_self_test(void)
     }
     if (ed.ui.tab_y[TAB_PHASER] != ed.ui.tab_y[TAB_MAIN] ||
         ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_MAIN] + 1 ||
-        ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_CHORUS]) {
+        ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_CHORUS] ||
+        !buf || strstr(buf, "Keypad") == NULL || strstr(buf, "Keyboard") == NULL ||
+        strstr(buf, "Volume on dial.") == NULL) {
         log_error("cfgedit", "narrow window did not wrap chorus and flanger");
         free(buf);
         return -1;
@@ -3516,6 +3961,229 @@ static int screen_self_test(void)
     return 0;
 }
 
+static int keyboard_column_self_test(void)
+{
+    struct Editor ed;
+    struct Event ev;
+    char *buf = NULL;
+    size_t n = 0;
+    FILE *fp;
+
+    if (render_tab(&ed, 24, 72, TAB_BUTTONS, &buf, &n) != 0) {
+        return -1;
+    }
+    {
+        const char *kb = buf ? strstr(buf, "Keyboard") : NULL;
+        const char *kp = buf ? strstr(buf, "Keypad") : NULL;
+        int span = ed.ui.kbd_w + 1 + ed.ui.box_w[FE_KEY_PAUSE];
+        int avail = ed.ui.frame_w - 4 - LABEL_W - 1;
+
+        if (ed.ui.kbd_w != KBD_HDR_W || ed.ui.box_w[FE_KEY_PAUSE] != PAD_HDR_W ||
+            ed.ui.kbd_c != ed.ui.box_c || span >= avail ||
+            ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_PAUSE] ||
+            !kb || !kp || kb > kp) {
+            log_error("cfgedit", "empty button columns are not sized to their titles");
+            free(buf);
+            return -1;
+        }
+    }
+    free(buf);
+    buf = NULL;
+    n = 0;
+    snprintf(ed.edit.key_pause, sizeof ed.edit.key_pause, "KEY_KP0");
+    snprintf(ed.edit.kbd_pause, sizeof ed.edit.kbd_pause, "p");
+    snprintf(ed.edit.kbd_skip, sizeof ed.edit.kbd_skip, "Backspace");
+    snprintf(ed.edit.key_dial_back, sizeof ed.edit.key_dial_back, "REMOTE_DIAL_CCW");
+    layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
+    if (ed.ui.too_small || ed.ui.kbd_w != 11 || ed.ui.box_w[FE_KEY_PAUSE] != 17 ||
+        ed.ui.kbd_c != ed.ui.box_c ||
+        ed.ui.kbd_w + 1 + ed.ui.box_w[FE_KEY_PAUSE] >=
+            ed.ui.frame_w - 4 - LABEL_W - 1) {
+        log_error("cfgedit", "button columns did not shrink to their values");
+        return -1;
+    }
+    fp = open_memstream(&buf, &n);
+    if (!fp) {
+        log_error("cfgedit", "could not capture the button columns");
+        return -1;
+    }
+    draw_screen(&ed, fp);
+    fclose(fp);
+    {
+        const char *kb = buf ? strstr(buf, "[p") : NULL;
+        const char *kp = buf ? strstr(buf, "KEY_KP0") : NULL;
+
+        if (!buf || strstr(buf, "Backspace") == NULL ||
+            strstr(buf, "REMOTE_DIAL_CCW") == NULL || !kb || !kp || kb > kp) {
+            log_error("cfgedit", "button columns did not show both bindings");
+            free(buf);
+            return -1;
+        }
+    }
+    free(buf);
+    if (hit_focus(&ed.ui, ed.ui.kbd_c, ed.ui.field_r[FE_KEY_PAUSE]) != FE_KEY_PAUSE ||
+        hit_focus(&ed.ui, pad_col(&ed.ui), ed.ui.field_r[FE_KEY_PAUSE]) != FE_KEY_PAUSE ||
+        hit_focus(&ed.ui, ed.ui.box_c, ed.ui.field_r[FE_KEY_SKIP]) != FE_KEY_SKIP) {
+        log_error("cfgedit", "a click missed a button column");
+        return -1;
+    }
+    memset(ed.edit.key_chorus, 'K', 50);
+    ed.edit.key_chorus[50] = '\0';
+    layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
+    if (ed.ui.too_small || ed.ui.kbd_w != 11 || ed.ui.box_w[FE_KEY_PAUSE] < BOX_MIN_W ||
+        ed.ui.box_w[FE_KEY_PAUSE] >= 52 ||
+        ed.ui.kbd_w + 1 + ed.ui.box_w[FE_KEY_PAUSE] >
+            ed.ui.frame_w - 4 - LABEL_W - 1) {
+        log_error("cfgedit", "a long keypad name widened the row past the frame");
+        return -1;
+    }
+    ed.edit.key_chorus[0] = '\0';
+    layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
+
+    ed.focus = FE_KEY_PAUSE;
+    ed.col = 0;
+    ed.capture = 0;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_RIGHT;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 1 || ed.focus != FE_KEY_PAUSE) {
+        log_error("cfgedit", "Right did not move to the keypad column");
+        return -1;
+    }
+    ev.kind = EV_DOWN;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 1 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Down did not keep the keypad column");
+        return -1;
+    }
+    ev.kind = EV_LEFT;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Left did not move to the keyboard column");
+        return -1;
+    }
+    ev.kind = EV_LEFT;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Left left the keyboard column");
+        return -1;
+    }
+    ev.kind = EV_TAB;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 1 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Tab did not move to the keypad column");
+        return -1;
+    }
+    ev.kind = EV_TAB;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_PREV) {
+        log_error("cfgedit", "Tab did not move to the next keyboard");
+        return -1;
+    }
+    ev.kind = EV_STAB;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 1 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Shift-Tab did not move to the previous keypad");
+        return -1;
+    }
+
+    ed.focus = FE_KEY_PREV;
+    ed.col = 1;
+    ed.capture = 0;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_MOUSE;
+    ev.x = ed.ui.kbd_c;
+    ev.y = ed.ui.field_r[FE_KEY_PREV];
+    if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_PREV ||
+        ed.capture != 1 || ed.capture_kbd != 1 || g_key_n != 0) {
+        log_error("cfgedit", "a click on the keyboard column opened a device");
+        stop_capture(&ed);
+        return -1;
+    }
+    stop_capture(&ed);
+
+    ed.focus = FE_KEY_REVERB;
+    ed.col = 0;
+    ed.capture = 0;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_ENTER;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 1 || ed.capture_kbd != 1 ||
+        g_key_n != 0) {
+        log_error("cfgedit", "the keyboard column opened a device capture");
+        stop_capture(&ed);
+        return -1;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_CHAR;
+    ev.text[0] = 'z';
+    ev.text[1] = '\0';
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 ||
+        strcmp(ed.edit.kbd_reverb, "z") != 0 ||
+        strcmp(ed.edit.key_pause, "KEY_KP0") != 0) {
+        log_error("cfgedit", "a keyboard key was not stored");
+        return -1;
+    }
+
+    ed.capture = 1;
+    ed.capture_kbd = 1;
+    ed.capture_id = FE_KEY_SKIP;
+    ed.capture_btn = CAP_DELETE;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_ENTER;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 ||
+        strcmp(ed.edit.kbd_skip, "Enter") != 0 || ed.edit.key_skip[0] != '\0') {
+        log_error("cfgedit", "Enter during keyboard capture did not bind Enter");
+        return -1;
+    }
+    ed.capture = 1;
+    ed.capture_kbd = 1;
+    ed.capture_id = FE_KEY_PHASER;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_LEFT;
+    if (handle_event(&ed, &ev) != 0 || strcmp(ed.edit.kbd_phaser, "Left") != 0 ||
+        ed.capture != 0) {
+        log_error("cfgedit", "Left during keyboard capture did not bind Left");
+        return -1;
+    }
+    snprintf(ed.edit.kbd_autopan, sizeof ed.edit.kbd_autopan, "q");
+    ed.capture = 1;
+    ed.capture_kbd = 1;
+    ed.capture_id = FE_KEY_AUTOPAN;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_ESC;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 ||
+        strcmp(ed.edit.kbd_autopan, "q") != 0) {
+        log_error("cfgedit", "Esc cleared a keyboard binding");
+        return -1;
+    }
+    ed.capture = 1;
+    ed.capture_kbd = 1;
+    ed.capture_id = FE_KEY_AUTOPAN;
+    ed.ui.del_on = 1;
+    ed.ui.del_r = 4;
+    ed.ui.del_c = 3;
+    ed.ui.del_w = 10;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_MOUSE;
+    ev.x = 3;
+    ev.y = 4;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 || ed.edit.kbd_autopan[0] != '\0') {
+        log_error("cfgedit", "clicking Delete did not clear the keyboard binding");
+        return -1;
+    }
+    ed.capture = 1;
+    ed.capture_kbd = 1;
+    ed.capture_id = FE_KEY_CHORUS;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_CHAR;
+    ev.text[0] = 'p';
+    ev.text[1] = '\0';
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 || ed.dialog != 1 ||
+        ed.edit.kbd_chorus[0] != '\0' || strcmp(ed.edit.kbd_pause, "p") != 0) {
+        log_error("cfgedit", "a duplicate keyboard key was stored");
+        return -1;
+    }
+    if (g_key_n != 0) {
+        log_error("cfgedit", "keyboard capture left a device open");
+        release_keys();
+        return -1;
+    }
+    return 0;
+}
+
 int cfgedit_self_test(void)
 {
     ConfigEdit edit;
@@ -3525,6 +4193,9 @@ int cfgedit_self_test(void)
         return -1;
     }
     if (screen_self_test() != 0) {
+        return -1;
+    }
+    if (keyboard_column_self_test() != 0) {
         return -1;
     }
     memset(&edit, 0, sizeof edit);
@@ -3558,6 +4229,21 @@ int cfgedit_self_test(void)
     if (key_conflict(&edit, FE_KEY_REW10, "KEY_KP1", &who) != 1 ||
         !who || strcmp(who, "Rewind 0.5s") != 0) {
         log_error("cfgedit", "duplicate rewind key was not reported");
+        return -1;
+    }
+    snprintf(edit.kbd_pause, sizeof edit.kbd_pause, "p");
+    snprintf(edit.kbd_skip, sizeof edit.kbd_skip, "Space");
+    if (kbd_conflict(&edit, FE_KEY_REVERB, "p", &who) != 1 ||
+        !who || strcmp(who, "Pause/resume keyboard") != 0) {
+        log_error("cfgedit", "duplicate keyboard key was not reported");
+        return -1;
+    }
+    if (kbd_conflict(&edit, FE_KEY_REVERB, "P", &who) != 0) {
+        log_error("cfgedit", "keyboard P matched p");
+        return -1;
+    }
+    if (key_conflict(&edit, FE_KEY_REVERB, "p", &who) != 0) {
+        log_error("cfgedit", "a keyboard key conflicted with a keypad key");
         return -1;
     }
     return 0;

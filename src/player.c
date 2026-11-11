@@ -1347,10 +1347,10 @@ void player_fx_all_off(void)
     log_info("keys", "effects off");
 }
 
-void player_volume_step(int direction)
+void player_volume_step(int direction, int percent)
 {
     int volume = atomic_load(&g_volume);
-    int next = volume + direction * 10;
+    int next = volume + direction * percent * 10;
 
     if (next < 0) {
         next = 0;

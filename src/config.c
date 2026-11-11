@@ -174,9 +174,148 @@ static void apply_jog(Config *cfg, const char *key, const char *val)
     }
 }
 
-/* The file named this action and left the value empty. A missing previous
- * or rewind line still receives a keypad default. An empty one must not. */
+/* The file named this action and left the value empty. A missing keypad
+ * line stays unbound. An empty one must not become a key. */
 enum { KEY_EXPLICIT_UNBOUND = -2 };
+
+static int keys_id(const char *key);
+
+static int strip_kbd(const char *action, char *base, size_t n)
+{
+    size_t len;
+    size_t i;
+
+    if (!action) {
+        return 0;
+    }
+    len = strlen(action);
+    if (len < 5 || len - 4 >= n) {
+        return 0;
+    }
+    if (tolower((unsigned char)action[len - 4]) != '_' ||
+        tolower((unsigned char)action[len - 3]) != 'k' ||
+        tolower((unsigned char)action[len - 2]) != 'b' ||
+        tolower((unsigned char)action[len - 1]) != 'd') {
+        return 0;
+    }
+    for (i = 0; i < len - 4; i++) {
+        base[i] = action[i];
+    }
+    base[len - 4] = '\0';
+    return 1;
+}
+
+static char *kbd_cfg(Config *cfg, int id)
+{
+    switch (id) {
+    case KEYID_PAUSE:
+        return cfg->kbd_pause;
+    case KEYID_SKIP:
+        return cfg->kbd_skip;
+    case KEYID_PREV:
+        return cfg->kbd_prev;
+    case KEYID_REW05:
+        return cfg->kbd_rew05;
+    case KEYID_REW10:
+        return cfg->kbd_rew10;
+    case KEYID_REW15:
+        return cfg->kbd_rew15;
+    case KEYID_DIAL_FWD:
+        return cfg->kbd_dial_fwd;
+    case KEYID_DIAL_BACK:
+        return cfg->kbd_dial_back;
+    case KEYID_DIAL_MODE:
+        return cfg->kbd_dial_mode;
+    case KEYID_REVERB:
+        return cfg->kbd_reverb;
+    case KEYID_PITCH:
+        return cfg->kbd_pitch;
+    case KEYID_AUTOPAN:
+        return cfg->kbd_autopan;
+    case KEYID_PHASER:
+        return cfg->kbd_phaser;
+    case KEYID_CHORUS:
+        return cfg->kbd_chorus;
+    case KEYID_FLANGER:
+        return cfg->kbd_flanger;
+    case KEYID_EFFECTS_OFF:
+        return cfg->kbd_effects_off;
+    default:
+        return NULL;
+    }
+}
+
+static char *kbd_edit(ConfigEdit *edit, int id)
+{
+    switch (id) {
+    case KEYID_PAUSE:
+        return edit->kbd_pause;
+    case KEYID_SKIP:
+        return edit->kbd_skip;
+    case KEYID_PREV:
+        return edit->kbd_prev;
+    case KEYID_REW05:
+        return edit->kbd_rew05;
+    case KEYID_REW10:
+        return edit->kbd_rew10;
+    case KEYID_REW15:
+        return edit->kbd_rew15;
+    case KEYID_DIAL_FWD:
+        return edit->kbd_dial_fwd;
+    case KEYID_DIAL_BACK:
+        return edit->kbd_dial_back;
+    case KEYID_DIAL_MODE:
+        return edit->kbd_dial_mode;
+    case KEYID_REVERB:
+        return edit->kbd_reverb;
+    case KEYID_PITCH:
+        return edit->kbd_pitch;
+    case KEYID_AUTOPAN:
+        return edit->kbd_autopan;
+    case KEYID_PHASER:
+        return edit->kbd_phaser;
+    case KEYID_CHORUS:
+        return edit->kbd_chorus;
+    case KEYID_FLANGER:
+        return edit->kbd_flanger;
+    case KEYID_EFFECTS_OFF:
+        return edit->kbd_effects_off;
+    default:
+        return NULL;
+    }
+}
+
+/* Used when the file does not name that keyboard action. */
+static const char *kbd_default(int id)
+{
+    static const char *vals[KEYID_COUNT] = {
+        "Space", "Right", "Left", "1", "2", "3",
+        "Up", "Down", "Enter", "q", "w", "e", "r", "t", "y", "Tab"
+    };
+
+    if (id < 0 || id >= KEYID_COUNT) {
+        return "";
+    }
+    return vals[id];
+}
+
+static void copy_kbd(char *dest, size_t n, const char *val)
+{
+    char canon[AUTODJ_KBD_LEN];
+
+    if (!dest || n == 0) {
+        return;
+    }
+    if (!val || !val[0]) {
+        dest[0] = '\0';
+        return;
+    }
+    if (keys_kbd_canon(val, canon, sizeof canon) == 0) {
+        snprintf(dest, n, "%s", canon);
+        return;
+    }
+    snprintf(dest, n, "%s", val);
+}
 
 static void set_key(Config *cfg, const char *action, const char *keyname)
 {
@@ -189,6 +328,31 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         eq_ci(action, "volume_dn") || eq_ci(action, "volume_down")) {
         /* The dial sets the volume. Old volume keys are left unused. */
         return;
+    }
+    {
+        char base[64];
+        int id;
+
+        if (strip_kbd(action, base, sizeof base) && (id = keys_id(base)) >= 0) {
+            char *slot = kbd_cfg(cfg, id);
+            char canon[AUTODJ_KBD_LEN];
+
+            if (!slot) {
+                return;
+            }
+            /* A line that is present, even a blank or unknown one, blocks the default. */
+            cfg->kbd_line |= 1u << id;
+            if (!keyname[0]) {
+                slot[0] = '\0';
+                return;
+            }
+            if (keys_kbd_canon(keyname, canon, sizeof canon) != 0) {
+                log_warn("autodj", "unknown keyboard key %s for %s", keyname, action);
+                return;
+            }
+            snprintf(slot, AUTODJ_KBD_LEN, "%s", canon);
+            return;
+        }
     }
     if (eq_ci(action, "pitch_shift") && cfg->key_pitch >= 0) {
         /* A chipmunk line wins over the old pitch_shift name. */
@@ -276,34 +440,26 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     snprintf(name, name_n, "%s", keyname);
 }
 
-static int key_code_used(const Config *cfg, int code)
+/* A keyboard action the file does not mention takes the built-in key.
+ * A blank or unknown line stays unbound. */
+static void bind_kbd_defaults(Config *cfg)
 {
-    if (code < 0) {
-        return 0;
-    }
-    return cfg->key_pause == code || cfg->key_skip == code || cfg->key_prev == code ||
-           cfg->key_rew05 == code || cfg->key_rew10 == code || cfg->key_rew15 == code ||
-           cfg->key_dial_fwd == code || cfg->key_dial_back == code ||
-           cfg->key_dial_mode == code || cfg->key_reverb == code ||
-           cfg->key_pitch == code || cfg->key_autopan == code ||
-           cfg->key_phaser == code || cfg->key_chorus == code ||
-           cfg->key_flanger == code || cfg->key_effects_off == code;
-}
+    static const char *names[KEYID_COUNT] = {
+        "pause_resume_kbd", "skip_kbd", "previous_kbd", "rewind_0_5_kbd",
+        "rewind_1_kbd", "rewind_1_5_kbd", "dial_forward_kbd", "dial_back_kbd",
+        "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
+        "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd"
+    };
+    int id;
 
-/* A missing previous or rewind binding takes the keypad default, unless
- * that key is already used by another action. An empty value in the file
- * stays unbound. */
-static void bind_default(Config *cfg, int *slot, const char *action, const char *keyname)
-{
-    int code = -1;
+    for (id = 0; id < KEYID_COUNT; id++) {
+        char *slot = kbd_cfg(cfg, id);
 
-    if (!slot || *slot != -1) {
-        return;
+        if (!slot || slot[0] || (cfg->kbd_line & (1u << id))) {
+            continue;
+        }
+        set_key(cfg, names[id], kbd_default(id));
     }
-    if (key_from_name(keyname, &code) != 0 || key_code_used(cfg, code)) {
-        return;
-    }
-    set_key(cfg, action, keyname);
 }
 
 static int fx_section(const char *section)
@@ -696,10 +852,7 @@ int config_load(const char *path, Config *cfg)
         log_error("autodj", "config %s has no Folder", path);
         return -1;
     }
-    bind_default(cfg, &cfg->key_prev, "previous", "KEY_KPSLASH");
-    bind_default(cfg, &cfg->key_rew05, "rewind_0_5", "KEY_KP1");
-    bind_default(cfg, &cfg->key_rew10, "rewind_1", "KEY_KP2");
-    bind_default(cfg, &cfg->key_rew15, "rewind_1_5", "KEY_KP3");
+    bind_kbd_defaults(cfg);
     /* Editors and the player treat "no key" as -1. -2 only means the file
      * asked for that, so the defaults above leave it alone. */
     {
@@ -1055,10 +1208,17 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->loudness, sizeof edit->loudness, "true");
     snprintf(edit->loudness_lufs, sizeof edit->loudness_lufs, "-18");
     snprintf(edit->dial_default, sizeof edit->dial_default, "volume");
-    snprintf(edit->key_prev, sizeof edit->key_prev, "KEY_KPSLASH");
-    snprintf(edit->key_rew05, sizeof edit->key_rew05, "KEY_KP1");
-    snprintf(edit->key_rew10, sizeof edit->key_rew10, "KEY_KP2");
-    snprintf(edit->key_rew15, sizeof edit->key_rew15, "KEY_KP3");
+    {
+        int id;
+
+        for (id = 0; id < KEYID_COUNT; id++) {
+            char *slot = kbd_edit(edit, id);
+
+            if (slot) {
+                snprintf(slot, AUTODJ_KBD_LEN, "%s", kbd_default(id));
+            }
+        }
+    }
     snprintf(edit->rv_decay, sizeof edit->rv_decay, "0.5");
     snprintf(edit->rv_bw, sizeof edit->rv_bw, "1");
     snprintf(edit->rv_damp, sizeof edit->rv_damp, "0");
@@ -1121,6 +1281,17 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
         return;
     }
     if (eq_ci(section, "Keys")) {
+        char base[64];
+        int id;
+
+        if (strip_kbd(key, base, sizeof base) && (id = keys_id(base)) >= 0) {
+            char *slot = kbd_edit(edit, id);
+
+            if (slot) {
+                copy_kbd(slot, AUTODJ_KBD_LEN, val);
+            }
+            return;
+        }
         if (eq_ci(key, "pause_resume")) {
             copy_raw(edit->key_pause, sizeof edit->key_pause, val);
         } else if (eq_ci(key, "skip")) {
@@ -1234,50 +1405,6 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
     }
 }
 
-/* Drop a keypad default when the file already gave that key to another action. */
-static void release_taken_default(ConfigEdit *edit, char *field, const char *defname)
-{
-    char *fields[16];
-    int i;
-    int hits = 0;
-
-    if (strcmp(field, defname) != 0) {
-        return;
-    }
-    fields[0] = edit->key_pause;
-    fields[1] = edit->key_skip;
-    fields[2] = edit->key_prev;
-    fields[3] = edit->key_rew05;
-    fields[4] = edit->key_rew10;
-    fields[5] = edit->key_rew15;
-    fields[6] = edit->key_dial_fwd;
-    fields[7] = edit->key_dial_back;
-    fields[8] = edit->key_dial_mode;
-    fields[9] = edit->key_reverb;
-    fields[10] = edit->key_pitch;
-    fields[11] = edit->key_autopan;
-    fields[12] = edit->key_phaser;
-    fields[13] = edit->key_chorus;
-    fields[14] = edit->key_flanger;
-    fields[15] = edit->key_effects_off;
-    for (i = 0; i < 16; i++) {
-        if (strcmp(fields[i], defname) == 0) {
-            hits++;
-        }
-    }
-    if (hits > 1) {
-        field[0] = '\0';
-    }
-}
-
-static void release_key_defaults(ConfigEdit *edit)
-{
-    release_taken_default(edit, edit->key_prev, "KEY_KPSLASH");
-    release_taken_default(edit, edit->key_rew05, "KEY_KP1");
-    release_taken_default(edit, edit->key_rew10, "KEY_KP2");
-    release_taken_default(edit, edit->key_rew15, "KEY_KP3");
-}
-
 int config_load_edit(const char *path, ConfigEdit *edit)
 {
     FILE *fp;
@@ -1291,7 +1418,6 @@ int config_load_edit(const char *path, ConfigEdit *edit)
     fp = fopen(path, "r");
     if (!fp) {
         if (errno == ENOENT) {
-            release_key_defaults(edit);
             return 0;
         }
         log_error("autodj", "cannot open config %s: %s", path, strerror(errno));
@@ -1337,7 +1463,6 @@ int config_load_edit(const char *path, ConfigEdit *edit)
         return -1;
     }
     fclose(fp);
-    release_key_defaults(edit);
     return 0;
 }
 
@@ -1426,6 +1551,27 @@ static int take_bool(char *err, size_t err_n, const char *text, const char *what
     return 0;
 }
 
+static int take_kbd(char *err, size_t err_n, const char *text, const char *what,
+                    char *dest, size_t dest_n)
+{
+    char canon[AUTODJ_KBD_LEN];
+    char msg[192];
+
+    if (!text[0]) {
+        dest[0] = '\0';
+        return 0;
+    }
+    if (keys_kbd_canon(text, canon, sizeof canon) != 0) {
+        snprintf(msg, sizeof msg,
+                 "%s keyboard key \"%s\" is not a character or a key name.",
+                 what, text);
+        add_err(err, err_n, msg);
+        return -1;
+    }
+    snprintf(dest, dest_n, "%s", canon);
+    return 0;
+}
+
 static int take_key(char *err, size_t err_n, const char *text, const char *what,
                     int *code, char *name, size_t name_n)
 {
@@ -1453,6 +1599,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     const char *keys[KEYID_COUNT];
     const char *labels[KEYID_COUNT];
     int key_ok[KEYID_COUNT];
+    int kbd_ok[KEYID_COUNT];
     int i;
     int j;
     int failed = 0;
@@ -1490,6 +1637,13 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_chorus);
     trim(in.key_flanger);
     trim(in.key_effects_off);
+    for (i = 0; i < KEYID_COUNT; i++) {
+        char *kbd = kbd_edit(&in, i);
+
+        if (kbd) {
+            trim(kbd);
+        }
+    }
     trim(in.rv_decay);
     trim(in.rv_bw);
     trim(in.rv_damp);
@@ -1671,6 +1825,38 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_CHORUS] = "chorus";
     labels[KEYID_FLANGER] = "flanger";
     labels[KEYID_EFFECTS_OFF] = "all effects off";
+    kbd_ok[KEYID_PAUSE] = take_kbd(err, err_n, in.kbd_pause, "Pause/resume",
+                                   out.kbd_pause, sizeof out.kbd_pause) == 0;
+    kbd_ok[KEYID_SKIP] = take_kbd(err, err_n, in.kbd_skip, "Skip",
+                                  out.kbd_skip, sizeof out.kbd_skip) == 0;
+    kbd_ok[KEYID_PREV] = take_kbd(err, err_n, in.kbd_prev, "Previous",
+                                  out.kbd_prev, sizeof out.kbd_prev) == 0;
+    kbd_ok[KEYID_REW05] = take_kbd(err, err_n, in.kbd_rew05, "Rewind 0.5s",
+                                   out.kbd_rew05, sizeof out.kbd_rew05) == 0;
+    kbd_ok[KEYID_REW10] = take_kbd(err, err_n, in.kbd_rew10, "Rewind 1s",
+                                   out.kbd_rew10, sizeof out.kbd_rew10) == 0;
+    kbd_ok[KEYID_REW15] = take_kbd(err, err_n, in.kbd_rew15, "Rewind 1.5s",
+                                   out.kbd_rew15, sizeof out.kbd_rew15) == 0;
+    kbd_ok[KEYID_DIAL_FWD] = take_kbd(err, err_n, in.kbd_dial_fwd, "Dial forward",
+                                      out.kbd_dial_fwd, sizeof out.kbd_dial_fwd) == 0;
+    kbd_ok[KEYID_DIAL_BACK] = take_kbd(err, err_n, in.kbd_dial_back, "Dial back",
+                                       out.kbd_dial_back, sizeof out.kbd_dial_back) == 0;
+    kbd_ok[KEYID_DIAL_MODE] = take_kbd(err, err_n, in.kbd_dial_mode, "Dial mode",
+                                       out.kbd_dial_mode, sizeof out.kbd_dial_mode) == 0;
+    kbd_ok[KEYID_REVERB] = take_kbd(err, err_n, in.kbd_reverb, "Reverb",
+                                    out.kbd_reverb, sizeof out.kbd_reverb) == 0;
+    kbd_ok[KEYID_PITCH] = take_kbd(err, err_n, in.kbd_pitch, "Chipmunk",
+                                   out.kbd_pitch, sizeof out.kbd_pitch) == 0;
+    kbd_ok[KEYID_AUTOPAN] = take_kbd(err, err_n, in.kbd_autopan, "Autopan",
+                                     out.kbd_autopan, sizeof out.kbd_autopan) == 0;
+    kbd_ok[KEYID_PHASER] = take_kbd(err, err_n, in.kbd_phaser, "Phaser",
+                                    out.kbd_phaser, sizeof out.kbd_phaser) == 0;
+    kbd_ok[KEYID_CHORUS] = take_kbd(err, err_n, in.kbd_chorus, "Chorus",
+                                    out.kbd_chorus, sizeof out.kbd_chorus) == 0;
+    kbd_ok[KEYID_FLANGER] = take_kbd(err, err_n, in.kbd_flanger, "Flanger",
+                                     out.kbd_flanger, sizeof out.kbd_flanger) == 0;
+    kbd_ok[KEYID_EFFECTS_OFF] = take_kbd(err, err_n, in.kbd_effects_off, "All effects off",
+                                         out.kbd_effects_off, sizeof out.kbd_effects_off) == 0;
     if (in.rv_decay[0] && take_real(err, err_n, in.rv_decay, 0, 1, "Decay", &out.fx.rv_decay) != 0) {
         failed = 1;
     }
@@ -1816,6 +2002,26 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
             failed = 1;
         }
     }
+    for (i = 0; i < KEYID_COUNT; i++) {
+        if (!kbd_ok[i]) {
+            failed = 1;
+        }
+    }
+    for (i = 0; i < KEYID_COUNT; i++) {
+        for (j = i + 1; j < KEYID_COUNT; j++) {
+            char msg[192];
+            const char *a = kbd_cfg(&out, i);
+            const char *b = kbd_cfg(&out, j);
+
+            if (!kbd_ok[i] || !kbd_ok[j] || !a || !b || !a[0] || strcmp(a, b) != 0) {
+                continue;
+            }
+            snprintf(msg, sizeof msg, "%s is used for %s keyboard and %s keyboard.",
+                     a, labels[i], labels[j]);
+            add_err(err, err_n, msg);
+            failed = 1;
+        }
+    }
     if (failed) {
         return -1;
     }
@@ -1941,6 +2147,16 @@ static int keys_id(const char *key)
         return KEYID_EFFECTS_OFF;
     }
     return -1;
+}
+
+static int kbd_id(const char *key)
+{
+    char base[64];
+
+    if (!strip_kbd(key, base, sizeof base)) {
+        return -1;
+    }
+    return keys_id(base);
 }
 
 static const char *g_jog_names[] = {
@@ -2232,6 +2448,13 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
     snprintf(dest, n, "%s", s ? s : "");
 }
 
+static void kbd_value(const Config *cfg, int id, char *dest, size_t n)
+{
+    const char *s = kbd_cfg((Config *)cfg, id);
+
+    snprintf(dest, n, "%s", s ? s : "");
+}
+
 static int ensure_nl(struct CfgLine *line)
 {
     size_t n;
@@ -2431,6 +2654,12 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
         "effects_off"
     };
+    static const char *kbd_names[] = {
+        "pause_resume_kbd", "skip_kbd", "previous_kbd", "rewind_0_5_kbd",
+        "rewind_1_kbd", "rewind_1_5_kbd", "dial_forward_kbd", "dial_back_kbd",
+        "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
+        "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd"
+    };
     FILE *in = NULL;
     FILE *out = NULL;
     struct CfgLine *head = NULL;
@@ -2458,6 +2687,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     int jog_seen[JOG_COUNT] = {0};
     int main_seen[10] = {0};
     int keys_seen[KEYID_COUNT] = {0};
+    int kbd_seen[KEYID_COUNT] = {0};
     int fx_seen[6][7] = {{0}};
     int id;
     int rc = -1;
@@ -2576,8 +2806,10 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             }
         }
         if (!jog && (in_main || in_keys) && line_setting_key(line->text, key, sizeof key)) {
+            int bid = -1;
             int is_main = in_main && (id = main_id(key)) >= 0;
             int is_key = in_keys && (id = keys_id(key)) >= 0;
+            int is_kbd = in_keys && (bid = kbd_id(key)) >= 0;
 
             /* The old names are written again under the new ones. */
             if (in_keys && (eq_ci(key, "jog_forward") || eq_ci(key, "jog_back") ||
@@ -2596,9 +2828,14 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             } else if (is_key) {
                 keys_seen[id] = 1;
                 key_value(cfg, id, value, sizeof value);
-                /* An empty value stays in the file. Deleting the line would
-                 * look like "never set", and previous/rewind would gain a
-                 * keypad default on the next start. */
+                /* An empty value stays on a line that is already there. */
+                if (rewrite_value(line, value) != 0) {
+                    set_err(err, err_n, "out of memory updating %s", path);
+                    goto done;
+                }
+            } else if (is_kbd) {
+                kbd_seen[bid] = 1;
+                kbd_value(cfg, bid, value, sizeof value);
                 if (rewrite_value(line, value) != 0) {
                     set_err(err, err_n, "out of memory updating %s", path);
                     goto done;
@@ -2632,11 +2869,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     }
 
     for (id = 0; id < KEYID_COUNT && !jog; id++) {
-        int keep_blank = id == KEYID_PREV || id == KEYID_REW05 ||
-                         id == KEYID_REW10 || id == KEYID_REW15;
-
         key_value(cfg, id, value, sizeof value);
-        if (!keys_seen[id] && (value[0] || keep_blank)) {
+        if (!keys_seen[id] && value[0]) {
             break;
         }
     }
@@ -2647,17 +2881,45 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         }
         for (id = 0; id < KEYID_COUNT; id++) {
             char text[160];
-            int keep_blank = id == KEYID_PREV || id == KEYID_REW05 ||
-                             id == KEYID_REW10 || id == KEYID_REW15;
 
             if (keys_seen[id]) {
                 continue;
             }
             key_value(cfg, id, value, sizeof value);
-            if (!value[0] && !keep_blank) {
+            if (!value[0]) {
                 continue;
             }
             if (snprintf(text, sizeof text, "%s=%s\n", key_names[id], value) >= (int)sizeof text) {
+                set_err(err, err_n, "a config value is too long");
+                goto done;
+            }
+            keys_last = insert_after(&head, keys_last, text);
+            if (!keys_last) {
+                set_err(err, err_n, "out of memory updating %s", path);
+                goto done;
+            }
+        }
+    }
+
+    for (id = 0; id < KEYID_COUNT && !jog; id++) {
+        if (!kbd_seen[id]) {
+            break;
+        }
+    }
+    if (!jog && id < KEYID_COUNT) {
+        if (ensure_section(&head, "Keys", &keys_header, &keys_last) != 0) {
+            set_err(err, err_n, "out of memory updating %s", path);
+            goto done;
+        }
+        for (id = 0; id < KEYID_COUNT; id++) {
+            char text[160];
+
+            if (kbd_seen[id]) {
+                continue;
+            }
+            kbd_value(cfg, id, value, sizeof value);
+            /* A blank line stays in the file so the default does not return. */
+            if (snprintf(text, sizeof text, "%s=%s\n", kbd_names[id], value) >= (int)sizeof text) {
                 set_err(err, err_n, "a config value is too long");
                 goto done;
             }
@@ -2869,11 +3131,23 @@ static int edit_self_test(void)
         "custom=KEY_A\n"
         "phaser=KEY_B\n"
         "pause_resume=KEY_KP0\n"
-        "previous=\n"
-        "rewind_0_5=\n"
-        "rewind_1=\n"
-        "rewind_1_5=\n"
         "chipmunk=KEY_C\n"
+        "pause_resume_kbd=\n"
+        "skip_kbd=\n"
+        "previous_kbd=\n"
+        "rewind_0_5_kbd=\n"
+        "rewind_1_kbd=\n"
+        "rewind_1_5_kbd=\n"
+        "dial_forward_kbd=\n"
+        "dial_back_kbd=\n"
+        "dial_mode_kbd=\n"
+        "reverb_kbd=\n"
+        "chipmunk_kbd=\n"
+        "autopan_kbd=\n"
+        "phaser_kbd=\n"
+        "chorus_kbd=\n"
+        "flanger_kbd=\n"
+        "effects_off_kbd=\n"
         "[Reverb]\n"
         "decay=0.5\n"
         "bw=1\n"
@@ -2971,7 +3245,6 @@ static int edit_self_test(void)
                     strstr(got, "volume_down=") != NULL ||
                     strstr(got, "skip=\n") == NULL ||
                     strstr(got, "skip=KEY_KPDOT") != NULL ||
-                    strstr(got, "rewind_1_5=\n") == NULL ||
                     strstr(got, "pause_resume=KEY_KP0\n") == NULL ||
                     strstr(got, "phaser=KEY_B\n") == NULL ||
                     strstr(got, "autopan=") != NULL ||
@@ -3001,10 +3274,10 @@ static int edit_self_test(void)
                     edit.folder[0] != '\0' || strcmp(edit.overlap, "10") != 0 ||
                     strcmp(edit.loudness_lufs, "-18") != 0 || edit.key_skip[0] != '\0' ||
                     edit.key_pause[0] != '\0' ||
-                    strcmp(edit.key_prev, "KEY_KPSLASH") != 0 ||
-                    strcmp(edit.key_rew05, "KEY_KP1") != 0 ||
-                    strcmp(edit.key_rew10, "KEY_KP2") != 0 ||
-                    strcmp(edit.key_rew15, "KEY_KP3") != 0 ||
+                    edit.key_prev[0] != '\0' ||
+                    edit.key_rew05[0] != '\0' ||
+                    edit.key_rew10[0] != '\0' ||
+                    edit.key_rew15[0] != '\0' ||
                     strcmp(edit.rv_decay, "0.5") != 0 ||
                     strcmp(edit.ps_semi, "true") != 0 ||
                     strcmp(edit.ap_period, "4") != 0 ||
@@ -3016,7 +3289,23 @@ static int edit_self_test(void)
                     edit.key_reverb[0] != '\0' ||
                     edit.key_chorus[0] != '\0' ||
                     edit.key_flanger[0] != '\0' ||
-                    edit.key_effects_off[0] != '\0')) {
+                    edit.key_effects_off[0] != '\0' ||
+                    strcmp(edit.kbd_pause, "Space") != 0 ||
+                    strcmp(edit.kbd_skip, "Right") != 0 ||
+                    strcmp(edit.kbd_prev, "Left") != 0 ||
+                    strcmp(edit.kbd_rew05, "1") != 0 ||
+                    strcmp(edit.kbd_rew10, "2") != 0 ||
+                    strcmp(edit.kbd_rew15, "3") != 0 ||
+                    strcmp(edit.kbd_dial_fwd, "Up") != 0 ||
+                    strcmp(edit.kbd_dial_back, "Down") != 0 ||
+                    strcmp(edit.kbd_dial_mode, "Enter") != 0 ||
+                    strcmp(edit.kbd_reverb, "q") != 0 ||
+                    strcmp(edit.kbd_pitch, "w") != 0 ||
+                    strcmp(edit.kbd_autopan, "e") != 0 ||
+                    strcmp(edit.kbd_phaser, "r") != 0 ||
+                    strcmp(edit.kbd_chorus, "t") != 0 ||
+                    strcmp(edit.kbd_flanger, "y") != 0 ||
+                    strcmp(edit.kbd_effects_off, "Tab") != 0)) {
         log_error("autodj", "config editor test rejected a missing file");
         rc = -1;
     }
@@ -3148,6 +3437,107 @@ static int edit_self_test(void)
     return rc;
 }
 
+static int kbd_config_self_test(void)
+{
+    char path[] = "/tmp/autodj-kbd-XXXXXX";
+    char err[512];
+    char got[4096];
+    Config cfg;
+    ConfigEdit edit;
+    int fd;
+    FILE *fp;
+
+    fd = mkstemp(path);
+    if (fd < 0) {
+        log_error("autodj", "keyboard config test could not create a temp file");
+        return -1;
+    }
+    fp = fdopen(fd, "w");
+    if (!fp) {
+        log_error("autodj", "keyboard config test could not write a temp file");
+        close(fd);
+        remove(path);
+        return -1;
+    }
+    fputs("[Main]\n"
+          "Folder=/tmp\n"
+          "[Keys]\n"
+          "pause_resume=KEY_KP0\n"
+          "reverb_kbd=R\n"
+          "skip_kbd=space\n"
+          "pause_resume_kbd=KEY_A\n"
+          "effects_off_kbd=\n",
+          fp);
+    fclose(fp);
+
+    if (config_load(path, &cfg) != 0 || cfg.key_pause != 82 ||
+        strcmp(cfg.kbd_reverb, "R") != 0 || strcmp(cfg.kbd_skip, "Space") != 0 ||
+        cfg.kbd_pause[0] != '\0' || cfg.kbd_effects_off[0] != '\0' ||
+        strcmp(cfg.kbd_prev, "Left") != 0 || strcmp(cfg.kbd_pitch, "w") != 0 ||
+        strcmp(cfg.kbd_chorus, "t") != 0) {
+        log_error("autodj", "keyboard config test did not load the bindings");
+        remove(path);
+        return -1;
+    }
+    if (config_load_edit(path, &edit) != 0 ||
+        strcmp(edit.kbd_reverb, "R") != 0 || strcmp(edit.kbd_skip, "Space") != 0 ||
+        strcmp(edit.kbd_pause, "KEY_A") != 0 || edit.kbd_effects_off[0] != '\0' ||
+        strcmp(edit.kbd_prev, "Left") != 0 || strcmp(edit.key_pause, "KEY_KP0") != 0) {
+        log_error("autodj", "keyboard config test did not load the editor text");
+        remove(path);
+        return -1;
+    }
+    if (config_validate_edit(&edit, &cfg, err, sizeof err) == 0 ||
+        strstr(err, "KEY_A") == NULL) {
+        log_error("autodj", "keyboard config test accepted KEY_A: %s", err);
+        remove(path);
+        return -1;
+    }
+    snprintf(edit.kbd_pause, sizeof edit.kbd_pause, "p");
+    snprintf(edit.kbd_skip, sizeof edit.kbd_skip, "p");
+    if (config_validate_edit(&edit, &cfg, err, sizeof err) == 0 ||
+        strstr(err, "p is used for pause/resume keyboard and skip keyboard.") == NULL) {
+        log_error("autodj", "keyboard config test missed a duplicate: %s", err);
+        remove(path);
+        return -1;
+    }
+    snprintf(edit.kbd_skip, sizeof edit.kbd_skip, "P");
+    if (config_validate_edit(&edit, &cfg, err, sizeof err) != 0 ||
+        strcmp(cfg.kbd_pause, "p") != 0 || strcmp(cfg.kbd_skip, "P") != 0 ||
+        strcmp(cfg.kbd_reverb, "R") != 0 || cfg.kbd_effects_off[0] != '\0' ||
+        cfg.key_pause != 82) {
+        log_error("autodj", "keyboard config test rejected p and P: %s", err);
+        remove(path);
+        return -1;
+    }
+    if (config_save(path, &cfg, err, sizeof err) != 0 ||
+        read_text(path, got, sizeof got) != 0 ||
+        strstr(got, "pause_resume=KEY_KP0\n") == NULL ||
+        strstr(got, "reverb_kbd=R\n") == NULL ||
+        strstr(got, "skip_kbd=P\n") == NULL ||
+        strstr(got, "pause_resume_kbd=p\n") == NULL ||
+        strstr(got, "effects_off_kbd=\n") == NULL ||
+        strstr(got, "previous_kbd=Left\n") == NULL ||
+        strstr(got, "chorus_kbd=t\n") == NULL) {
+        log_error("autodj", "keyboard config test saved unexpected lines\n%s", got);
+        remove(path);
+        return -1;
+    }
+    cfg.kbd_reverb[0] = '\0';
+    if (config_save(path, &cfg, err, sizeof err) != 0 ||
+        read_text(path, got, sizeof got) != 0 ||
+        strstr(got, "reverb_kbd=\n") == NULL ||
+        strstr(got, "reverb_kbd=R") != NULL ||
+        config_load(path, &cfg) != 0 || cfg.kbd_reverb[0] != '\0' ||
+        strcmp(cfg.kbd_pause, "p") != 0 || strcmp(cfg.kbd_skip, "P") != 0) {
+        log_error("autodj", "keyboard config test did not clear a binding\n%s", got);
+        remove(path);
+        return -1;
+    }
+    remove(path);
+    return 0;
+}
+
 int config_save(const char *path, const Config *cfg, char *err, size_t err_n)
 {
     return save_sections(path, cfg, 0, err, err_n);
@@ -3166,15 +3556,11 @@ int config_self_test(void)
     Config cfg;
     ConfigEdit edit;
     int slash = -1;
-    int kp1 = -1;
-    int kp2 = -1;
-    int kp3 = -1;
     int key_a = -1;
     int key_b = -1;
     int rc = 0;
 
-    if (key_from_name("KEY_KPSLASH", &slash) != 0 || key_from_name("KEY_KP1", &kp1) != 0 ||
-        key_from_name("KEY_KP2", &kp2) != 0 || key_from_name("KEY_KP3", &kp3) != 0 ||
+    if (key_from_name("KEY_KPSLASH", &slash) != 0 ||
         key_from_name("KEY_A", &key_a) != 0 || key_from_name("KEY_B", &key_b) != 0) {
         log_error("autodj", "config test could not resolve default key names");
         return -1;
@@ -3241,9 +3627,12 @@ int config_self_test(void)
                cfg.fx.fl_delay != 1 || cfg.fx.fl_depth != 0.5f || cfg.fx.fl_feedback != 0.5f ||
                cfg.key_chorus != -1 || cfg.key_flanger != -1 ||
                cfg.key_effects_off != -1 ||
+               strcmp(cfg.kbd_pause, "Space") != 0 || strcmp(cfg.kbd_skip, "Right") != 0 ||
+               strcmp(cfg.kbd_prev, "Left") != 0 || strcmp(cfg.kbd_rew05, "1") != 0 ||
+               strcmp(cfg.kbd_pitch, "w") != 0 || strcmp(cfg.kbd_effects_off, "Tab") != 0 ||
                cfg.fx.reverb_on != 0 || cfg.fx.pitch_on != 0 || cfg.fx.autopan_on != 0 ||
-               cfg.key_prev != slash || cfg.key_rew05 != kp1 ||
-               cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3) {
+               cfg.key_prev != -1 || cfg.key_rew05 != -1 ||
+               cfg.key_rew10 != -1 || cfg.key_rew15 != -1) {
         log_error("autodj", "config test parsed unexpected values");
         rc = -1;
     } else if (config_save_volume(path, 15) != 0 ||
@@ -3326,8 +3715,8 @@ int config_self_test(void)
               fp);
         fclose(fp);
         if (config_load(path3, &cfg) != 0 || cfg.key_skip != slash ||
-            cfg.key_prev != key_a || cfg.key_rew05 != kp1 ||
-            cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3) {
+            cfg.key_prev != key_a || cfg.key_rew05 != -1 ||
+            cfg.key_rew10 != -1 || cfg.key_rew15 != -1) {
             log_error("autodj", "config test did not keep an explicit previous key");
             rc = -1;
         }
@@ -3344,9 +3733,9 @@ int config_self_test(void)
               fp);
         fclose(fp);
         if (rc == 0 && (config_load(path3, &cfg) != 0 || cfg.key_skip != slash ||
-                        cfg.key_prev != -1 || cfg.key_rew05 != kp1 ||
-                        cfg.key_rew10 != kp2 || cfg.key_rew15 != kp3)) {
-            log_error("autodj", "config test applied a previous key that was already used");
+                        cfg.key_prev != -1 || cfg.key_rew05 != -1 ||
+                        cfg.key_rew10 != -1 || cfg.key_rew15 != -1)) {
+            log_error("autodj", "config test filled a missing keypad key");
             rc = -1;
         }
         fp = rc == 0 ? fopen(path3, "w") : NULL;
@@ -3361,16 +3750,16 @@ int config_self_test(void)
         }
         if (rc == 0 && (!fp || config_load(path3, &cfg) != 0 || cfg.key_prev != -1 ||
                         cfg.key_prev_name[0] != '\0' || cfg.key_rew15 != -1 ||
-                        cfg.key_rew15_name[0] != '\0' || cfg.key_rew05 != kp1 ||
-                        cfg.key_rew10 != kp2)) {
+                        cfg.key_rew15_name[0] != '\0' || cfg.key_rew05 != -1 ||
+                        cfg.key_rew10 != -1)) {
             log_error("autodj", "config test filled a key that was left blank");
             rc = -1;
         }
         if (rc == 0 && (config_load_edit(path3, &edit) != 0 ||
                         edit.key_prev[0] != '\0' || edit.key_rew15[0] != '\0' ||
-                        strcmp(edit.key_rew05, "KEY_KP1") != 0 ||
-                        strcmp(edit.key_rew10, "KEY_KP2") != 0)) {
-            log_error("autodj", "config editor filled a key that was left blank");
+                        edit.key_rew05[0] != '\0' || edit.key_rew10[0] != '\0' ||
+                        strcmp(edit.kbd_pause, "Space") != 0)) {
+            log_error("autodj", "config editor filled a keypad key that was left blank");
             rc = -1;
         }
         remove(path3);
@@ -3467,6 +3856,9 @@ int config_self_test(void)
             rc = -1;
         }
         remove(path5);
+    }
+    if (rc == 0 && kbd_config_self_test() != 0) {
+        rc = -1;
     }
     if (rc == 0 && edit_self_test() != 0) {
         rc = -1;

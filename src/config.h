@@ -6,6 +6,8 @@
 #include <stddef.h>
 
 #define AUTODJ_PATH 4096
+/* A terminal binding: one typed character, or a short name such as Enter. */
+#define AUTODJ_KBD_LEN 16
 
 typedef struct Config {
     char folder[AUTODJ_PATH];
@@ -51,6 +53,25 @@ typedef struct Config {
     char key_chorus_name[64];
     char key_flanger_name[64];
     char key_effects_off_name[64];
+    /* Terminal key for the same action. Empty means unbound. */
+    char kbd_pause[AUTODJ_KBD_LEN];
+    char kbd_skip[AUTODJ_KBD_LEN];
+    char kbd_prev[AUTODJ_KBD_LEN];
+    char kbd_rew05[AUTODJ_KBD_LEN];
+    char kbd_rew10[AUTODJ_KBD_LEN];
+    char kbd_rew15[AUTODJ_KBD_LEN];
+    char kbd_dial_fwd[AUTODJ_KBD_LEN];
+    char kbd_dial_back[AUTODJ_KBD_LEN];
+    char kbd_dial_mode[AUTODJ_KBD_LEN];
+    char kbd_reverb[AUTODJ_KBD_LEN];
+    char kbd_pitch[AUTODJ_KBD_LEN];
+    char kbd_autopan[AUTODJ_KBD_LEN];
+    char kbd_phaser[AUTODJ_KBD_LEN];
+    char kbd_chorus[AUTODJ_KBD_LEN];
+    char kbd_flanger[AUTODJ_KBD_LEN];
+    char kbd_effects_off[AUTODJ_KBD_LEN];
+    /* Bit i is set when the file named that keyboard action, even if blank. */
+    unsigned kbd_line;
     FxParams fx;
     /* [Jog] */
     double jog_turn_sec;   /* audio moved by one turn of the dial */
@@ -112,6 +133,22 @@ typedef struct ConfigEdit {
     char key_chorus[64];
     char key_flanger[64];
     char key_effects_off[64];
+    char kbd_pause[AUTODJ_KBD_LEN];
+    char kbd_skip[AUTODJ_KBD_LEN];
+    char kbd_prev[AUTODJ_KBD_LEN];
+    char kbd_rew05[AUTODJ_KBD_LEN];
+    char kbd_rew10[AUTODJ_KBD_LEN];
+    char kbd_rew15[AUTODJ_KBD_LEN];
+    char kbd_dial_fwd[AUTODJ_KBD_LEN];
+    char kbd_dial_back[AUTODJ_KBD_LEN];
+    char kbd_dial_mode[AUTODJ_KBD_LEN];
+    char kbd_reverb[AUTODJ_KBD_LEN];
+    char kbd_pitch[AUTODJ_KBD_LEN];
+    char kbd_autopan[AUTODJ_KBD_LEN];
+    char kbd_phaser[AUTODJ_KBD_LEN];
+    char kbd_chorus[AUTODJ_KBD_LEN];
+    char kbd_flanger[AUTODJ_KBD_LEN];
+    char kbd_effects_off[AUTODJ_KBD_LEN];
     char rv_decay[32];
     char rv_bw[32];
     char rv_damp[32];

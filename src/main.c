@@ -79,6 +79,43 @@ static int run_checks(const Config *cfg, Playlist *pl)
     return 0;
 }
 
+static void log_keyboard_bindings(const Config *cfg)
+{
+    static const char *labels[] = {
+        "pause/resume", "skip", "previous", "rewind 0.5s", "rewind 1s",
+        "rewind 1.5s", "dial forward", "dial back", "dial mode",
+        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
+        "effects off"
+    };
+    const char *vals[] = {
+        cfg->kbd_pause, cfg->kbd_skip, cfg->kbd_prev, cfg->kbd_rew05,
+        cfg->kbd_rew10, cfg->kbd_rew15, cfg->kbd_dial_fwd, cfg->kbd_dial_back,
+        cfg->kbd_dial_mode, cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan,
+        cfg->kbd_phaser, cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off
+    };
+    char buf[512];
+    size_t used = 0;
+    int i;
+
+    buf[0] = '\0';
+    for (i = 0; i < (int)(sizeof vals / sizeof vals[0]); i++) {
+        int n;
+
+        if (!vals[i] || !vals[i][0]) {
+            continue;
+        }
+        n = snprintf(buf + used, sizeof buf - used, "%s%s %s",
+                     used ? ", " : "", labels[i], vals[i]);
+        if (n < 0 || (size_t)n >= sizeof buf - used) {
+            break;
+        }
+        used += (size_t)n;
+    }
+    if (used) {
+        log_info("autodj", "keyboard %s", buf);
+    }
+}
+
 static void remember_volume(const char *path, Config *cfg)
 {
     int volume = player_volume_percent();
@@ -197,6 +234,7 @@ int main(int argc, char **argv)
              cfg.key_dial_fwd_name[0] ? cfg.key_dial_fwd_name : "(none)",
              cfg.key_dial_back_name[0] ? cfg.key_dial_back_name : "(none)",
              cfg.key_dial_mode_name[0] ? cfg.key_dial_mode_name : "(none)");
+    log_keyboard_bindings(&cfg);
     log_info("autodj", "jog %gs per turn, %d clicks per turn, max speed %gx, spin-up %gs, grab %gs, smoothing %gs",
              cfg.jog_turn_sec, cfg.jog_clicks, cfg.jog_max_speed, cfg.jog_spinup_sec,
              cfg.jog_grab_sec, cfg.jog_smooth_sec);
@@ -249,7 +287,9 @@ int main(int argc, char **argv)
     settings.loudness = cfg.loudness;
     settings.loudness_lufs = cfg.loudness_lufs;
     settings.rate = rate;
+    keys_kbd_open();
     if (player_start(&settings, pl) != 0) {
+        keys_kbd_close();
         keys_close();
         audio_close();
         decode_shutdown();
@@ -258,9 +298,11 @@ int main(int argc, char **argv)
     }
 
     while (!g_sig && player_alive()) {
-        struct pollfd pfd[8];
+        struct pollfd pfd[9];
         int fds[8];
         int nfds;
+        int extra = 0;
+        int kfd;
         int i;
         int pr;
 
@@ -270,18 +312,27 @@ int main(int argc, char **argv)
             pfd[i].events = POLLIN;
             pfd[i].revents = 0;
         }
-        pr = poll(nfds ? pfd : NULL, (nfds_t)nfds, keys_wait_ms(200));
+        kfd = keys_kbd_fd();
+        if (kfd >= 0) {
+            pfd[nfds].fd = kfd;
+            pfd[nfds].events = POLLIN;
+            pfd[nfds].revents = 0;
+            extra = 1;
+        }
+        pr = poll(nfds + extra ? pfd : NULL, (nfds_t)(nfds + extra), keys_wait_ms(200));
         if (pr < 0 && errno == EINTR) {
             continue;
         }
         /* Also on timeout, for held remote buttons and reconnects. */
         keys_poll(&cfg);
+        keys_kbd_poll(&cfg);
         remember_volume(path, &cfg);
     }
 
     remember_volume(path, &cfg);
     log_info("autodj", "stopping");
     player_stop();
+    keys_kbd_close();
     keys_close();
     audio_close();
     decode_shutdown();

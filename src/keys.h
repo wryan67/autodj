@@ -1,6 +1,8 @@
 #ifndef AUTODJ_KEYS_H
 #define AUTODJ_KEYS_H
 
+#include <stddef.h>
+
 struct Config;
 
 /* Resolve a KEY_* name from linux/input-event-codes.h, optionally prefixed
@@ -48,6 +50,21 @@ int keys_read_press(int fd);
 /* Drain pending events and dispatch the actions in cfg.
  * A press within 30 ms of the previous press is ignored. */
 void keys_poll(const struct Config *cfg);
+
+/* Canonical terminal key. One printable character is kept as typed.
+ * Space, Enter, Tab, Backspace, Delete, Up, Down, Left, Right, Home, and
+ * End accept any letter case. KEY_* and REMOTE_* are rejected. Returns 0. */
+int keys_kbd_canon(const char *name, char *dest, size_t n);
+/* Read the terminal on stdin when it is a tty. Ctrl-C still raises SIGINT.
+ * Returns 0, or -1 when stdin is not a terminal. */
+int keys_kbd_open(void);
+void keys_kbd_close(void);
+/* stdin while keys_kbd_open succeeded, otherwise -1. */
+int keys_kbd_fd(void);
+/* Read pending terminal keystrokes and dispatch them. */
+void keys_kbd_poll(const struct Config *cfg);
+/* Run one canonical name as a press. Dial names skip the 30 ms gap. */
+void keys_kbd_dispatch(const struct Config *cfg, const char *name);
 
 int keys_self_test(void);
 

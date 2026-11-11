@@ -54,7 +54,7 @@ With no config path, autodj reads `~/.config/autodj/master.cfg`.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
 
-`--config` opens a full-screen editor for that file. The editor has eight tabs: Main, Buttons, Reverb, Chipmunk, Autopan, Phaser, Chorus, and Flanger. They stay on one row when the window is wide enough, and Chorus and Flanger wrap onto a second row when it is not. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, loudness, and where the dial starts. Buttons holds the key bindings, including one button each for effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), effect 4 (phaser), effect 5 (chorus), and effect 6 (flanger), plus All effects off. The other six tabs hold the settings of those effects. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a key binding asks for a new key. The keypad and the shortcut remote are read first, then any other keyboard. A key held with Ctrl, Shift, Alt, or Meta is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves that binding unchanged. Delete on that prompt removes the current binding. Left and Right move between Delete and Cancel, and Enter or Space presses the highlighted button. A key already used by another action opens an error and keeps the old binding. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
+`--config` opens a full-screen editor for that file. The editor has eight tabs: Main, Buttons, Reverb, Chipmunk, Autopan, Phaser, Chorus, and Flanger. They stay on one row when the window is wide enough, and Chorus and Flanger wrap onto a second row when it is not. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, loudness, and where the dial starts. Buttons holds the key bindings, including one button each for effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), effect 4 (phaser), effect 5 (chorus), and effect 6 (flanger), plus All effects off. Each button has two boxes: Keyboard, then Keypad. Each box is only as wide as its title or the longest value in that column. The other six tabs hold the settings of those effects. Bool settings are checkboxes. Space or Enter switches `Dial starts in` between `volume` and `jog`. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a Keypad box asks for the USB keypad or the shortcut remote. The same on a Keyboard box asks for the next key typed on this terminal: a character such as `p`, or Space, Enter, Tab, Backspace, Delete, an arrow, Home, or End. `p` and `P` are different keys. The Keyboard column starts with Space, Right, Left, 1, 2, 3, Up, Down, Enter, q, w, e, r, t, y, and Tab. The Keypad column starts blank. On a button row, Left and Right move between the two boxes and stop at the edge. Up and Down stay in the same column. Tab moves from the keyboard box to the keypad box, then to the next button. A key held with Ctrl, Shift, Alt, or Meta on the keypad or remote is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves either binding unchanged. Delete on the keypad prompt removes that binding. Left and Right there move between Delete and Cancel, and Enter or Space presses the highlighted button. On the keyboard prompt those keys are bindings, so click Delete to clear it. A key already used in the same column opens an error and keeps the old binding. The same action can have both a keypad key and a keyboard key. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad and remote grabbed, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
 
 `--calibrate` opens a full-screen view of the `[Jog]` dial settings, with a short note beside each one about what it changes in the sound. Calibrate measures the dial in two steps. First, turn the dial exactly one full turn and press Enter; the click count becomes `clicks_per_turn`. Then spin the dial as fast as you can; timing starts at the first click and runs for 3 seconds. `max_speed` becomes the fastest measured speed plus 25%. Test plays a random song from `Folder`, so you can turn the dial and hear the result. A change to a setting takes effect in the test at once. Stop test ends playback. Save writes only the `[Jog]` section. Close or Esc leaves without writing; with unsaved changes, it asks you to press Close again. The view needs the remote, so stop a running autodj first.
 
@@ -86,15 +86,22 @@ loudness_lufs=-18
 dial_default=volume
 
 [Keys]
-pause_resume=KEY_KP0
-skip=KEY_KPDOT
-previous=KEY_KPSLASH
-rewind_0_5=KEY_KP1
-rewind_1=KEY_KP2
-rewind_1_5=KEY_KP3
-dial_forward=REMOTE_DIAL_CW
-dial_back=REMOTE_DIAL_CCW
-dial_mode=REMOTE_BTN4
+pause_resume_kbd=Space
+skip_kbd=Right
+previous_kbd=Left
+rewind_0_5_kbd=1
+rewind_1_kbd=2
+rewind_1_5_kbd=3
+dial_forward_kbd=Up
+dial_back_kbd=Down
+dial_mode_kbd=Enter
+reverb_kbd=q
+chipmunk_kbd=w
+autopan_kbd=e
+phaser_kbd=r
+chorus_kbd=t
+flanger_kbd=y
+effects_off_kbd=Tab
 
 [Reverb]
 decay=0.5
@@ -172,7 +179,7 @@ Seconds. Default `5`. Pause slows the current song to a stop over this many seco
 Seconds. Default `5`. Resume brings the song back up to full speed over this many seconds.
 
 `volume`  
-Percent from 0 to 100. Default `100`. In volume mode the dial changes it in steps of 1. Each change is written back into this file, so the next boot starts at the last volume.
+Percent from 0 to 100. Default `100`. In volume mode the shortcut remote's dial changes it in steps of 1, and a keyboard volume key changes it in steps of 5. Each change is written back into this file, so the next boot starts at the last volume.
 
 `loudness`  
 `true` or `false`. Default `true`. Each file is measured from start to finish and then played at one steady gain so tracks match each other. This is a level change only. It does not compress the song.
@@ -196,7 +203,9 @@ Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_
 | `REMOTE_CENTER` | Button in the center of the dial |
 | `REMOTE_DIAL_CW`, `REMOTE_DIAL_CCW` | Dial clockwise, counterclockwise |
 
- A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. `previous` defaults to `KEY_KPSLASH`, `rewind_0_5` to `KEY_KP1`, `rewind_1` to `KEY_KP2`, and `rewind_1_5` to `KEY_KP3` when that line is missing and the key is not already used. A blank value, such as `rewind_1_5=`, stays unbound. Any other action that is left out is unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for dial clicks. Holding a button does not repeat it. Old `volume_up` and `volume_dn` lines are ignored. The dial sets the volume.
+ A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. A missing keypad line is unbound. A blank value, such as `pause_resume=`, stays unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for dial clicks. Holding a button does not repeat it. Old `volume_up` and `volume_dn` lines are ignored. The dial sets the volume.
+
+Each action can also have a keyboard binding. Add `_kbd` to the name, for example `pause_resume_kbd=p` or `skip_kbd=Space`. These are keys typed on the terminal while autodj is running, not `KEY_*` names. A single character is stored as typed, so `p` and `P` are different. The other names are `Space`, `Enter`, `Tab`, `Backspace`, `Delete`, `Up`, `Down`, `Left`, `Right`, `Home`, and `End`. A missing line uses the default: pause/resume `Space`, skip `Right`, previous `Left`, rewind 0.5s `1`, rewind 1s `2`, rewind 1.5s `3`, dial forward `Up`, dial back `Down`, dial mode `Enter`, reverb `q`, chipmunk `w`, autopan `e`, phaser `r`, chorus `t`, flanger `y`, and all effects off `Tab`. A blank line, such as `pause_resume_kbd=`, stays unbound. A keyboard key can be used for an action that already has a keypad key. Two actions cannot share one keyboard key. autodj reads the keyboard only when it is running in a terminal, and Ctrl-C still stops it. The same 30 ms gap applies, except a keyboard key bound to the dial, which repeats so it can jog or step the volume. In volume mode one keyboard press changes the volume by 5. The shortcut remote's dial still changes it by 1.
 
 `pause_resume`  
 Press once to pause. Press again to resume.

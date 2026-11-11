@@ -4,6 +4,7 @@
 #include "log.h"
 #include "player.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -15,6 +16,7 @@
 #include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -764,7 +766,7 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
             long long us;
 
             if (g_dial_volume) {
-                player_volume_step(dir);
+                player_volume_step(dir, 1);
                 return;
             }
             us = (long long)when->tv_sec * 1000000LL + when->tv_usec;
@@ -952,6 +954,692 @@ void keys_poll(const struct Config *cfg)
             g_ngrabbed++;
         }
     }
+}
+
+static int g_kbd_fd = -1;
+static int g_kbd_raw;
+static int g_kbd_flags;
+static struct termios g_kbd_saved;
+static unsigned char g_kbd_buf[16];
+static int g_kbd_len;
+static struct timeval g_kbd_partial;
+
+enum { KBD_PARTIAL_MS = 50 };
+
+static int kbd_eq(const char *bound, const char *name)
+{
+    return bound && bound[0] && name && name[0] && strcmp(bound, name) == 0;
+}
+
+static void kbd_dial(int dir, const struct timeval *when)
+{
+    long long us;
+
+    if (g_dial_volume) {
+        player_volume_step(dir, 5);
+        return;
+    }
+    us = (long long)when->tv_sec * 1000000LL + when->tv_usec;
+    player_jog(dir, us);
+    if (g_jog_hook) {
+        g_jog_hook(dir, us);
+    }
+}
+
+void keys_kbd_dispatch(const struct Config *cfg, const char *name)
+{
+    struct timeval when;
+
+    if (!cfg || !name || !name[0]) {
+        return;
+    }
+    gettimeofday(&when, NULL);
+    if (kbd_eq(cfg->kbd_dial_fwd, name)) {
+        kbd_dial(1, &when);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_dial_back, name)) {
+        kbd_dial(-1, &when);
+        return;
+    }
+    if (!press_accepted(&when)) {
+        return;
+    }
+    if (kbd_eq(cfg->kbd_dial_mode, name)) {
+        g_dial_volume = !g_dial_volume;
+        log_info("keys", "dial mode %s", g_dial_volume ? "volume" : "jog");
+        return;
+    }
+    if (kbd_eq(cfg->kbd_pause, name)) {
+        player_toggle_pause();
+        return;
+    }
+    if (kbd_eq(cfg->kbd_skip, name)) {
+        player_skip();
+        return;
+    }
+    if (kbd_eq(cfg->kbd_prev, name)) {
+        player_previous();
+        return;
+    }
+    if (kbd_eq(cfg->kbd_rew05, name)) {
+        player_rewind(500);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_rew10, name)) {
+        player_rewind(1000);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_rew15, name)) {
+        player_rewind(1500);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_reverb, name)) {
+        player_fx_toggle(PLAYER_FX_REVERB);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_pitch, name)) {
+        player_fx_toggle(PLAYER_FX_PITCH);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_autopan, name)) {
+        player_fx_toggle(PLAYER_FX_AUTOPAN);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_phaser, name)) {
+        player_fx_toggle(PLAYER_FX_PHASER);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_chorus, name)) {
+        player_fx_toggle(PLAYER_FX_CHORUS);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_flanger, name)) {
+        player_fx_toggle(PLAYER_FX_FLANGER);
+        return;
+    }
+    if (kbd_eq(cfg->kbd_effects_off, name)) {
+        player_fx_all_off();
+        return;
+    }
+    log_info("keys", "key %s is not mapped", name);
+}
+
+int keys_kbd_canon(const char *name, char *dest, size_t n)
+{
+    static const struct {
+        const char *word;
+        const char *canon;
+    } words[] = {
+        {"space", "Space"},
+        {"enter", "Enter"},
+        {"tab", "Tab"},
+        {"backspace", "Backspace"},
+        {"delete", "Delete"},
+        {"up", "Up"},
+        {"down", "Down"},
+        {"left", "Left"},
+        {"right", "Right"},
+        {"home", "Home"},
+        {"end", "End"},
+    };
+    char buf[32];
+    const char *p;
+    size_t len;
+    int only_space = 1;
+    int saw_space = 0;
+    int i;
+
+    if (!dest || n == 0) {
+        return -1;
+    }
+    /* name and dest may be the same buffer. Read the whole name before
+     * writing dest, or a typed letter is wiped and then rejected. */
+    if (!name) {
+        dest[0] = '\0';
+        return -1;
+    }
+    for (p = name; *p; p++) {
+        if (*p != ' ' && *p != '\t') {
+            only_space = 0;
+            break;
+        }
+        if (*p == ' ') {
+            saw_space = 1;
+        }
+    }
+    if (only_space && saw_space) {
+        if (n < 6) {
+            dest[0] = '\0';
+            return -1;
+        }
+        snprintf(dest, n, "Space");
+        return 0;
+    }
+    while (*name && isspace((unsigned char)*name)) {
+        name++;
+    }
+    len = strlen(name);
+    while (len > 0 && isspace((unsigned char)name[len - 1])) {
+        len--;
+    }
+    if (len == 0 || len >= sizeof buf || len >= n) {
+        dest[0] = '\0';
+        return -1;
+    }
+    memcpy(buf, name, len);
+    buf[len] = '\0';
+    dest[0] = '\0';
+    if ((len >= 4 && strncasecmp(buf, "KEY_", 4) == 0) ||
+        (len >= 7 && strncasecmp(buf, "REMOTE_", 7) == 0) ||
+        strchr(buf, '+') != NULL) {
+        return -1;
+    }
+    if (len == 1) {
+        unsigned char c = (unsigned char)buf[0];
+
+        if (c >= 33 && c <= 126) {
+            dest[0] = (char)c;
+            dest[1] = '\0';
+            return 0;
+        }
+        return -1;
+    }
+    for (i = 0; i < (int)(sizeof words / sizeof words[0]); i++) {
+        if (strcasecmp(buf, words[i].word) == 0) {
+            snprintf(dest, n, "%s", words[i].canon);
+            return 0;
+        }
+    }
+    {
+        unsigned char c = (unsigned char)buf[0];
+        int need = 1;
+
+        if ((c & 0xe0) == 0xc0) {
+            need = 2;
+        } else if ((c & 0xf0) == 0xe0) {
+            need = 3;
+        } else if ((c & 0xf8) == 0xf0) {
+            need = 4;
+        } else {
+            return -1;
+        }
+        if ((int)len != need || need >= (int)n) {
+            return -1;
+        }
+        for (i = 1; i < need; i++) {
+            if (((unsigned char)buf[i] & 0xc0) != 0x80) {
+                return -1;
+            }
+        }
+        memcpy(dest, buf, (size_t)need);
+        dest[need] = '\0';
+        return 0;
+    }
+}
+
+static void kbd_shift(int count)
+{
+    if (count <= 0) {
+        return;
+    }
+    if (count >= g_kbd_len) {
+        g_kbd_len = 0;
+        return;
+    }
+    memmove(g_kbd_buf, g_kbd_buf + count, (size_t)(g_kbd_len - count));
+    g_kbd_len -= count;
+}
+
+static const char *kbd_arrow(unsigned char c)
+{
+    switch (c) {
+    case 'A':
+        return "Up";
+    case 'B':
+        return "Down";
+    case 'C':
+        return "Right";
+    case 'D':
+        return "Left";
+    case 'H':
+        return "Home";
+    case 'F':
+        return "End";
+    default:
+        return NULL;
+    }
+}
+
+/* Bytes used by the escape sequence at the front of the buffer, or 0 when
+ * more bytes are required. A finished sequence that is not a known key is
+ * consumed and ignored. */
+static int kbd_take_seq(const struct Config *cfg)
+{
+    const char *name = NULL;
+    int i;
+
+    if (g_kbd_len < 2 || g_kbd_buf[0] != 0x1b) {
+        return 0;
+    }
+    if (g_kbd_buf[1] == 'O') {
+        if (g_kbd_len < 3) {
+            return 0;
+        }
+        name = kbd_arrow(g_kbd_buf[2]);
+        if (name) {
+            keys_kbd_dispatch(cfg, name);
+        }
+        return 3;
+    }
+    if (g_kbd_buf[1] != '[') {
+        return 0;
+    }
+    for (i = 2; i < g_kbd_len; i++) {
+        unsigned char c = g_kbd_buf[i];
+
+        if (c < 0x40 || c > 0x7e) {
+            continue;
+        }
+        name = kbd_arrow(c);
+        if (!name && c == '~') {
+            int num = 0;
+            int any = 0;
+            int j;
+
+            for (j = 2; j < i && g_kbd_buf[j] >= '0' && g_kbd_buf[j] <= '9'; j++) {
+                any = 1;
+                num = num * 10 + (g_kbd_buf[j] - '0');
+            }
+            if (any && (num == 1 || num == 7)) {
+                name = "Home";
+            } else if (any && num == 3) {
+                name = "Delete";
+            } else if (any && (num == 4 || num == 8)) {
+                name = "End";
+            }
+        }
+        if (name) {
+            keys_kbd_dispatch(cfg, name);
+        }
+        return i + 1;
+    }
+    return 0;
+}
+
+static int kbd_utf8_need(unsigned char c)
+{
+    if ((c & 0xe0) == 0xc0) {
+        return 2;
+    }
+    if ((c & 0xf0) == 0xe0) {
+        return 3;
+    }
+    if ((c & 0xf8) == 0xf0) {
+        return 4;
+    }
+    return 1;
+}
+
+static void kbd_emit_text(const struct Config *cfg, const unsigned char *s, int n)
+{
+    char raw[AUTODJ_KBD_LEN];
+    char name[AUTODJ_KBD_LEN];
+
+    if (n <= 0 || n >= (int)sizeof raw) {
+        return;
+    }
+    memcpy(raw, s, (size_t)n);
+    raw[n] = '\0';
+    if (keys_kbd_canon(raw, name, sizeof name) != 0) {
+        return;
+    }
+    keys_kbd_dispatch(cfg, name);
+}
+
+static void kbd_parse(const struct Config *cfg, int timed_out)
+{
+    while (g_kbd_len > 0) {
+        unsigned char c = g_kbd_buf[0];
+
+        if (c == 0x1b) {
+            if (g_kbd_len >= 2 && (g_kbd_buf[1] == '[' || g_kbd_buf[1] == 'O')) {
+                int used = kbd_take_seq(cfg);
+
+                if (used > 0) {
+                    kbd_shift(used);
+                    continue;
+                }
+                if (timed_out || g_kbd_len >= (int)sizeof g_kbd_buf) {
+                    kbd_shift(g_kbd_len);
+                    continue;
+                }
+                return;
+            }
+            if (g_kbd_len == 1) {
+                if (!timed_out) {
+                    return;
+                }
+                kbd_shift(1);
+                continue;
+            }
+            kbd_shift(1);
+            continue;
+        }
+        if (c == '\r' || c == '\n') {
+            keys_kbd_dispatch(cfg, "Enter");
+            kbd_shift(1);
+            continue;
+        }
+        if (c == '\t') {
+            keys_kbd_dispatch(cfg, "Tab");
+            kbd_shift(1);
+            continue;
+        }
+        if (c == 8 || c == 127) {
+            keys_kbd_dispatch(cfg, "Backspace");
+            kbd_shift(1);
+            continue;
+        }
+        if (c >= 32 && c < 127) {
+            kbd_emit_text(cfg, g_kbd_buf, 1);
+            kbd_shift(1);
+            continue;
+        }
+        if (c >= 0x80) {
+            int need = kbd_utf8_need(c);
+            int i;
+
+            if (need == 1) {
+                kbd_shift(1);
+                continue;
+            }
+            if (g_kbd_len < need) {
+                if (timed_out) {
+                    kbd_shift(1);
+                    continue;
+                }
+                return;
+            }
+            for (i = 1; i < need; i++) {
+                if ((g_kbd_buf[i] & 0xc0) != 0x80) {
+                    need = 1;
+                    break;
+                }
+            }
+            if (need > 1) {
+                kbd_emit_text(cfg, g_kbd_buf, need);
+            }
+            kbd_shift(need);
+            continue;
+        }
+        kbd_shift(1);
+    }
+}
+
+int keys_kbd_open(void)
+{
+    struct termios raw;
+    int flags;
+
+    if (g_kbd_raw) {
+        return 0;
+    }
+    if (!isatty(STDIN_FILENO)) {
+        return -1;
+    }
+    if (tcgetattr(STDIN_FILENO, &g_kbd_saved) != 0) {
+        return -1;
+    }
+    flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (flags < 0) {
+        return -1;
+    }
+    raw = g_kbd_saved;
+    raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO | IEXTEN);
+    raw.c_iflag &= ~(tcflag_t)(IXON | ICRNL);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
+        return -1;
+    }
+    if (fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) != 0) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &g_kbd_saved);
+        return -1;
+    }
+    g_kbd_flags = flags;
+    g_kbd_fd = STDIN_FILENO;
+    g_kbd_raw = 1;
+    g_kbd_len = 0;
+    return 0;
+}
+
+void keys_kbd_close(void)
+{
+    if (!g_kbd_raw) {
+        return;
+    }
+    tcsetattr(STDIN_FILENO, TCSANOW, &g_kbd_saved);
+    fcntl(STDIN_FILENO, F_SETFL, g_kbd_flags);
+    g_kbd_raw = 0;
+    g_kbd_fd = -1;
+    g_kbd_len = 0;
+}
+
+int keys_kbd_fd(void)
+{
+    return g_kbd_raw ? g_kbd_fd : -1;
+}
+
+void keys_kbd_poll(const struct Config *cfg)
+{
+    unsigned char tmp[64];
+    int got = 0;
+    ssize_t n;
+
+    if (!cfg || g_kbd_fd < 0) {
+        return;
+    }
+    while ((n = read(g_kbd_fd, tmp, sizeof tmp)) > 0) {
+        int i;
+
+        got = 1;
+        for (i = 0; i < n; i++) {
+            if (g_kbd_len == 0) {
+                gettimeofday(&g_kbd_partial, NULL);
+            }
+            if (g_kbd_len >= (int)sizeof g_kbd_buf) {
+                kbd_parse(cfg, 1);
+            }
+            if (g_kbd_len < (int)sizeof g_kbd_buf) {
+                g_kbd_buf[g_kbd_len++] = tmp[i];
+            }
+        }
+    }
+    if (!got && g_kbd_len > 0) {
+        struct timeval now;
+
+        gettimeofday(&now, NULL);
+        kbd_parse(cfg, timeval_delta_ms(&now, &g_kbd_partial) >= KBD_PARTIAL_MS);
+        return;
+    }
+    kbd_parse(cfg, 0);
+}
+
+static void kbd_feed(const struct Config *cfg, const char *bytes, int timed_out)
+{
+    size_t i;
+
+    for (i = 0; bytes && bytes[i]; i++) {
+        if (g_kbd_len == 0) {
+            gettimeofday(&g_kbd_partial, NULL);
+        }
+        if (g_kbd_len < (int)sizeof g_kbd_buf) {
+            g_kbd_buf[g_kbd_len++] = (unsigned char)bytes[i];
+        }
+    }
+    kbd_parse(cfg, timed_out);
+}
+
+static int kbd_self_test(void)
+{
+    Config cfg;
+    char name[AUTODJ_KBD_LEN];
+
+    g_kbd_len = 0;
+    g_press_seen = 0;
+    memset(&g_press_time, 0, sizeof g_press_time);
+    if (keys_kbd_canon("p", name, sizeof name) != 0 || strcmp(name, "p") != 0 ||
+        keys_kbd_canon("P", name, sizeof name) != 0 || strcmp(name, "P") != 0 ||
+        keys_kbd_canon(" space ", name, sizeof name) != 0 || strcmp(name, "Space") != 0 ||
+        keys_kbd_canon("ENTER", name, sizeof name) != 0 || strcmp(name, "Enter") != 0 ||
+        keys_kbd_canon("Backspace", name, sizeof name) != 0 ||
+        strcmp(name, "Backspace") != 0 ||
+        keys_kbd_canon("KEY_A", name, sizeof name) == 0 ||
+        keys_kbd_canon("REMOTE_BTN1", name, sizeof name) == 0 ||
+        keys_kbd_canon("", name, sizeof name) == 0 ||
+        keys_kbd_canon("NotAKey", name, sizeof name) == 0) {
+        log_error("keys", "keyboard name was not canonical");
+        return -1;
+    }
+    snprintf(name, sizeof name, "q");
+    if (keys_kbd_canon(name, name, sizeof name) != 0 || strcmp(name, "q") != 0) {
+        log_error("keys", "a keyboard name cleared itself");
+        return -1;
+    }
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.key_pause = -1;
+    cfg.key_skip = -1;
+    cfg.key_prev = -1;
+    cfg.key_rew05 = -1;
+    cfg.key_rew10 = -1;
+    cfg.key_rew15 = -1;
+    cfg.key_dial_fwd = -1;
+    cfg.key_dial_back = -1;
+    cfg.key_dial_mode = -1;
+    cfg.key_reverb = -1;
+    cfg.key_pitch = -1;
+    cfg.key_autopan = -1;
+    cfg.key_phaser = -1;
+    cfg.key_chorus = -1;
+    cfg.key_flanger = -1;
+    cfg.key_effects_off = -1;
+    snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "r");
+    player_set_fx(NULL);
+    player_set_volume_percent(50);
+    g_dial_volume = 1;
+    g_press_seen = 0;
+    keys_kbd_dispatch(&cfg, "r");
+    if (!player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "keyboard r did not turn reverb on");
+        return -1;
+    }
+    g_press_seen = 0;
+    keys_kbd_dispatch(&cfg, "R");
+    if (!player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "keyboard R matched r");
+        return -1;
+    }
+
+    snprintf(cfg.kbd_dial_fwd, sizeof cfg.kbd_dial_fwd, "+");
+    snprintf(cfg.kbd_dial_back, sizeof cfg.kbd_dial_back, "-");
+    keys_kbd_dispatch(&cfg, "+");
+    keys_kbd_dispatch(&cfg, "+");
+    if (player_volume_percent() != 60) {
+        log_error("keys", "keyboard dial left volume %d, expected 60",
+                  player_volume_percent());
+        return -1;
+    }
+    keys_kbd_dispatch(&cfg, "-");
+    if (player_volume_percent() != 55) {
+        log_error("keys", "keyboard dial down left volume %d, expected 55",
+                  player_volume_percent());
+        return -1;
+    }
+
+    snprintf(cfg.kbd_effects_off, sizeof cfg.kbd_effects_off, "x");
+    player_fx_toggle(PLAYER_FX_CHORUS);
+    g_press_seen = 0;
+    keys_kbd_dispatch(&cfg, "x");
+    if (player_fx_enabled(PLAYER_FX_REVERB) || player_fx_enabled(PLAYER_FX_CHORUS)) {
+        log_error("keys", "keyboard all-off left an effect on");
+        return -1;
+    }
+    player_fx_toggle(PLAYER_FX_FLANGER);
+    g_press_seen = 0;
+    keys_kbd_dispatch(&cfg, "x");
+    if (player_fx_enabled(PLAYER_FX_FLANGER)) {
+        log_error("keys", "a second keyboard all-off left flanger on");
+        return -1;
+    }
+
+    snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "Up");
+    g_kbd_len = 0;
+    g_press_seen = 0;
+    kbd_feed(&cfg, "\033", 0);
+    if (g_kbd_len != 1 || player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "a partial Esc was treated as a key");
+        g_kbd_len = 0;
+        return -1;
+    }
+    kbd_parse(&cfg, 1);
+    if (g_kbd_len != 0 || player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "a timed-out Esc became a key");
+        g_kbd_len = 0;
+        return -1;
+    }
+    kbd_feed(&cfg, "\033[A", 0);
+    if (!player_fx_enabled(PLAYER_FX_REVERB) || g_kbd_len != 0) {
+        log_error("keys", "arrow sequence did not turn reverb on");
+        g_kbd_len = 0;
+        return -1;
+    }
+    snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "Delete");
+    g_press_seen = 0;
+    kbd_feed(&cfg, "\033[3~", 0);
+    if (player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "Delete sequence did not turn reverb off");
+        g_kbd_len = 0;
+        return -1;
+    }
+
+    /* Letters and digits are one byte. Enter and arrows are not, so this
+     * used to clear the character before it could match. */
+    snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "q");
+    snprintf(cfg.kbd_pitch, sizeof cfg.kbd_pitch, "1");
+    snprintf(cfg.kbd_autopan, sizeof cfg.kbd_autopan, "Space");
+    player_set_fx(NULL);
+    g_kbd_len = 0;
+    g_press_seen = 0;
+    kbd_feed(&cfg, "q", 0);
+    if (!player_fx_enabled(PLAYER_FX_REVERB) || g_kbd_len != 0) {
+        log_error("keys", "typed q did not turn reverb on");
+        g_kbd_len = 0;
+        return -1;
+    }
+    g_press_seen = 0;
+    kbd_feed(&cfg, "1", 0);
+    if (!player_fx_enabled(PLAYER_FX_PITCH) || g_kbd_len != 0) {
+        log_error("keys", "typed 1 did not turn chipmunk on");
+        g_kbd_len = 0;
+        return -1;
+    }
+    g_press_seen = 0;
+    kbd_feed(&cfg, " ", 0);
+    if (!player_fx_enabled(PLAYER_FX_AUTOPAN) || g_kbd_len != 0) {
+        log_error("keys", "typed space did not turn autopan on");
+        g_kbd_len = 0;
+        return -1;
+    }
+
+    g_kbd_len = 0;
+    g_dial_volume = 0;
+    g_press_seen = 0;
+    memset(&g_press_time, 0, sizeof g_press_time);
+    player_set_fx(NULL);
+    player_set_volume_percent(100);
+    return 0;
 }
 
 static int put_key(int fd, long ms, unsigned short code, int value)
@@ -1338,7 +2026,7 @@ int keys_self_test(void)
             return -1;
         }
     }
-    if (debounce_self_test() != 0 || combo_self_test() != 0) {
+    if (debounce_self_test() != 0 || combo_self_test() != 0 || kbd_self_test() != 0) {
         return -1;
     }
     return 0;

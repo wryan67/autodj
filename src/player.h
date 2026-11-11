@@ -44,7 +44,9 @@ double player_speed(int *jogging);
 void player_now_playing(char *dest, size_t n);
 void player_set_volume_percent(int percent);
 int player_volume_percent(void);
-void player_volume_step(int direction);
+/* direction is +1 or -1. percent is the size of one step. The shortcut
+ * remote uses 1. Keyboard volume uses 5. */
+void player_volume_step(int direction, int percent);
 
 enum {
     PLAYER_FX_REVERB = 0,
