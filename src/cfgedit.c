@@ -64,9 +64,11 @@ enum {
     FE_DIAL_DEFAULT,
     FE_MAIN_END,
 
-    FE_KEY_PAUSE = FE_MAIN_END,
+    /* Buttons rows. The first three are previous, pause, then skip. */
+    FE_KEY_FIRST = FE_MAIN_END,
+    FE_KEY_PREV = FE_KEY_FIRST,
+    FE_KEY_PAUSE,
     FE_KEY_SKIP,
-    FE_KEY_PREV,
     FE_KEY_REW05,
     FE_KEY_REW10,
     FE_KEY_REW15,
@@ -138,7 +140,7 @@ enum {
     BOX_MIN_W = 4,
     /* Tallest tab is Buttons, with 16 fields, under one row of tabs.
      * A wrapped tab row adds one line, checked in layout_ui. */
-    TAB_FIELDS = FE_BUTTON_END - FE_KEY_PAUSE,
+    TAB_FIELDS = FE_BUTTON_END - FE_KEY_FIRST,
     ROW_TABS = 1,
     ROW_NOTE = 2,
     ROW_FIELD0 = 3,
@@ -267,9 +269,9 @@ static const char *field_label(int id)
         "Loudness",
         "Target LUFS",
         "Dial starts in",
+        "Previous",
         "Pause/resume",
         "Skip",
-        "Previous",
         "Rewind 0.5s",
         "Rewind 1s",
         "Rewind 1.5s",
@@ -504,7 +506,7 @@ static int is_number_field(int id)
 
 static int is_key_field(int id)
 {
-    return id >= FE_KEY_PAUSE && id < FE_BUTTON_END;
+    return id >= FE_KEY_FIRST && id < FE_BUTTON_END;
 }
 
 static int is_check_field(const ConfigEdit *edit, int id)
@@ -682,7 +684,7 @@ static void toggle_check(struct Editor *ed, int id)
 static int tab_first(int tab)
 {
     static const int first[] = {
-        FE_FOLDER, FE_KEY_PAUSE, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD,
+        FE_FOLDER, FE_KEY_FIRST, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD,
         FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD
     };
 
@@ -856,7 +858,7 @@ static void button_box_widths(const ConfigEdit *edit, int *kbd_w, int *pad_w)
     int longest_pad = 0;
     int i;
 
-    for (i = FE_KEY_PAUSE; i < FE_BUTTON_END; i++) {
+    for (i = FE_KEY_FIRST; i < FE_BUTTON_END; i++) {
         int kc = value_cols(kbd_field_value(edit, i));
         int pc = value_cols(key_field_value(edit, i));
 
@@ -2245,7 +2247,7 @@ static char *kbd_field_text(ConfigEdit *edit, int id, size_t *cap)
 {
     char *text = (char *)kbd_field_value(edit, id);
 
-    if (id < FE_KEY_PAUSE || id >= FE_BUTTON_END) {
+    if (id < FE_KEY_FIRST || id >= FE_BUTTON_END) {
         *cap = 0;
         return NULL;
     }
@@ -3975,13 +3977,19 @@ static int keyboard_column_self_test(void)
     {
         const char *kb = buf ? strstr(buf, "Keyboard") : NULL;
         const char *kp = buf ? strstr(buf, "Keypad") : NULL;
+        const char *prev = buf ? strstr(buf, "Previous") : NULL;
+        const char *pause = buf ? strstr(buf, "Pause/resume") : NULL;
+        const char *skip = buf ? strstr(buf, "Skip") : NULL;
         int span = ed.ui.kbd_w + 1 + ed.ui.box_w[FE_KEY_PAUSE];
         int avail = ed.ui.frame_w - 4 - LABEL_W - 1;
 
         if (ed.ui.kbd_w != KBD_HDR_W || ed.ui.box_w[FE_KEY_PAUSE] != PAD_HDR_W ||
             ed.ui.kbd_c != ed.ui.box_c || span >= avail ||
-            ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_PAUSE] ||
-            !kb || !kp || kb > kp) {
+            ed.ui.field_r[FE_KEY_PREV] >= ed.ui.field_r[FE_KEY_PAUSE] ||
+            ed.ui.field_r[FE_KEY_PAUSE] >= ed.ui.field_r[FE_KEY_SKIP] ||
+            ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_SKIP] ||
+            !kb || !kp || kb > kp || !prev || !pause || !skip ||
+            !(prev < pause && pause < skip)) {
             log_error("cfgedit", "empty button columns are not sized to their titles");
             free(buf);
             return -1;
@@ -4070,7 +4078,7 @@ static int keyboard_column_self_test(void)
         return -1;
     }
     ev.kind = EV_TAB;
-    if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_PREV) {
+    if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_REW05) {
         log_error("cfgedit", "Tab did not move to the next keyboard");
         return -1;
     }
