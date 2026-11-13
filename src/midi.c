@@ -3,6 +3,7 @@
 #include "config.h"
 #include "keys.h"
 #include "log.h"
+#include "player.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -25,6 +26,12 @@
  * a knob is relative: 1, 2, 3 turn clockwise and 127, 126, 125 turn
  * counterclockwise. An absolute knob never sends the same value twice in a
  * row, so a repeated value marks the knob as relative from then on.
+ *
+ * A pad bound to an effect shows whether the effect is on: autodj sends
+ * Note On to light it and Note Off to darken it, on the channel the pad
+ * sends on (channel 10 until the pad is first pressed). The MPD218 lights a
+ * pad while it is held and darkens it on release, so the state is sent
+ * again after each release.
  */
 
 enum {
@@ -45,6 +52,19 @@ struct MidiIn {
     int sysex;
     signed char last[128]; /* last value of each CC, -1 when unknown */
     unsigned char relative[128];
+    int out;                  /* 1 when fd can also send to the device */
+    unsigned char note_ch[128]; /* channel each note was last seen on */
+    signed char led[128];     /* pad light as last sent or seen, -1 unknown */
+};
+
+/* Effect actions whose pads show the effect's state. */
+static const struct {
+    int id;
+    int fx;
+} g_led_fx[] = {
+    {KEYID_REVERB, PLAYER_FX_REVERB},   {KEYID_PITCH, PLAYER_FX_PITCH},
+    {KEYID_AUTOPAN, PLAYER_FX_AUTOPAN}, {KEYID_PHASER, PLAYER_FX_PHASER},
+    {KEYID_CHORUS, PLAYER_FX_CHORUS},   {KEYID_FLANGER, PLAYER_FX_FLANGER},
 };
 
 static struct MidiIn g_in[MAX_MIDI];
@@ -58,6 +78,8 @@ static void in_reset(struct MidiIn *m, int fd)
     memset(m, 0, sizeof *m);
     m->fd = fd;
     memset(m->last, -1, sizeof m->last);
+    memset(m->note_ch, 9, sizeof m->note_ch);
+    memset(m->led, -1, sizeof m->led);
 }
 
 int midi_is_knob(int code)
@@ -242,6 +264,11 @@ static int midi_feed(struct MidiIn *m, unsigned char b, int *code, int *steps)
         return 0;
     }
     m->have = 0;
+    if (kind == 0x80 || kind == 0x90) {
+        /* The pad lights while held and goes dark on release. */
+        m->note_ch[m->data[0]] = m->status & 0x0f;
+        m->led[m->data[0]] = kind == 0x90 && m->data[1] > 0;
+    }
     if (kind == 0x90 && m->data[1] > 0) {
         *code = MIDI_NOTE | m->data[0];
         *steps = 1;
@@ -278,12 +305,14 @@ static int read_line(const char *path, char *buf, size_t n)
 
 /* Name of a hardware MIDI port with an input, or -1 for a virtual port
  * (snd-virmidi) or a port that only sends. */
-static int port_name(int card, int dev, char *name, size_t n)
+static int port_name(int card, int dev, char *name, size_t n, int *output)
 {
     char path[96];
     char line[128];
     FILE *fp;
     int input = 0;
+
+    *output = 0;
 
     snprintf(path, sizeof path, "/proc/asound/card%d/midi%d", card, dev);
     fp = fopen(path, "r");
@@ -299,6 +328,9 @@ static int port_name(int card, int dev, char *name, size_t n)
     while (fgets(line, sizeof line, fp)) {
         if (strncmp(line, "Input", 5) == 0) {
             input = 1;
+        }
+        if (strncmp(line, "Output", 6) == 0) {
+            *output = 1;
         }
     }
     fclose(fp);
@@ -339,17 +371,28 @@ static void scan(struct MidiIn *list, int *count, int max, int quiet, int *busy)
         char name[64];
         int card;
         int dev;
-        int fd;
+        int fd = -1;
+        int output = 0;
         char tail;
 
         if (sscanf(de->d_name, "midiC%dD%d%c", &card, &dev, &tail) != 2) {
             continue;
         }
         snprintf(path, sizeof path, "/dev/snd/%.20s", de->d_name);
-        if (path_open(list, *count, path) || port_name(card, dev, name, sizeof name) != 0) {
+        if (path_open(list, *count, path) ||
+            port_name(card, dev, name, sizeof name, &output) != 0) {
             continue;
         }
-        fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        /* Playback also sends to the pads to light them. The editor only reads. */
+        if (output && list == g_in) {
+            fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        }
+        if (fd >= 0) {
+            output = 1;
+        } else {
+            output = 0;
+            fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        }
         if (fd < 0) {
             if (busy && errno == EBUSY) {
                 (*busy)++;
@@ -360,6 +403,7 @@ static void scan(struct MidiIn *list, int *count, int max, int quiet, int *busy)
             continue;
         }
         in_reset(&list[*count], fd);
+        list[*count].out = output;
         snprintf(list[*count].path, sizeof list[*count].path, "%s", path);
         snprintf(list[*count].name, sizeof list[*count].name, "%s", name);
         (*count)++;
@@ -383,6 +427,41 @@ int midi_open(void)
     return g_n;
 }
 
+static void send_led(struct MidiIn *m, int note, int on)
+{
+    unsigned char msg[3];
+
+    msg[0] = (unsigned char)((on ? 0x90 : 0x80) | m->note_ch[note]);
+    msg[1] = (unsigned char)note;
+    msg[2] = on ? 127 : 0;
+    if (write(m->fd, msg, sizeof msg) == (ssize_t)sizeof msg) {
+        m->led[note] = (signed char)on;
+    }
+}
+
+/* Light each effect pad that is on and darken the rest. Only changes are sent. */
+static void leds_sync(struct MidiIn *m, const Config *cfg)
+{
+    size_t i;
+
+    if (!m->out) {
+        return;
+    }
+    for (i = 0; i < sizeof g_led_fx / sizeof g_led_fx[0]; i++) {
+        int code = cfg->midi_code[g_led_fx[i].id];
+        int note = code & MIDI_NUM_MASK;
+        int want;
+
+        if (code < 0 || (code & MIDI_KIND_MASK) != MIDI_NOTE) {
+            continue;
+        }
+        want = player_fx_enabled(g_led_fx[i].fx);
+        if (m->led[note] != want) {
+            send_led(m, note, want);
+        }
+    }
+}
+
 static void drop(int i)
 {
     close(g_in[i].fd);
@@ -392,6 +471,18 @@ static void drop(int i)
 
 void midi_close(void)
 {
+    int i;
+
+    /* Leave no pad lit after autodj stops. */
+    for (i = 0; i < g_n; i++) {
+        int note;
+
+        for (note = 0; note < 128 && g_in[i].out; note++) {
+            if (g_in[i].led[note] == 1) {
+                send_led(&g_in[i], note, 0);
+            }
+        }
+    }
     while (g_n > 0) {
         drop(g_n - 1);
     }
@@ -450,7 +541,9 @@ void midi_poll(const Config *cfg)
             log_warn("midi", "%s was disconnected", g_in[i].name);
             drop(i);
             i--;
+            continue;
         }
+        leds_sync(&g_in[i], cfg);
     }
     if (!g_wanted || g_n >= MAX_MIDI) {
         return;
@@ -570,6 +663,78 @@ static int feed_all(struct MidiIn *m, const unsigned char *bytes, int n, int *co
     return got;
 }
 
+/* An effect pad is lit while the effect is on, and lit again after the
+ * pad's own release darkens it. */
+static int leds_self_test(void)
+{
+    static const unsigned char press[] = {0x99, 36, 127};
+    static const unsigned char release[] = {0x89, 36, 0};
+    struct MidiIn m;
+    Config cfg;
+    unsigned char got[16];
+    int pipefd[2];
+    int code;
+    int steps;
+    int rc = -1;
+    int id;
+    size_t i;
+
+    if (pipe(pipefd) != 0) {
+        log_error("midi", "cannot create a pad light pipe");
+        return -1;
+    }
+    fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+    memset(&cfg, 0, sizeof cfg);
+    for (id = 0; id < KEYID_COUNT; id++) {
+        cfg.midi_code[id] = -1;
+    }
+    cfg.midi_code[KEYID_REVERB] = MIDI_NOTE | 36;
+    cfg.midi_code[KEYID_CHORUS] = MIDI_CC_UP | 3;
+    player_set_fx(NULL);
+    in_reset(&m, pipefd[1]);
+    m.out = 1;
+
+    /* At the start the pad is darkened once. */
+    leds_sync(&m, &cfg);
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) != 3 || got[0] != 0x89 || got[1] != 36) {
+        log_error("midi", "the reverb pad was not darkened at the start");
+        goto out;
+    }
+    /* Press: the pad lights itself and the effect turns on, so nothing is sent. */
+    for (i = 0; i < sizeof press; i++) {
+        midi_feed(&m, press[i], &code, &steps);
+    }
+    player_fx_toggle(PLAYER_FX_REVERB);
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) > 0) {
+        log_error("midi", "a held pad was sent its light again");
+        goto out;
+    }
+    /* Release darkens it, so it is lit again. */
+    for (i = 0; i < sizeof release; i++) {
+        midi_feed(&m, release[i], &code, &steps);
+    }
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) != 3 || got[0] != 0x99 || got[1] != 36 ||
+        got[2] != 127) {
+        log_error("midi", "the reverb pad was not lit after its release");
+        goto out;
+    }
+    player_fx_all_off();
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) != 3 || got[0] != 0x89 || got[1] != 36) {
+        log_error("midi", "the reverb pad stayed lit with every effect off");
+        goto out;
+    }
+    rc = 0;
+out:
+    player_set_fx(NULL);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return rc;
+}
+
 int midi_self_test(void)
 {
     struct MidiIn m;
@@ -630,5 +795,5 @@ int midi_self_test(void)
             return -1;
         }
     }
-    return 0;
+    return leds_self_test();
 }

@@ -9,11 +9,13 @@
 #include "playlist.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t g_sig;
@@ -141,6 +143,48 @@ static void log_keyboard_bindings(const Config *cfg)
     }
 }
 
+/* Only one player may run. Two would both read the shortcut remote's raw
+ * channel, which cannot be grabbed, so one dial click would reach both.
+ * The lock is held until the process exits. Returns 0, or -1 when another
+ * autodj holds it. */
+static int lock_instance(void)
+{
+    const char *dir = getenv("XDG_RUNTIME_DIR");
+    char path[512];
+    char text[32];
+    int fd;
+
+    if (dir && dir[0]) {
+        snprintf(path, sizeof path, "%s/autodj.lock", dir);
+    } else {
+        snprintf(path, sizeof path, "/tmp/autodj-%u.lock", (unsigned)getuid());
+    }
+    fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        log_warn("autodj", "cannot open %s: %s, not checking for another autodj", path,
+                 strerror(errno));
+        return 0;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        ssize_t n = read(fd, text, sizeof text - 1);
+
+        text[n > 0 ? n : 0] = '\0';
+        text[strcspn(text, "\n")] = '\0';
+        log_error("autodj", "autodj is already running%s%s%s. Stop it first.",
+                  text[0] ? " (pid " : "", text, text[0] ? ")" : "");
+        close(fd);
+        return -1;
+    }
+    if (ftruncate(fd, 0) == 0) {
+        int len = snprintf(text, sizeof text, "%d\n", (int)getpid());
+
+        if (write(fd, text, (size_t)len) != len) {
+            log_warn("autodj", "cannot write %s", path);
+        }
+    }
+    return 0;
+}
+
 static void remember_volume(const char *path, Config *cfg)
 {
     int volume = player_volume_percent();
@@ -213,6 +257,9 @@ int main(int argc, char **argv)
         return config_edit(path) == 0 ? 0 : 1;
     }
     if (calibrate) {
+        if (lock_instance() != 0) {
+            return 1;
+        }
         return dial_calibrate(path) == 0 ? 0 : 1;
     }
 
@@ -298,6 +345,11 @@ int main(int argc, char **argv)
         return rc;
     }
 
+    if (lock_instance() != 0) {
+        decode_shutdown();
+        playlist_free(pl);
+        return 1;
+    }
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
     sigaction(SIGINT, &sa, NULL);
