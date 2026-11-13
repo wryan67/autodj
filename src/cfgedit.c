@@ -5,6 +5,7 @@
 #include "decode.h"
 #include "keys.h"
 #include "log.h"
+#include "midi.h"
 #include "player.h"
 #include "playlist.h"
 
@@ -23,25 +24,28 @@
 #include <sys/ioctl.h>
 
 /*
- * Full-screen editor for master.cfg. The tabs are Main, Buttons, Reverb,
- * Chipmunk, Autopan, Phaser, Chorus, and Flanger. They stay on one row when
- * the window is wide enough. Chorus and Flanger wrap onto a second row when
- * it is not.
+ * Full-screen editor for master.cfg. The tabs are Main, Buttons, Knobs,
+ * Reverb, Chipmunk, Autopan, Phaser, Chorus, and Flanger. They stay on one
+ * row when the window is wide enough, and the last ones wrap onto a second
+ * row when it is not.
  * Tab and the arrow keys move between the fields on the current tab. Up from
  * the first field reaches the tabs, and left and right there switch tabs.
  * Left and right move the cursor in a text field, and step to the next field
- * at either end. On the Buttons tab each action has a keyboard box and then
- * a keypad box. Each box is only as wide as its title or its longest value.
- * The keyboard box is the next key typed on this terminal. The keypad box is
- * captured from the USB keypad or the shortcut remote.
- * Esc or Cancel leaves a binding unchanged. Delete on the keypad prompt
- * removes it. On the keyboard prompt, click Delete to remove it. Save
+ * at either end. On the Buttons and Knobs tabs each action has a keyboard,
+ * a keypad, and a MIDI box. Each box is only as wide as its title or its
+ * longest value. The keyboard box is the next key typed on this terminal.
+ * The keypad box is captured from the USB keypad or the shortcut remote, and
+ * the MIDI box from a pad or knob of any MIDI controller. The dial modes on
+ * Knobs are droplists of none, volume, and jog.
+ * Esc or Cancel leaves a binding unchanged. Delete on the keypad or MIDI
+ * prompt removes it. On the keyboard prompt, click Delete to remove it. Save
  * validates before it writes.
  */
 
 enum {
     TAB_MAIN = 0,
     TAB_BUTTONS,
+    TAB_KNOBS,
     TAB_REVERB,
     TAB_PITCH,
     TAB_AUTOPAN,
@@ -61,7 +65,6 @@ enum {
     FE_VOLUME,
     FE_LOUDNESS,
     FE_LUFS,
-    FE_DIAL_DEFAULT,
     FE_MAIN_END,
 
     /* Buttons rows. The first three are previous, pause, then skip. */
@@ -72,9 +75,6 @@ enum {
     FE_KEY_REW05,
     FE_KEY_REW10,
     FE_KEY_REW15,
-    FE_KEY_DIAL_FWD,
-    FE_KEY_DIAL_BACK,
-    FE_KEY_DIAL_MODE,
     FE_KEY_REVERB,
     FE_KEY_PITCH,
     FE_KEY_AUTOPAN,
@@ -84,7 +84,21 @@ enum {
     FE_KEY_EFFECTS_OFF,
     FE_BUTTON_END,
 
-    FE_RV_DECAY = FE_BUTTON_END,
+    /* Knobs rows: the dial, volume, and jog bindings, then the dial modes. */
+    FE_KNOB_FIRST = FE_BUTTON_END,
+    FE_KEY_DIAL_FWD = FE_KNOB_FIRST,
+    FE_KEY_DIAL_BACK,
+    FE_KEY_DIAL_MODE,
+    FE_KEY_VOL_UP,
+    FE_KEY_VOL_DOWN,
+    FE_KEY_JOG_UP,
+    FE_KEY_JOG_DOWN,
+    FE_DIAL_MODE1,
+    FE_DIAL_MODE2,
+    FE_DIAL_MODE3,
+    FE_KNOB_END,
+
+    FE_RV_DECAY = FE_KNOB_END,
     FE_RV_BW,
     FE_RV_DAMP,
     FE_RV_SEND,
@@ -136,11 +150,16 @@ enum {
     /* Column titles. A box is at least this wide so the title is not clipped. */
     KBD_HDR_W = 8,
     PAD_HDR_W = 6,
+    MIDI_HDR_W = 4,
+    /* Keyboard, keypad, and MIDI boxes on the Buttons and Knobs tabs. */
+    BIND_COLS = 3,
     /* Brackets plus one character. Used only when a value cannot fit. */
     BOX_MIN_W = 4,
-    /* Tallest tab is Buttons, with 16 fields, under one row of tabs.
+    /* Tallest tab is Buttons, with 13 fields, under one row of tabs.
      * A wrapped tab row adds one line, checked in layout_ui. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_FIRST,
+    /* Rows of the dial mode droplist: none, volume, jog. */
+    DROP_ROWS = 3,
     ROW_TABS = 1,
     ROW_NOTE = 2,
     ROW_FIELD0 = 3,
@@ -177,7 +196,8 @@ enum {
     EV_MOUSE,
     EV_RESIZE,
     EV_QUIT,
-    EV_HWKEY
+    EV_HWKEY,
+    EV_MIDI
 };
 
 struct Event {
@@ -198,10 +218,10 @@ struct Ui {
     int frame_h;
     int label_c;
     int box_c;
-    /* Keyboard box on the Buttons tab. kbd_w is 0 on the other tabs.
-     * The keypad box is the next column; its width is box_w[] for key fields. */
-    int kbd_c;
-    int kbd_w;
+    /* Keyboard, keypad, and MIDI boxes on the Buttons and Knobs tabs.
+     * col_w[0] is 0 on the other tabs. box_w[] of a key field is col_w[1]. */
+    int col_c[BIND_COLS];
+    int col_w[BIND_COLS];
     int tab_y[TAB_COUNT];
     int tab_c[TAB_COUNT];
     int tab_w[TAB_COUNT];
@@ -221,6 +241,10 @@ struct Ui {
     int del_r;
     int del_c;
     int del_w;
+    /* Open droplist: first option row, column, and width. */
+    int drop_r;
+    int drop_c;
+    int drop_w;
 };
 
 struct Editor {
@@ -229,11 +253,15 @@ struct Editor {
     struct Ui ui;
     int focus;
     int cursor;
-    /* 0 is the left box (keyboard). 1 is the right box (keypad). */
+    /* 0 is the keyboard box, 1 the keypad box, and 2 the MIDI box. */
     int col;
     int dialog;
     int capture;
     int capture_kbd;
+    int capture_midi;
+    /* 1 while the droplist of the focused dial mode is open. */
+    int drop;
+    int drop_sel;
     int capture_id;
     int capture_btn;
     int tab;
@@ -255,6 +283,9 @@ static struct sigaction g_old_int;
 static int g_key_fds[32];
 static int g_key_n;
 static int g_key_grabbed[32];
+static int g_midi_fds[8];
+static int g_midi_n;
+static char g_midi_names[256];
 
 static const char *field_label(int id)
 {
@@ -268,16 +299,12 @@ static const char *field_label(int id)
         "Volume %",
         "Loudness",
         "Target LUFS",
-        "Dial starts in",
         "Previous",
         "Pause/resume",
         "Skip",
         "Rewind 0.5s",
         "Rewind 1s",
         "Rewind 1.5s",
-        "Dial forward",
-        "Dial back",
-        "Dial mode",
         "Reverb",
         "Chipmunk",
         "Autopan",
@@ -285,6 +312,16 @@ static const char *field_label(int id)
         "Chorus",
         "Flanger",
         "All effects off",
+        "Dial forward",
+        "Dial back",
+        "Next dial mode",
+        "Volume up",
+        "Volume down",
+        "Jog up",
+        "Jog down",
+        "Dial mode 1",
+        "Dial mode 2",
+        "Dial mode 3",
         "Decay",
         "BW",
         "Damping",
@@ -321,8 +358,69 @@ static const char *field_label(int id)
     return labels[id];
 }
 
+/* Action of a Buttons or Knobs row, or -1. */
+static int fe_keyid(int id)
+{
+    switch (id) {
+    case FE_KEY_PREV:
+        return KEYID_PREV;
+    case FE_KEY_PAUSE:
+        return KEYID_PAUSE;
+    case FE_KEY_SKIP:
+        return KEYID_SKIP;
+    case FE_KEY_REW05:
+        return KEYID_REW05;
+    case FE_KEY_REW10:
+        return KEYID_REW10;
+    case FE_KEY_REW15:
+        return KEYID_REW15;
+    case FE_KEY_REVERB:
+        return KEYID_REVERB;
+    case FE_KEY_PITCH:
+        return KEYID_PITCH;
+    case FE_KEY_AUTOPAN:
+        return KEYID_AUTOPAN;
+    case FE_KEY_PHASER:
+        return KEYID_PHASER;
+    case FE_KEY_CHORUS:
+        return KEYID_CHORUS;
+    case FE_KEY_FLANGER:
+        return KEYID_FLANGER;
+    case FE_KEY_EFFECTS_OFF:
+        return KEYID_EFFECTS_OFF;
+    case FE_KEY_DIAL_FWD:
+        return KEYID_DIAL_FWD;
+    case FE_KEY_DIAL_BACK:
+        return KEYID_DIAL_BACK;
+    case FE_KEY_DIAL_MODE:
+        return KEYID_DIAL_MODE;
+    case FE_KEY_VOL_UP:
+        return KEYID_VOL_UP;
+    case FE_KEY_VOL_DOWN:
+        return KEYID_VOL_DOWN;
+    case FE_KEY_JOG_UP:
+        return KEYID_JOG_UP;
+    case FE_KEY_JOG_DOWN:
+        return KEYID_JOG_DOWN;
+    default:
+        return -1;
+    }
+}
+
+/* Text of one box of a Buttons or Knobs row. col is 0 for the keyboard,
+ * 1 for the keypad, and 2 for MIDI. */
+static char *binding_text(ConfigEdit *edit, int id, int col, size_t *cap)
+{
+    size_t spare;
+
+    return config_edit_binding(edit, fe_keyid(id), col, cap ? cap : &spare);
+}
+
 static char *field_text(ConfigEdit *edit, int id, size_t *cap)
 {
+    if (fe_keyid(id) >= 0) {
+        return binding_text(edit, id, 1, cap);
+    }
     switch (id) {
     case FE_FOLDER:
         *cap = sizeof edit->folder;
@@ -351,57 +449,11 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_LUFS:
         *cap = sizeof edit->loudness_lufs;
         return edit->loudness_lufs;
-    case FE_DIAL_DEFAULT:
-        *cap = sizeof edit->dial_default;
-        return edit->dial_default;
-    case FE_KEY_PAUSE:
-        *cap = sizeof edit->key_pause;
-        return edit->key_pause;
-    case FE_KEY_SKIP:
-        *cap = sizeof edit->key_skip;
-        return edit->key_skip;
-    case FE_KEY_PREV:
-        *cap = sizeof edit->key_prev;
-        return edit->key_prev;
-    case FE_KEY_REW05:
-        *cap = sizeof edit->key_rew05;
-        return edit->key_rew05;
-    case FE_KEY_REW10:
-        *cap = sizeof edit->key_rew10;
-        return edit->key_rew10;
-    case FE_KEY_REW15:
-        *cap = sizeof edit->key_rew15;
-        return edit->key_rew15;
-    case FE_KEY_DIAL_FWD:
-        *cap = sizeof edit->key_dial_fwd;
-        return edit->key_dial_fwd;
-    case FE_KEY_DIAL_BACK:
-        *cap = sizeof edit->key_dial_back;
-        return edit->key_dial_back;
-    case FE_KEY_DIAL_MODE:
-        *cap = sizeof edit->key_dial_mode;
-        return edit->key_dial_mode;
-    case FE_KEY_REVERB:
-        *cap = sizeof edit->key_reverb;
-        return edit->key_reverb;
-    case FE_KEY_PITCH:
-        *cap = sizeof edit->key_pitch;
-        return edit->key_pitch;
-    case FE_KEY_AUTOPAN:
-        *cap = sizeof edit->key_autopan;
-        return edit->key_autopan;
-    case FE_KEY_PHASER:
-        *cap = sizeof edit->key_phaser;
-        return edit->key_phaser;
-    case FE_KEY_CHORUS:
-        *cap = sizeof edit->key_chorus;
-        return edit->key_chorus;
-    case FE_KEY_FLANGER:
-        *cap = sizeof edit->key_flanger;
-        return edit->key_flanger;
-    case FE_KEY_EFFECTS_OFF:
-        *cap = sizeof edit->key_effects_off;
-        return edit->key_effects_off;
+    case FE_DIAL_MODE1:
+    case FE_DIAL_MODE2:
+    case FE_DIAL_MODE3:
+        *cap = sizeof edit->dial_mode[0];
+        return edit->dial_mode[id - FE_DIAL_MODE1];
     case FE_RV_DECAY:
         *cap = sizeof edit->rv_decay;
         return edit->rv_decay;
@@ -506,7 +558,12 @@ static int is_number_field(int id)
 
 static int is_key_field(int id)
 {
-    return id >= FE_KEY_FIRST && id < FE_BUTTON_END;
+    return fe_keyid(id) >= 0;
+}
+
+static int is_dial_mode_field(int id)
+{
+    return id >= FE_DIAL_MODE1 && id <= FE_DIAL_MODE3;
 }
 
 static int is_check_field(const ConfigEdit *edit, int id)
@@ -523,19 +580,20 @@ static int is_check_field(const ConfigEdit *edit, int id)
     return text && config_parse_bool(text, &on) == 0;
 }
 
-/* A field that Space switches between two words. A value that is neither
- * stays a text field so it can be corrected. */
+/* A dial mode droplist. Enter or Space opens the list of none, volume, and
+ * jog. A value that is none of them stays a text field so it can be
+ * corrected. */
 static int is_choice_field(const ConfigEdit *edit, int id)
 {
     size_t cap;
-    int on = 0;
+    int mode = 0;
     char *text;
 
-    if (id != FE_DIAL_DEFAULT) {
+    if (!is_dial_mode_field(id)) {
         return 0;
     }
     text = field_text((ConfigEdit *)edit, id, &cap);
-    return text && config_parse_dial(text, &on) == 0;
+    return text && config_parse_dial_mode(text, &mode) == 0;
 }
 
 static int is_toggle_field(const ConfigEdit *edit, int id)
@@ -671,10 +729,6 @@ static void toggle_check(struct Editor *ed, int id)
     char *text = field_text(&ed->edit, id, &cap);
     int on = 0;
 
-    if (text && id == FE_DIAL_DEFAULT && config_parse_dial(text, &on) == 0) {
-        snprintf(text, cap, "%s", on ? "jog" : "volume");
-        return;
-    }
     if (!text || config_parse_bool(text, &on) != 0) {
         return;
     }
@@ -684,8 +738,8 @@ static void toggle_check(struct Editor *ed, int id)
 static int tab_first(int tab)
 {
     static const int first[] = {
-        FE_FOLDER, FE_KEY_FIRST, FE_RV_DECAY, FE_PS_SEMI, FE_AP_PERIOD,
-        FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD
+        FE_FOLDER, FE_KEY_FIRST, FE_KNOB_FIRST, FE_RV_DECAY, FE_PS_SEMI,
+        FE_AP_PERIOD, FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -697,12 +751,12 @@ static int tab_first(int tab)
 static int tab_last(int tab)
 {
     static const int last[] = {
-        FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_RV_END - 1, FE_PS_END - 1,
-        FE_AP_END - 1, FE_PH_END - 1, FE_CH_END - 1, FE_FIELD_COUNT - 1
+        FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_KNOB_END - 1, FE_RV_END - 1,
+        FE_PS_END - 1, FE_AP_END - 1, FE_PH_END - 1, FE_CH_END - 1, FE_FIELD_COUNT - 1
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
-        return FE_DIAL_DEFAULT;
+        return FE_MAIN_END - 1;
     }
     return last[tab];
 }
@@ -827,8 +881,7 @@ static int tab_row_count(int frame_w)
     return rows;
 }
 
-static const char *key_field_value(const ConfigEdit *edit, int id);
-static const char *kbd_field_value(const ConfigEdit *edit, int id);
+static const char *binding_value(const ConfigEdit *edit, int id, int col);
 
 static int value_cols(const char *text)
 {
@@ -838,7 +891,7 @@ static int value_cols(const char *text)
     return utf8_cols(text, (int)strlen(text));
 }
 
-/* Width of a Buttons box: brackets around the longest value, or the title. */
+/* Width of a binding box: brackets around the longest value, or the title. */
 static int box_for_values(int header, int longest)
 {
     int w = longest + 2;
@@ -852,76 +905,82 @@ static int box_for_values(int header, int longest)
     return w;
 }
 
-static void button_box_widths(const ConfigEdit *edit, int *kbd_w, int *pad_w)
+static const int g_col_hdr_w[BIND_COLS] = {KBD_HDR_W, PAD_HDR_W, MIDI_HDR_W};
+static const char *const g_col_titles[BIND_COLS] = {"Keyboard", "Keypad", "MIDI"};
+
+/* Widths of the keyboard, keypad, and MIDI boxes for the rows on tab. */
+static void binding_box_widths(const ConfigEdit *edit, int tab, int *w)
 {
-    int longest_kbd = 0;
-    int longest_pad = 0;
+    int longest[BIND_COLS] = {0, 0, 0};
     int i;
+    int c;
 
-    for (i = FE_KEY_FIRST; i < FE_BUTTON_END; i++) {
-        int kc = value_cols(kbd_field_value(edit, i));
-        int pc = value_cols(key_field_value(edit, i));
-
-        if (kc > longest_kbd) {
-            longest_kbd = kc;
+    for (i = tab_first(tab); i <= tab_last(tab); i++) {
+        if (!is_key_field(i)) {
+            continue;
         }
-        if (pc > longest_pad) {
-            longest_pad = pc;
+        for (c = 0; c < BIND_COLS; c++) {
+            int n = value_cols(binding_value(edit, i, c));
+
+            if (n > longest[c]) {
+                longest[c] = n;
+            }
         }
     }
-    *kbd_w = box_for_values(KBD_HDR_W, longest_kbd);
-    *pad_w = box_for_values(PAD_HDR_W, longest_pad);
-}
-
-/* Shrink so the two boxes and the gap between them fit. Do not grow them. */
-static void fit_button_boxes(int *kbd_w, int *pad_w, int avail)
-{
-    int over;
-    int *wide;
-    int *narrow;
-
-    if (*kbd_w < BOX_MIN_W) {
-        *kbd_w = BOX_MIN_W;
-    }
-    if (*pad_w < BOX_MIN_W) {
-        *pad_w = BOX_MIN_W;
-    }
-    over = *kbd_w + 1 + *pad_w - avail;
-    if (over <= 0) {
-        return;
-    }
-    if (*pad_w >= *kbd_w) {
-        wide = pad_w;
-        narrow = kbd_w;
-    } else {
-        wide = kbd_w;
-        narrow = pad_w;
-    }
-    if (*wide - BOX_MIN_W < over) {
-        over -= *wide - BOX_MIN_W;
-        *wide = BOX_MIN_W;
-    } else {
-        *wide -= over;
-        over = 0;
-    }
-    if (over > 0) {
-        if (*narrow - BOX_MIN_W < over) {
-            *narrow = BOX_MIN_W;
-        } else {
-            *narrow -= over;
-        }
+    for (c = 0; c < BIND_COLS; c++) {
+        w[c] = box_for_values(g_col_hdr_w[c], longest[c]);
     }
 }
 
-static int pad_col(const struct Ui *ui)
+/* Shrink the widest box until the boxes and the gaps between them fit.
+ * Do not grow them. */
+static void fit_binding_boxes(int *w, int avail)
 {
-    return ui->box_c + ui->kbd_w + 1;
+    int c;
+
+    for (c = 0; c < BIND_COLS; c++) {
+        if (w[c] < BOX_MIN_W) {
+            w[c] = BOX_MIN_W;
+        }
+    }
+    for (;;) {
+        int total = BIND_COLS - 1;
+        int wide = 0;
+
+        for (c = 0; c < BIND_COLS; c++) {
+            total += w[c];
+            if (w[c] > w[wide]) {
+                wide = c;
+            }
+        }
+        if (total <= avail || w[wide] <= BOX_MIN_W) {
+            return;
+        }
+        w[wide]--;
+    }
+}
+
+static int has_binding_cols(int tab)
+{
+    return tab == TAB_BUTTONS || tab == TAB_KNOBS;
+}
+
+/* Which box of a binding row is at column x. */
+static int col_at(const struct Ui *ui, int x)
+{
+    int c;
+
+    for (c = BIND_COLS - 1; c > 0; c--) {
+        if (x >= ui->col_c[c]) {
+            return c;
+        }
+    }
+    return 0;
 }
 
 static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols, int tab)
 {
     int avail;
-    int pad_w = 0;
     int i;
     int row;
     int total;
@@ -936,8 +995,8 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
         return;
     }
     ui->frame_w = cols - 2;
-    if (ui->frame_w > 96) {
-        ui->frame_w = 96;
+    if (ui->frame_w > 108) {
+        ui->frame_w = 108;
     }
     extra = tab_row_count(ui->frame_w) - 1;
     ui->frame_h = FRAME_H + extra;
@@ -958,19 +1017,24 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
         ui->too_small = 1;
         return;
     }
-    ui->kbd_w = 0;
-    ui->kbd_c = 0;
-    if (tab == TAB_BUTTONS) {
-        int kbd_w = 0;
+    if (has_binding_cols(tab)) {
+        int w[BIND_COLS];
+        int used = BIND_COLS - 1;
+        int c;
 
-        button_box_widths(edit, &kbd_w, &pad_w);
-        fit_button_boxes(&kbd_w, &pad_w, avail);
-        if (kbd_w + 1 + pad_w > avail) {
+        binding_box_widths(edit, tab, w);
+        fit_binding_boxes(w, avail);
+        for (c = 0; c < BIND_COLS; c++) {
+            used += w[c];
+        }
+        if (used > avail) {
             ui->too_small = 1;
             return;
         }
-        ui->kbd_w = kbd_w;
-        ui->kbd_c = ui->box_c;
+        for (c = 0; c < BIND_COLS; c++) {
+            ui->col_w[c] = w[c];
+            ui->col_c[c] = c == 0 ? ui->box_c : ui->col_c[c - 1] + w[c - 1] + 1;
+        }
     }
     row = 0;
     for (i = 0; i < FE_FIELD_COUNT; i++) {
@@ -983,10 +1047,10 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
         row++;
         if (is_check_field(edit, i)) {
             ui->box_w[i] = 3;
-        } else if (is_number_field(i) || i == FE_DIAL_DEFAULT) {
+        } else if (is_number_field(i) || is_dial_mode_field(i)) {
             ui->box_w[i] = NUM_W;
-        } else if (is_key_field(i) && ui->kbd_w > 0) {
-            ui->box_w[i] = pad_w;
+        } else if (is_key_field(i) && ui->col_w[0] > 0) {
+            ui->box_w[i] = ui->col_w[1];
         } else {
             ui->box_w[i] = avail;
         }
@@ -1317,7 +1381,7 @@ static void draw_dialog(FILE *fp, struct Ui *ui, const char *title, const char *
 static const char *tab_title(int tab)
 {
     static const char *names[] = {
-        "Main", "Buttons", "Reverb", "Chipmunk",
+        "Main", "Buttons", "Knobs", "Reverb", "Chipmunk",
         "Autopan", "Phaser", "Chorus", "Flanger"
     };
 
@@ -1330,8 +1394,9 @@ static const char *tab_title(int tab)
 static const char *tab_note(int tab)
 {
     static const char *notes[] = {
-        "Folder, loudness, and the dial.",
-        "Volume on dial.",
+        "Folder, crossfade, and loudness.",
+        "Keys and pads.",
+        "Dial and knobs.",
         "Room. Send is how much reverb is added.",
         "Pitch 1 is an octave up. 0 is unchanged.",
         "Left to right and back. Period counts beats.",
@@ -1425,9 +1490,12 @@ static void draw_screen(struct Editor *ed, FILE *fp)
     draw_tabs(ed, fp);
     cup(fp, ui->note_r, ui->label_c);
     fputs(tab_note(ed->tab), fp);
-    if (ed->tab == TAB_BUTTONS && ui->kbd_w > 0) {
-        draw_clipped(fp, ui->note_r, ui->kbd_c, ui->kbd_w, "Keyboard");
-        draw_clipped(fp, ui->note_r, pad_col(ui), ui->box_w[FE_KEY_PAUSE], "Keypad");
+    if (has_binding_cols(ed->tab) && ui->col_w[0] > 0) {
+        int c;
+
+        for (c = 0; c < BIND_COLS; c++) {
+            draw_clipped(fp, ui->note_r, ui->col_c[c], ui->col_w[c], g_col_titles[c]);
+        }
     }
     for (i = 0; i < FE_FIELD_COUNT; i++) {
         size_t cap;
@@ -1448,20 +1516,20 @@ static void draw_screen(struct Editor *ed, FILE *fp)
             config_parse_bool(text, &on);
             draw_check(fp, ui->field_r[i], ui->box_c, on, focused);
         } else if (is_key_field(i)) {
-            const char *kbd = kbd_field_value(&ed->edit, i);
+            int c;
 
-            if (ui->kbd_w > 0) {
-                draw_text_box(fp, ui->field_r[i], ui->kbd_c, ui->kbd_w,
-                              kbd ? kbd : "", 0, focused && ed->col == 0, 0);
-                draw_text_box(fp, ui->field_r[i], pad_col(ui), ui->box_w[i],
-                              text ? text : "", 0, focused && ed->col == 1, 0);
-            } else {
-                draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i],
-                              text ? text : "", 0, focused && ed->col == 0, 0);
+            for (c = 0; c < BIND_COLS && ui->col_w[0] > 0; c++) {
+                const char *v = binding_value(&ed->edit, i, c);
+
+                draw_text_box(fp, ui->field_r[i], ui->col_c[c], ui->col_w[c],
+                              v ? v : "", 0, focused && ed->col == c, 0);
             }
         } else if (is_choice_field(&ed->edit, i)) {
-            draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i],
-                          text ? text : "", 0, focused, 0);
+            char shown[32];
+
+            /* The v marks a droplist. */
+            snprintf(shown, sizeof shown, "%-*s v", ui->box_w[i] - 4, text ? text : "");
+            draw_text_box(fp, ui->field_r[i], ui->box_c, ui->box_w[i], shown, 0, focused, 0);
         } else {
             int cursor = focused ? ed->cursor : 0;
 
@@ -1479,9 +1547,29 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         cup(fp, ui->hint_r, hint_c);
         fputs(hint, fp);
     }
+    if (ed->drop && is_choice_field(&ed->edit, ed->focus) && ui->field_r[ed->focus] >= 0) {
+        int r = ui->field_r[ed->focus] + 1;
+        int k;
+
+        /* Open below the field, or above it when the Save row is in the way. */
+        if (r + DROP_ROWS > ui->save_r) {
+            r = ui->field_r[ed->focus] - DROP_ROWS;
+        }
+        ui->drop_r = r;
+        ui->drop_c = ui->box_c;
+        ui->drop_w = ui->box_w[ed->focus];
+        for (k = 0; k < DROP_ROWS; k++) {
+            char item[32];
+
+            snprintf(item, sizeof item, " %-*s ", ui->drop_w - 2, config_dial_mode_name(k));
+            draw_button(fp, r + k, ui->drop_c, item, ed->drop_sel == k);
+        }
+    }
     if (ed->capture) {
-        const char *title = ed->capture_kbd ? "Keyboard" : "Keypad";
-        const char *fallback = ed->capture_kbd
+        const char *title = ed->capture_midi ? "MIDI" : ed->capture_kbd ? "Keyboard" : "Keypad";
+        const char *fallback = ed->capture_midi
+            ? "Turn a knob or press a pad."
+            : ed->capture_kbd
             ? "Press a keyboard key. Esc cancels. Click Delete to clear."
             : "Press a keypad or remote button.";
 
@@ -1638,6 +1726,8 @@ static void release_keys(void)
     }
     keys_close_capture(g_key_fds, g_key_n);
     g_key_n = 0;
+    midi_close_capture(g_midi_fds, g_midi_n);
+    g_midi_n = 0;
 }
 
 static void leave_tty(void)
@@ -1938,8 +2028,8 @@ static int next_capture_event(struct Event *ev)
             return event_from_byte(ev, c);
         }
         nfd = 1 + g_key_n;
-        if (nfd > (int)(sizeof pfds / sizeof pfds[0])) {
-            nfd = (int)(sizeof pfds / sizeof pfds[0]);
+        if (nfd > (int)(sizeof pfds / sizeof pfds[0]) - g_midi_n) {
+            nfd = (int)(sizeof pfds / sizeof pfds[0]) - g_midi_n;
         }
         memset(pfds, 0, sizeof pfds);
         pfds[0].fd = g_tty;
@@ -1948,7 +2038,11 @@ static int next_capture_event(struct Event *ev)
             pfds[1 + i].fd = g_key_fds[i];
             pfds[1 + i].events = POLLIN;
         }
-        pr = poll(pfds, (nfds_t)nfd, -1);
+        for (i = 0; i < g_midi_n; i++) {
+            pfds[nfd + i].fd = g_midi_fds[i];
+            pfds[nfd + i].events = POLLIN;
+        }
+        pr = poll(pfds, (nfds_t)(nfd + g_midi_n), -1);
         if (pr < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1986,6 +2080,33 @@ static int next_capture_event(struct Event *ev)
             ev->code = found;
             return 0;
         }
+        for (i = 0; i < g_midi_n; i++) {
+            int code;
+
+            if (!(pfds[nfd + i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL))) {
+                continue;
+            }
+            code = midi_read_press(g_midi_fds[i]);
+            if (code == -2) {
+                /* Unplugged. midi_read_press closed it. */
+                memmove(&g_midi_fds[i], &g_midi_fds[i + 1],
+                        (size_t)(g_midi_n - i - 1) * sizeof g_midi_fds[0]);
+                memmove(&pfds[nfd + i], &pfds[nfd + i + 1],
+                        (size_t)(g_midi_n - i - 1) * sizeof pfds[0]);
+                g_midi_n--;
+                i--;
+                continue;
+            }
+            if (found < 0 && code >= 0) {
+                found = code;
+            }
+        }
+        if (found >= 0) {
+            memset(ev, 0, sizeof *ev);
+            ev->kind = EV_MIDI;
+            ev->code = found;
+            return 0;
+        }
         if (pfds[0].revents & POLLIN) {
             unsigned char c;
             ssize_t n = read(g_tty, &c, 1);
@@ -2013,7 +2134,7 @@ static int next_event(struct Event *ev, int capture)
     unsigned char c;
     int rc;
 
-    if (capture && g_key_n > 0) {
+    if (capture && (g_key_n > 0 || g_midi_n > 0)) {
         return next_capture_event(ev);
     }
     memset(ev, 0, sizeof *ev);
@@ -2070,16 +2191,8 @@ static int hit_focus(const struct Ui *ui, int x, int y)
             continue;
         }
         right = ui->box_c + ui->box_w[i] - 1;
-        if (is_key_field(i) && ui->kbd_w > 0) {
-            int pend = pad_col(ui) + ui->box_w[i] - 1;
-            int kend = ui->kbd_c + ui->kbd_w - 1;
-
-            if (kend > right) {
-                right = kend;
-            }
-            if (pend > right) {
-                right = pend;
-            }
+        if (is_key_field(i) && ui->col_w[0] > 0) {
+            right = ui->col_c[BIND_COLS - 1] + ui->col_w[BIND_COLS - 1] - 1;
         }
         if (y == ui->field_r[i] && x >= ui->label_c && x <= right) {
             return i;
@@ -2163,163 +2276,73 @@ static void trim_copy(char *dest, size_t n, const char *src)
     }
 }
 
+static const char *binding_value(const ConfigEdit *edit, int id, int col)
+{
+    const char *text = binding_text((ConfigEdit *)edit, id, col, NULL);
+
+    return text ? text : "";
+}
+
 static const char *key_field_value(const ConfigEdit *edit, int id)
 {
-    switch (id) {
-    case FE_KEY_PAUSE:
-        return edit->key_pause;
-    case FE_KEY_SKIP:
-        return edit->key_skip;
-    case FE_KEY_PREV:
-        return edit->key_prev;
-    case FE_KEY_REW05:
-        return edit->key_rew05;
-    case FE_KEY_REW10:
-        return edit->key_rew10;
-    case FE_KEY_REW15:
-        return edit->key_rew15;
-    case FE_KEY_DIAL_FWD:
-        return edit->key_dial_fwd;
-    case FE_KEY_DIAL_BACK:
-        return edit->key_dial_back;
-    case FE_KEY_DIAL_MODE:
-        return edit->key_dial_mode;
-    case FE_KEY_REVERB:
-        return edit->key_reverb;
-    case FE_KEY_PITCH:
-        return edit->key_pitch;
-    case FE_KEY_AUTOPAN:
-        return edit->key_autopan;
-    case FE_KEY_PHASER:
-        return edit->key_phaser;
-    case FE_KEY_CHORUS:
-        return edit->key_chorus;
-    case FE_KEY_FLANGER:
-        return edit->key_flanger;
-    case FE_KEY_EFFECTS_OFF:
-        return edit->key_effects_off;
-    default:
-        return "";
-    }
+    return binding_value(edit, id, 1);
 }
 
 static const char *kbd_field_value(const ConfigEdit *edit, int id)
 {
-    switch (id) {
-    case FE_KEY_PAUSE:
-        return edit->kbd_pause;
-    case FE_KEY_SKIP:
-        return edit->kbd_skip;
-    case FE_KEY_PREV:
-        return edit->kbd_prev;
-    case FE_KEY_REW05:
-        return edit->kbd_rew05;
-    case FE_KEY_REW10:
-        return edit->kbd_rew10;
-    case FE_KEY_REW15:
-        return edit->kbd_rew15;
-    case FE_KEY_DIAL_FWD:
-        return edit->kbd_dial_fwd;
-    case FE_KEY_DIAL_BACK:
-        return edit->kbd_dial_back;
-    case FE_KEY_DIAL_MODE:
-        return edit->kbd_dial_mode;
-    case FE_KEY_REVERB:
-        return edit->kbd_reverb;
-    case FE_KEY_PITCH:
-        return edit->kbd_pitch;
-    case FE_KEY_AUTOPAN:
-        return edit->kbd_autopan;
-    case FE_KEY_PHASER:
-        return edit->kbd_phaser;
-    case FE_KEY_CHORUS:
-        return edit->kbd_chorus;
-    case FE_KEY_FLANGER:
-        return edit->kbd_flanger;
-    case FE_KEY_EFFECTS_OFF:
-        return edit->kbd_effects_off;
-    default:
-        return "";
+    return binding_value(edit, id, 0);
+}
+
+/* The canonical form a binding is compared in, or "" when it is blank or
+ * not valid. */
+static void binding_canon(int col, const char *text, char *dest, size_t n)
+{
+    char raw[64];
+
+    trim_copy(raw, sizeof raw, text ? text : "");
+    if (col == 0) {
+        if (!raw[0] || keys_kbd_canon(raw, dest, n) != 0) {
+            dest[0] = '\0';
+        }
+    } else if (col == 2) {
+        if (!raw[0] || midi_canon(raw, dest, n) != 0) {
+            dest[0] = '\0';
+        }
+    } else {
+        snprintf(dest, n, "%s", raw);
     }
 }
 
-static char *kbd_field_text(ConfigEdit *edit, int id, size_t *cap)
+/* 1 when name is already bound in column col of another row. *who is that
+ * row's label, with "keyboard" or "MIDI" after it for those columns. */
+static int binding_conflict(const ConfigEdit *edit, int self, int col, const char *name,
+                            const char **who)
 {
-    char *text = (char *)kbd_field_value(edit, id);
-
-    if (id < FE_KEY_FIRST || id >= FE_BUTTON_END) {
-        *cap = 0;
-        return NULL;
-    }
-    *cap = AUTODJ_KBD_LEN;
-    return text;
-}
-
-static int key_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
-{
-    static const int ids[] = {
-        FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
-        FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
-        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN,
-        FE_KEY_PHASER, FE_KEY_CHORUS, FE_KEY_FLANGER, FE_KEY_EFFECTS_OFF
-    };
+    static char who_buf[64];
+    char want[64];
     int i;
 
     if (who) {
         *who = "";
     }
-    if (!edit || !name || !name[0]) {
+    if (!edit || !name) {
         return 0;
     }
-    for (i = 0; i < (int)(sizeof ids / sizeof ids[0]); i++) {
+    binding_canon(col, name, want, sizeof want);
+    if (!want[0]) {
+        return 0;
+    }
+    for (i = 0; i < FE_FIELD_COUNT; i++) {
         char got[64];
 
-        if (ids[i] == self) {
+        if (i == self || !is_key_field(i)) {
             continue;
         }
-        trim_copy(got, sizeof got, key_field_value(edit, ids[i]));
-        if (got[0] && strcmp(got, name) == 0) {
+        binding_canon(col, binding_value(edit, i, col), got, sizeof got);
+        if (got[0] && strcmp(got, want) == 0) {
             if (who) {
-                *who = field_label(ids[i]);
-            }
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int kbd_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
-{
-    static const int ids[] = {
-        FE_KEY_PAUSE, FE_KEY_SKIP, FE_KEY_PREV, FE_KEY_REW05,
-        FE_KEY_REW10, FE_KEY_REW15, FE_KEY_DIAL_FWD, FE_KEY_DIAL_BACK,
-        FE_KEY_DIAL_MODE, FE_KEY_REVERB, FE_KEY_PITCH, FE_KEY_AUTOPAN,
-        FE_KEY_PHASER, FE_KEY_CHORUS, FE_KEY_FLANGER, FE_KEY_EFFECTS_OFF
-    };
-    static char who_buf[64];
-    char want[AUTODJ_KBD_LEN];
-    int i;
-
-    if (who) {
-        *who = "";
-    }
-    if (!edit || !name || keys_kbd_canon(name, want, sizeof want) != 0) {
-        return 0;
-    }
-    for (i = 0; i < (int)(sizeof ids / sizeof ids[0]); i++) {
-        char raw[AUTODJ_KBD_LEN];
-        char got[AUTODJ_KBD_LEN];
-
-        if (ids[i] == self) {
-            continue;
-        }
-        trim_copy(raw, sizeof raw, kbd_field_value(edit, ids[i]));
-        if (!raw[0] || keys_kbd_canon(raw, got, sizeof got) != 0) {
-            continue;
-        }
-        if (strcmp(got, want) == 0) {
-            if (who) {
-                snprintf(who_buf, sizeof who_buf, "%s keyboard", field_label(ids[i]));
+                snprintf(who_buf, sizeof who_buf, "%s%s", field_label(i),
+                         col == 0 ? " keyboard" : col == 2 ? " MIDI" : "");
                 *who = who_buf;
             }
             return 1;
@@ -2328,25 +2351,36 @@ static int kbd_conflict(const ConfigEdit *edit, int self, const char *name, cons
     return 0;
 }
 
+static int key_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
+{
+    return binding_conflict(edit, self, 1, name, who);
+}
+
+static int kbd_conflict(const ConfigEdit *edit, int self, const char *name, const char **who)
+{
+    return binding_conflict(edit, self, 0, name, who);
+}
+
 static void stop_capture(struct Editor *ed)
 {
     release_keys();
     if (ed) {
         ed->capture = 0;
         ed->capture_kbd = 0;
+        ed->capture_midi = 0;
     }
+}
+
+static int capture_col(const struct Editor *ed)
+{
+    return ed->capture_midi ? 2 : ed->capture_kbd ? 0 : 1;
 }
 
 static void clear_key_binding(struct Editor *ed)
 {
     size_t cap;
-    char *text;
+    char *text = binding_text(&ed->edit, ed->capture_id, capture_col(ed), &cap);
 
-    if (ed->capture_kbd) {
-        text = kbd_field_text(&ed->edit, ed->capture_id, &cap);
-    } else {
-        text = field_text(&ed->edit, ed->capture_id, &cap);
-    }
     if (text && cap > 0) {
         text[0] = '\0';
     }
@@ -2396,6 +2430,29 @@ static void set_kbd_prompt(struct Editor *ed)
     }
 }
 
+static void set_midi_prompt(struct Editor *ed, int busy)
+{
+    char shown[AUTODJ_MIDI_LEN];
+    char line[160];
+    size_t used;
+
+    trim_copy(shown, sizeof shown, binding_value(&ed->edit, ed->capture_id, 2));
+    if (shown[0]) {
+        snprintf(line, sizeof line, "Turn a knob or press a pad, or Delete to remove %s.", shown);
+    } else {
+        snprintf(line, sizeof line, "Turn a knob or press a pad.");
+    }
+    snprintf(ed->err, sizeof ed->err, "%s", line);
+    used = strlen(ed->err);
+    if (g_midi_n > 0) {
+        snprintf(ed->err + used, sizeof ed->err - used, "\nListening to %s.", g_midi_names);
+    } else if (busy) {
+        snprintf(ed->err + used, sizeof ed->err - used, "\nMIDI is in use by playback.");
+    } else {
+        snprintf(ed->err + used, sizeof ed->err - used, "\nNo MIDI controller was found.");
+    }
+}
+
 static void begin_capture(struct Editor *ed, int id)
 {
     int pad = 0;
@@ -2406,10 +2463,19 @@ static void begin_capture(struct Editor *ed, int id)
     ed->capture_id = id;
     ed->capture_btn = CAP_CANCEL;
     ed->dialog = 0;
+    ed->drop = 0;
     ed->capture_kbd = ed->col == 0;
+    ed->capture_midi = ed->col == 2;
     release_keys();
     if (ed->capture_kbd) {
         set_kbd_prompt(ed);
+        ed->capture = 1;
+        return;
+    }
+    if (ed->capture_midi) {
+        g_midi_n = midi_open_capture(g_midi_fds, (int)(sizeof g_midi_fds / sizeof g_midi_fds[0]),
+                                     g_midi_names, sizeof g_midi_names, &busy);
+        set_midi_prompt(ed, busy);
         ed->capture = 1;
         return;
     }
@@ -2510,7 +2576,7 @@ static int handle_kbd_capture(struct Editor *ed, const struct Event *ev)
         ed->dialog = 1;
         return 0;
     }
-    text = kbd_field_text(&ed->edit, ed->capture_id, &cap);
+    text = binding_text(&ed->edit, ed->capture_id, 0, &cap);
     if (text) {
         snprintf(text, cap, "%s", name);
     }
@@ -2530,13 +2596,13 @@ static int handle_key_nav(struct Editor *ed, const struct Event *ev)
     }
     if (ev->kind == EV_LEFT) {
         if (ed->col > 0) {
-            ed->col = 0;
+            ed->col--;
         }
         return 1;
     }
     if (ev->kind == EV_RIGHT) {
-        if (ed->col < 1) {
-            ed->col = 1;
+        if (ed->col < BIND_COLS - 1) {
+            ed->col++;
         }
         return 1;
     }
@@ -2550,18 +2616,18 @@ static int handle_key_nav(struct Editor *ed, const struct Event *ev)
     }
     if (ev->kind == EV_STAB) {
         if (ed->col > 0) {
-            ed->col = 0;
+            ed->col--;
             return 1;
         }
         move_focus(ed, -1);
         if (is_key_field(ed->focus)) {
-            ed->col = 1;
+            ed->col = BIND_COLS - 1;
         }
         return 1;
     }
     if (ev->kind == EV_TAB) {
-        if (ed->col == 0) {
-            ed->col = 1;
+        if (ed->col < BIND_COLS - 1) {
+            ed->col++;
             return 1;
         }
         ed->col = 0;
@@ -2579,6 +2645,64 @@ static int activate_key(const struct Event *ev)
 {
     return ev->kind == EV_ENTER ||
            (ev->kind == EV_CHAR && ev->text[0] == ' ' && ev->text[1] == '\0');
+}
+
+static void open_drop(struct Editor *ed, int id)
+{
+    size_t cap;
+    char *text = field_text(&ed->edit, id, &cap);
+    int mode = DIAL_NONE;
+
+    ed->focus = id;
+    if (text && config_parse_dial_mode(text, &mode) == 0) {
+        ed->drop_sel = mode;
+        ed->drop = 1;
+    }
+}
+
+static void pick_drop(struct Editor *ed, int sel)
+{
+    size_t cap;
+    char *text = field_text(&ed->edit, ed->focus, &cap);
+
+    if (text && sel >= 0 && sel < DROP_ROWS) {
+        snprintf(text, cap, "%s", config_dial_mode_name(sel));
+    }
+    ed->drop = 0;
+}
+
+/* Keys and clicks while a dial mode droplist is open. */
+static int handle_drop(struct Editor *ed, const struct Event *ev)
+{
+    const struct Ui *ui = &ed->ui;
+
+    if (ev->kind == EV_UP || ev->kind == EV_LEFT || ev->kind == EV_STAB) {
+        if (ed->drop_sel > 0) {
+            ed->drop_sel--;
+        }
+    } else if (ev->kind == EV_DOWN || ev->kind == EV_RIGHT || ev->kind == EV_TAB) {
+        if (ed->drop_sel < DROP_ROWS - 1) {
+            ed->drop_sel++;
+        }
+    } else if (ev->kind == EV_HOME) {
+        ed->drop_sel = 0;
+    } else if (ev->kind == EV_END) {
+        ed->drop_sel = DROP_ROWS - 1;
+    } else if (activate_key(ev)) {
+        pick_drop(ed, ed->drop_sel);
+    } else if (ev->kind == EV_ESC) {
+        ed->drop = 0;
+    } else if (ev->kind == EV_MOUSE) {
+        int k = ev->y - ui->drop_r;
+
+        if (ui->drop_w > 0 && k >= 0 && k < DROP_ROWS && ev->x >= ui->drop_c &&
+            ev->x < ui->drop_c + ui->drop_w) {
+            pick_drop(ed, k);
+        } else {
+            ed->drop = 0;
+        }
+    }
+    return 0;
 }
 
 static int handle_event(struct Editor *ed, const struct Event *ev)
@@ -2601,6 +2725,7 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
         return 0;
     }
     if (ed->capture) {
+        char midi_buf[AUTODJ_MIDI_LEN];
         const char *name;
         const char *who = NULL;
         int delete_it = 0;
@@ -2638,28 +2763,38 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
             ed->err[0] = '\0';
             return 0;
         }
-        if (ev->kind != EV_HWKEY) {
+        if (ed->capture_midi) {
+            if (ev->kind != EV_MIDI) {
+                return 0;
+            }
+            name = midi_name(ev->code, midi_buf, sizeof midi_buf);
+        } else {
+            if (ev->kind != EV_HWKEY) {
+                return 0;
+            }
+            name = key_name(ev->code);
+        }
+        if (!name || !name[0] || strcmp(name, "KEY_NUMLOCK") == 0) {
             return 0;
         }
-        name = key_name(ev->code);
-        if (!name || strcmp(name, "KEY_NUMLOCK") == 0) {
-            return 0;
-        }
-        if (key_conflict(&ed->edit, ed->capture_id, name, &who)) {
+        if (binding_conflict(&ed->edit, ed->capture_id, capture_col(ed), name, &who)) {
             stop_capture(ed);
             snprintf(ed->err, sizeof ed->err, "%s is already used for %s.", name,
-                     who ? who : "another action");
+                     who && who[0] ? who : "another action");
             snprintf(ed->dialog_title, sizeof ed->dialog_title, "Key in use");
             ed->dialog = 1;
             return 0;
         }
-        text = field_text(&ed->edit, ed->capture_id, &cap);
+        text = binding_text(&ed->edit, ed->capture_id, capture_col(ed), &cap);
         if (text) {
             snprintf(text, cap, "%s", name);
         }
         stop_capture(ed);
         ed->err[0] = '\0';
         return 0;
+    }
+    if (ed->drop) {
+        return handle_drop(ed, ev);
     }
     if (ed->dialog) {
         if (ev->kind == EV_ESC || ev->kind == EV_ENTER ||
@@ -2707,13 +2842,17 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
             ed->saved = 0;
             return 1;
         }
+        if (is_choice_field(&ed->edit, id)) {
+            open_drop(ed, id);
+            return 0;
+        }
         if (is_toggle_field(&ed->edit, id)) {
             ed->focus = id;
             toggle_check(ed, id);
             return 0;
         }
         if (is_key_field(id)) {
-            ed->col = (ed->ui.kbd_w > 0 && ev->x >= pad_col(&ed->ui)) ? 1 : 0;
+            ed->col = ed->ui.col_w[0] > 0 ? col_at(&ed->ui, ev->x) : 0;
             begin_capture(ed, id);
             return 0;
         }
@@ -2749,7 +2888,11 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
     }
     if (is_toggle_field(&ed->edit, ed->focus)) {
         if (ev->kind == EV_ENTER || (ev->kind == EV_CHAR && ev->text[0] == ' ')) {
-            toggle_check(ed, ed->focus);
+            if (is_choice_field(&ed->edit, ed->focus)) {
+                open_drop(ed, ed->focus);
+            } else {
+                toggle_check(ed, ed->focus);
+            }
             return 0;
         }
         if (ev->kind == EV_LEFT) {
@@ -3894,7 +4037,7 @@ static int screen_self_test(void)
     char *buf = NULL;
     size_t n = 0;
 
-    if (render_tab(&ed, 24, 100, TAB_BUTTONS, &buf, &n) != 0) {
+    if (render_tab(&ed, 24, 110, TAB_BUTTONS, &buf, &n) != 0) {
         return -1;
     }
     if (ed.ui.field_r[FE_KEY_CHORUS] < 0 ||
@@ -3922,11 +4065,13 @@ static int screen_self_test(void)
     if (render_tab(&ed, 24, 80, TAB_BUTTONS, &buf, &n) != 0) {
         return -1;
     }
-    if (ed.ui.tab_y[TAB_PHASER] != ed.ui.tab_y[TAB_MAIN] ||
-        ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_MAIN] + 1 ||
+    if (ed.ui.tab_y[TAB_AUTOPAN] != ed.ui.tab_y[TAB_MAIN] ||
+        ed.ui.tab_y[TAB_PHASER] != ed.ui.tab_y[TAB_MAIN] + 1 ||
+        ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_PHASER] ||
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_CHORUS] ||
         !buf || strstr(buf, "Keypad") == NULL || strstr(buf, "Keyboard") == NULL ||
-        strstr(buf, "Volume on dial.") == NULL) {
+        strstr(buf, "MIDI") == NULL || strstr(buf, "Keys and pads.") == NULL ||
+        strstr(buf, "Dial forward") != NULL) {
         log_error("cfgedit", "narrow window did not wrap chorus and flanger");
         free(buf);
         return -1;
@@ -3980,11 +4125,12 @@ static int keyboard_column_self_test(void)
         const char *prev = buf ? strstr(buf, "Previous") : NULL;
         const char *pause = buf ? strstr(buf, "Pause/resume") : NULL;
         const char *skip = buf ? strstr(buf, "Skip") : NULL;
-        int span = ed.ui.kbd_w + 1 + ed.ui.box_w[FE_KEY_PAUSE];
+        int span = ed.ui.col_w[0] + 1 + ed.ui.col_w[1] + 1 + ed.ui.col_w[2];
         int avail = ed.ui.frame_w - 4 - LABEL_W - 1;
 
-        if (ed.ui.kbd_w != KBD_HDR_W || ed.ui.box_w[FE_KEY_PAUSE] != PAD_HDR_W ||
-            ed.ui.kbd_c != ed.ui.box_c || span >= avail ||
+        if (ed.ui.col_w[0] != KBD_HDR_W || ed.ui.box_w[FE_KEY_PAUSE] != PAD_HDR_W ||
+            ed.ui.col_w[1] != PAD_HDR_W || ed.ui.col_w[2] != MIDI_HDR_W ||
+            ed.ui.col_c[0] != ed.ui.box_c || span >= avail ||
             ed.ui.field_r[FE_KEY_PREV] >= ed.ui.field_r[FE_KEY_PAUSE] ||
             ed.ui.field_r[FE_KEY_PAUSE] >= ed.ui.field_r[FE_KEY_SKIP] ||
             ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_SKIP] ||
@@ -4001,11 +4147,15 @@ static int keyboard_column_self_test(void)
     snprintf(ed.edit.key_pause, sizeof ed.edit.key_pause, "KEY_KP0");
     snprintf(ed.edit.kbd_pause, sizeof ed.edit.kbd_pause, "p");
     snprintf(ed.edit.kbd_skip, sizeof ed.edit.kbd_skip, "Backspace");
-    snprintf(ed.edit.key_dial_back, sizeof ed.edit.key_dial_back, "REMOTE_DIAL_CCW");
+    snprintf(ed.edit.key_rew15, sizeof ed.edit.key_rew15, "REMOTE_DIAL_CCW");
+    snprintf(ed.edit.midi[KEYID_REVERB], sizeof ed.edit.midi[KEYID_REVERB], "NOTE_36");
+    /* A Knobs value does not widen the Buttons boxes. */
+    snprintf(ed.edit.midi[KEYID_VOL_DOWN], sizeof ed.edit.midi[KEYID_VOL_DOWN], "CC_127_DOWN");
     layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
-    if (ed.ui.too_small || ed.ui.kbd_w != 11 || ed.ui.box_w[FE_KEY_PAUSE] != 17 ||
-        ed.ui.kbd_c != ed.ui.box_c ||
-        ed.ui.kbd_w + 1 + ed.ui.box_w[FE_KEY_PAUSE] >=
+    if (ed.ui.too_small || ed.ui.col_w[0] != 11 || ed.ui.box_w[FE_KEY_PAUSE] != 17 ||
+        ed.ui.col_w[2] != 9 || ed.ui.col_c[0] != ed.ui.box_c ||
+        ed.ui.col_c[1] != ed.ui.col_c[0] + 12 || ed.ui.col_c[2] != ed.ui.col_c[1] + 18 ||
+        ed.ui.col_w[0] + ed.ui.col_w[1] + ed.ui.col_w[2] + 2 >=
             ed.ui.frame_w - 4 - LABEL_W - 1) {
         log_error("cfgedit", "button columns did not shrink to their values");
         return -1;
@@ -4021,16 +4171,23 @@ static int keyboard_column_self_test(void)
         const char *kb = buf ? strstr(buf, "[p") : NULL;
         const char *kp = buf ? strstr(buf, "KEY_KP0") : NULL;
 
+        const char *mi = buf ? strstr(buf, "NOTE_36") : NULL;
+
         if (!buf || strstr(buf, "Backspace") == NULL ||
-            strstr(buf, "REMOTE_DIAL_CCW") == NULL || !kb || !kp || kb > kp) {
+            strstr(buf, "REMOTE_DIAL_CCW") == NULL || !kb || !kp || kb > kp || !mi ||
+            strstr(buf, "CC_127_DOWN") != NULL) {
             log_error("cfgedit", "button columns did not show both bindings");
             free(buf);
             return -1;
         }
     }
     free(buf);
-    if (hit_focus(&ed.ui, ed.ui.kbd_c, ed.ui.field_r[FE_KEY_PAUSE]) != FE_KEY_PAUSE ||
-        hit_focus(&ed.ui, pad_col(&ed.ui), ed.ui.field_r[FE_KEY_PAUSE]) != FE_KEY_PAUSE ||
+    if (hit_focus(&ed.ui, ed.ui.col_c[0], ed.ui.field_r[FE_KEY_PAUSE]) != FE_KEY_PAUSE ||
+        hit_focus(&ed.ui, ed.ui.col_c[1], ed.ui.field_r[FE_KEY_PAUSE]) != FE_KEY_PAUSE ||
+        hit_focus(&ed.ui, ed.ui.col_c[2] + ed.ui.col_w[2] - 1,
+                  ed.ui.field_r[FE_KEY_PAUSE]) != FE_KEY_PAUSE ||
+        col_at(&ed.ui, ed.ui.col_c[2]) != 2 || col_at(&ed.ui, ed.ui.col_c[1]) != 1 ||
+        col_at(&ed.ui, ed.ui.col_c[1] - 1) != 0 ||
         hit_focus(&ed.ui, ed.ui.box_c, ed.ui.field_r[FE_KEY_SKIP]) != FE_KEY_SKIP) {
         log_error("cfgedit", "a click missed a button column");
         return -1;
@@ -4038,9 +4195,9 @@ static int keyboard_column_self_test(void)
     memset(ed.edit.key_chorus, 'K', 50);
     ed.edit.key_chorus[50] = '\0';
     layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
-    if (ed.ui.too_small || ed.ui.kbd_w != 11 || ed.ui.box_w[FE_KEY_PAUSE] < BOX_MIN_W ||
+    if (ed.ui.too_small || ed.ui.col_w[0] != 11 || ed.ui.box_w[FE_KEY_PAUSE] < BOX_MIN_W ||
         ed.ui.box_w[FE_KEY_PAUSE] >= 52 ||
-        ed.ui.kbd_w + 1 + ed.ui.box_w[FE_KEY_PAUSE] >
+        ed.ui.col_w[0] + ed.ui.col_w[1] + ed.ui.col_w[2] + 2 >
             ed.ui.frame_w - 4 - LABEL_W - 1) {
         log_error("cfgedit", "a long keypad name widened the row past the frame");
         return -1;
@@ -4078,13 +4235,23 @@ static int keyboard_column_self_test(void)
         return -1;
     }
     ev.kind = EV_TAB;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 2 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Tab did not move to the MIDI column");
+        return -1;
+    }
+    ev.kind = EV_RIGHT;
+    if (handle_event(&ed, &ev) != 0 || ed.col != 2 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Right left the MIDI column");
+        return -1;
+    }
+    ev.kind = EV_TAB;
     if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_REW05) {
         log_error("cfgedit", "Tab did not move to the next keyboard");
         return -1;
     }
     ev.kind = EV_STAB;
-    if (handle_event(&ed, &ev) != 0 || ed.col != 1 || ed.focus != FE_KEY_SKIP) {
-        log_error("cfgedit", "Shift-Tab did not move to the previous keypad");
+    if (handle_event(&ed, &ev) != 0 || ed.col != 2 || ed.focus != FE_KEY_SKIP) {
+        log_error("cfgedit", "Shift-Tab did not move to the previous MIDI box");
         return -1;
     }
 
@@ -4093,7 +4260,7 @@ static int keyboard_column_self_test(void)
     ed.capture = 0;
     memset(&ev, 0, sizeof ev);
     ev.kind = EV_MOUSE;
-    ev.x = ed.ui.kbd_c;
+    ev.x = ed.ui.col_c[0];
     ev.y = ed.ui.field_r[FE_KEY_PREV];
     if (handle_event(&ed, &ev) != 0 || ed.col != 0 || ed.focus != FE_KEY_PREV ||
         ed.capture != 1 || ed.capture_kbd != 1 || g_key_n != 0) {
@@ -4192,6 +4359,152 @@ static int keyboard_column_self_test(void)
     return 0;
 }
 
+static int knobs_tab_self_test(void)
+{
+    struct Editor ed;
+    struct Event ev;
+    char *buf = NULL;
+    size_t n = 0;
+
+    if (render_tab(&ed, 24, 80, TAB_KNOBS, &buf, &n) != 0) {
+        return -1;
+    }
+    if (!buf || strstr(buf, "Dial and knobs.") == NULL || strstr(buf, "Next dial mode") == NULL ||
+        strstr(buf, "Volume down") == NULL || strstr(buf, "Jog up") == NULL ||
+        strstr(buf, "Dial mode 3") == NULL || strstr(buf, "MIDI") == NULL ||
+        strstr(buf, "Pause/resume") != NULL || ed.ui.field_r[FE_KEY_DIAL_FWD] < 0 ||
+        ed.ui.field_r[FE_DIAL_MODE3] <= ed.ui.field_r[FE_KEY_JOG_DOWN] ||
+        ed.ui.field_r[FE_KEY_PAUSE] >= 0 || ed.ui.col_w[2] != MIDI_HDR_W ||
+        ed.ui.box_w[FE_DIAL_MODE1] != NUM_W) {
+        log_error("cfgedit", "Knobs screen is missing its rows");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+
+    /* A knob turned in the MIDI column. */
+    ed.focus = FE_KEY_VOL_UP;
+    ed.col = 2;
+    ed.capture = 1;
+    ed.capture_midi = 1;
+    ed.capture_id = FE_KEY_VOL_UP;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_HWKEY;
+    ev.code = KEYID_COUNT;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 1 || ed.edit.midi[KEYID_VOL_UP][0]) {
+        log_error("cfgedit", "a keypad key was stored in the MIDI column");
+        return -1;
+    }
+    ev.kind = EV_MIDI;
+    ev.code = MIDI_CC_UP | 3;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 ||
+        strcmp(ed.edit.midi[KEYID_VOL_UP], "CC_3_UP") != 0 || ed.edit.key_vol_up[0]) {
+        log_error("cfgedit", "a MIDI knob was not stored");
+        return -1;
+    }
+    ed.capture = 1;
+    ed.capture_midi = 1;
+    ed.capture_id = FE_KEY_JOG_UP;
+    if (handle_event(&ed, &ev) != 0 || ed.dialog != 1 || ed.edit.midi[KEYID_JOG_UP][0] ||
+        strstr(ed.err, "Volume up MIDI") == NULL) {
+        log_error("cfgedit", "a duplicate MIDI control was stored: %s", ed.err);
+        return -1;
+    }
+    ed.dialog = 0;
+    snprintf(ed.edit.kbd_jog_up, sizeof ed.edit.kbd_jog_up, "CC_3_UP");
+    if (binding_conflict(&ed.edit, FE_KEY_JOG_DOWN, 2, "cc_3_up", NULL) != 1 ||
+        binding_conflict(&ed.edit, FE_KEY_VOL_UP, 2, "CC_3_UP", NULL) != 0 ||
+        binding_conflict(&ed.edit, FE_KEY_JOG_DOWN, 2, "CC_3_DOWN", NULL) != 0) {
+        log_error("cfgedit", "MIDI conflicts were not checked within the column");
+        return -1;
+    }
+    ed.capture = 1;
+    ed.capture_midi = 1;
+    ed.capture_id = FE_KEY_VOL_UP;
+    ed.capture_btn = CAP_DELETE;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_ENTER;
+    if (handle_event(&ed, &ev) != 0 || ed.capture != 0 || ed.edit.midi[KEYID_VOL_UP][0]) {
+        log_error("cfgedit", "Delete did not clear the MIDI binding");
+        return -1;
+    }
+
+    /* The dial mode droplist. */
+    snprintf(ed.edit.dial_mode[2], sizeof ed.edit.dial_mode[2], "none");
+    ed.focus = FE_DIAL_MODE3;
+    ed.col = 0;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_ENTER;
+    if (handle_event(&ed, &ev) != 0 || ed.drop != 1 || ed.drop_sel != DIAL_NONE) {
+        log_error("cfgedit", "Enter did not open the dial mode list");
+        return -1;
+    }
+    layout_ui(&ed.ui, &ed.edit, 24, 80, TAB_KNOBS);
+    {
+        FILE *fp = open_memstream(&buf, &n);
+
+        if (!fp) {
+            return -1;
+        }
+        draw_screen(&ed, fp);
+        fclose(fp);
+    }
+    if (!buf || strstr(buf, " volume ") == NULL || strstr(buf, " jog ") == NULL ||
+        ed.ui.drop_w != NUM_W || ed.ui.drop_r + DROP_ROWS > ed.ui.save_r ||
+        ed.ui.drop_r <= ed.ui.field_r[FE_DIAL_MODE3]) {
+        log_error("cfgedit", "the dial mode list was not drawn below its field");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    ev.kind = EV_DOWN;
+    handle_event(&ed, &ev);
+    handle_event(&ed, &ev);
+    handle_event(&ed, &ev);
+    if (ed.drop_sel != DIAL_JOG || strcmp(ed.edit.dial_mode[2], "none") != 0) {
+        log_error("cfgedit", "Down did not move through the dial mode list");
+        return -1;
+    }
+    ev.kind = EV_ENTER;
+    if (handle_event(&ed, &ev) != 0 || ed.drop != 0 || strcmp(ed.edit.dial_mode[2], "jog") != 0) {
+        log_error("cfgedit", "Enter did not pick jog");
+        return -1;
+    }
+    ev.kind = EV_CHAR;
+    ev.text[0] = ' ';
+    ev.text[1] = '\0';
+    handle_event(&ed, &ev);
+    memset(&ev, 0, sizeof ev);
+    ev.kind = EV_MOUSE;
+    ev.x = ed.ui.drop_c;
+    ev.y = ed.ui.drop_r + DIAL_VOLUME;
+    if (ed.drop != 1 || handle_event(&ed, &ev) != 0 || ed.drop != 0 ||
+        strcmp(ed.edit.dial_mode[2], "volume") != 0) {
+        log_error("cfgedit", "a click did not pick volume");
+        return -1;
+    }
+    ev.kind = EV_ENTER;
+    handle_event(&ed, &ev);
+    ev.kind = EV_ESC;
+    if (handle_event(&ed, &ev) != 0 || ed.drop != 0 ||
+        strcmp(ed.edit.dial_mode[2], "volume") != 0) {
+        log_error("cfgedit", "Esc changed the dial mode");
+        return -1;
+    }
+    /* A bad value from the file is a text field so it can be fixed. */
+    snprintf(ed.edit.dial_mode[0], sizeof ed.edit.dial_mode[0], "spin");
+    if (is_choice_field(&ed.edit, FE_DIAL_MODE1) || !is_choice_field(&ed.edit, FE_DIAL_MODE3)) {
+        log_error("cfgedit", "a bad dial mode was not left as text");
+        return -1;
+    }
+    if (g_key_n != 0 || g_midi_n != 0) {
+        log_error("cfgedit", "the Knobs test left a device open");
+        release_keys();
+        return -1;
+    }
+    return 0;
+}
+
 int cfgedit_self_test(void)
 {
     ConfigEdit edit;
@@ -4204,6 +4517,9 @@ int cfgedit_self_test(void)
         return -1;
     }
     if (keyboard_column_self_test() != 0) {
+        return -1;
+    }
+    if (knobs_tab_self_test() != 0) {
         return -1;
     }
     memset(&edit, 0, sizeof edit);

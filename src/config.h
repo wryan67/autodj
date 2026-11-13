@@ -8,6 +8,43 @@
 #define AUTODJ_PATH 4096
 /* A terminal binding: one typed character, or a short name such as Enter. */
 #define AUTODJ_KBD_LEN 16
+/* A MIDI binding such as NOTE_36 or CC_3_DOWN. */
+#define AUTODJ_MIDI_LEN 16
+
+/* Every action that can be bound. The order is the order of the arrays
+ * indexed by it, such as Config.midi. */
+enum {
+    KEYID_PAUSE = 0,
+    KEYID_SKIP,
+    KEYID_PREV,
+    KEYID_REW05,
+    KEYID_REW10,
+    KEYID_REW15,
+    KEYID_DIAL_FWD,
+    KEYID_DIAL_BACK,
+    KEYID_DIAL_MODE,
+    KEYID_REVERB,
+    KEYID_PITCH,
+    KEYID_AUTOPAN,
+    KEYID_PHASER,
+    KEYID_CHORUS,
+    KEYID_FLANGER,
+    KEYID_EFFECTS_OFF,
+    KEYID_VOL_UP,
+    KEYID_VOL_DOWN,
+    KEYID_JOG_UP,
+    KEYID_JOG_DOWN,
+    KEYID_COUNT
+};
+
+/* What the dial does in one of its modes. dial_mode steps through the
+ * modes that are not DIAL_NONE, starting with the first. */
+enum {
+    DIAL_NONE = 0,
+    DIAL_VOLUME,
+    DIAL_JOG
+};
+#define DIAL_SLOTS 3
 
 typedef struct Config {
     char folder[AUTODJ_PATH];
@@ -20,7 +57,9 @@ typedef struct Config {
     int volume_set; /* 1 when the file contained volume */
     int loudness;      /* 1 to normalize each track */
     int loudness_lufs; /* target integrated loudness */
-    int dial_volume;   /* 1 when the dial starts as a volume knob */
+    int dial_modes[DIAL_SLOTS]; /* DIAL_NONE, DIAL_VOLUME, or DIAL_JOG */
+    unsigned dial_mode_line;    /* bit i is set when the file named dial_mode_<i+1> */
+    int dial_default;           /* old dial_default line, or -1 */
     int key_pause;
     int key_skip;
     int key_prev;
@@ -37,6 +76,10 @@ typedef struct Config {
     int key_chorus;
     int key_flanger;
     int key_effects_off;
+    int key_vol_up;
+    int key_vol_down;
+    int key_jog_up;
+    int key_jog_down;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -53,6 +96,10 @@ typedef struct Config {
     char key_chorus_name[64];
     char key_flanger_name[64];
     char key_effects_off_name[64];
+    char key_vol_up_name[64];
+    char key_vol_down_name[64];
+    char key_jog_up_name[64];
+    char key_jog_down_name[64];
     /* Terminal key for the same action. Empty means unbound. */
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
@@ -70,8 +117,15 @@ typedef struct Config {
     char kbd_chorus[AUTODJ_KBD_LEN];
     char kbd_flanger[AUTODJ_KBD_LEN];
     char kbd_effects_off[AUTODJ_KBD_LEN];
+    char kbd_vol_up[AUTODJ_KBD_LEN];
+    char kbd_vol_down[AUTODJ_KBD_LEN];
+    char kbd_jog_up[AUTODJ_KBD_LEN];
+    char kbd_jog_down[AUTODJ_KBD_LEN];
     /* Bit i is set when the file named that keyboard action, even if blank. */
     unsigned kbd_line;
+    /* MIDI control for each action, by KEYID. Empty and -1 mean unbound. */
+    char midi[KEYID_COUNT][AUTODJ_MIDI_LEN];
+    int midi_code[KEYID_COUNT];
     FxParams fx;
     /* [Jog] */
     double jog_turn_sec;   /* audio moved by one turn of the dial */
@@ -116,7 +170,9 @@ typedef struct ConfigEdit {
     char volume[32];
     char loudness[32];
     char loudness_lufs[32];
-    char dial_default[32];
+    char dial_default[32];     /* old setting, only read */
+    char dial_mode[DIAL_SLOTS][32];
+    unsigned dial_mode_line;   /* bit i is set when the file named dial_mode_<i+1> */
     char key_pause[64];
     char key_skip[64];
     char key_prev[64];
@@ -133,6 +189,10 @@ typedef struct ConfigEdit {
     char key_chorus[64];
     char key_flanger[64];
     char key_effects_off[64];
+    char key_vol_up[64];
+    char key_vol_down[64];
+    char key_jog_up[64];
+    char key_jog_down[64];
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
     char kbd_prev[AUTODJ_KBD_LEN];
@@ -149,6 +209,11 @@ typedef struct ConfigEdit {
     char kbd_chorus[AUTODJ_KBD_LEN];
     char kbd_flanger[AUTODJ_KBD_LEN];
     char kbd_effects_off[AUTODJ_KBD_LEN];
+    char kbd_vol_up[AUTODJ_KBD_LEN];
+    char kbd_vol_down[AUTODJ_KBD_LEN];
+    char kbd_jog_up[AUTODJ_KBD_LEN];
+    char kbd_jog_down[AUTODJ_KBD_LEN];
+    char midi[KEYID_COUNT][AUTODJ_MIDI_LEN];
     char rv_decay[32];
     char rv_bw[32];
     char rv_damp[32];
@@ -184,6 +249,14 @@ int config_parse_bool(const char *s, int *out);
 
 /* Returns 0 and sets *volume when s is volume (1) or jog (0). */
 int config_parse_dial(const char *s, int *volume);
+/* Returns 0 and sets *mode when s is none, volume, or jog. */
+int config_parse_dial_mode(const char *s, int *mode);
+/* "none", "volume", or "jog". */
+const char *config_dial_mode_name(int mode);
+
+/* Editor text of one binding of action id (KEYID_*). column is 0 for the
+ * keyboard, 1 for the keypad, and 2 for MIDI. NULL for a bad id. */
+char *config_edit_binding(ConfigEdit *edit, int id, int column, size_t *cap);
 
 /* Load path for editing. A missing file yields defaults and returns 0.
  * Folder may be empty. Returns -1 when the file exists but cannot be read. */

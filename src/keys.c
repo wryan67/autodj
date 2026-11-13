@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "midi.h"
 #include "player.h"
 
 #include <ctype.h>
@@ -95,8 +96,10 @@ static int g_remote_kbd[MAX_PADS];  /* the remote's keyboard interface */
 static int g_rep_key = -1;          /* raw button held for repeats */
 static int g_ngrabbed;
 static void (*g_jog_hook)(int direction, long long when_us);
-/* 1 while dial_mode has turned the dial into a volume knob. */
-static int g_dial_volume;
+/* What the dial does in each mode, and the mode it is in now. */
+static int g_dial_modes[DIAL_SLOTS] = {DIAL_JOG, DIAL_NONE, DIAL_NONE};
+static int g_dial_slot;
+static long long g_jog_last_us;
 static struct Combo g_cap[MAX_CAPTURE_FD];
 /* Raw remote channels by fd, with the buttons held. */
 static unsigned char g_is_raw[MAX_CAPTURE_FD];
@@ -617,7 +620,12 @@ int keys_open(void)
 
     g_nfd = 0;
     g_ngrabbed = 0;
-    g_dial_volume = 0;
+    {
+        static const int jog_only[DIAL_SLOTS] = {DIAL_JOG, DIAL_NONE, DIAL_NONE};
+
+        memcpy(g_dial_modes, jog_only, sizeof g_dial_modes);
+        g_dial_slot = 0;
+    }
     for (i = 0; i < 32 && g_nfd < MAX_PADS; i++) {
         char name[256];
         unsigned long bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1];
@@ -678,10 +686,47 @@ void keys_close(void)
     g_rep_key = -1;
 }
 
-void keys_set_dial_volume(int on)
+static int dial_mode_now(void)
 {
-    g_dial_volume = on != 0;
-    log_info("keys", "dial mode %s", g_dial_volume ? "volume" : "jog");
+    return g_dial_modes[g_dial_slot];
+}
+
+static void log_dial_mode(void)
+{
+    log_info("keys", "dial mode %s", config_dial_mode_name(dial_mode_now()));
+}
+
+void keys_set_dial_modes(const int *modes)
+{
+    int i;
+
+    g_dial_slot = 0;
+    for (i = 0; i < DIAL_SLOTS; i++) {
+        g_dial_modes[i] = modes ? modes[i] : DIAL_NONE;
+    }
+    for (i = 0; i < DIAL_SLOTS; i++) {
+        if (g_dial_modes[i] != DIAL_NONE) {
+            g_dial_slot = i;
+            break;
+        }
+    }
+    log_dial_mode();
+}
+
+/* The next mode that is not none, after the current one. */
+static void next_dial_mode(void)
+{
+    int i;
+
+    for (i = 1; i <= DIAL_SLOTS; i++) {
+        int slot = (g_dial_slot + i) % DIAL_SLOTS;
+
+        if (g_dial_modes[slot] != DIAL_NONE) {
+            g_dial_slot = slot;
+            break;
+        }
+    }
+    log_dial_mode();
 }
 
 static int raw_index(void)
@@ -751,97 +796,192 @@ static int press_accepted(const struct timeval *when)
     return ms >= KEY_DEBOUNCE_MS;
 }
 
+static int is_step_action(int id)
+{
+    return id == KEYID_DIAL_FWD || id == KEYID_DIAL_BACK || id == KEYID_VOL_UP ||
+           id == KEYID_VOL_DOWN || id == KEYID_JOG_UP || id == KEYID_JOG_DOWN;
+}
+
+/* Jog by count clicks. A knob can report several clicks in one message, so
+ * their times are spread back toward the previous one, which keeps the
+ * player's measure of the turning speed. */
+static void jog_steps(int dir, int count, long long us)
+{
+    long long span = us - g_jog_last_us;
+    long long step;
+    int i;
+
+    if (count < 1) {
+        count = 1;
+    }
+    if (g_jog_last_us <= 0 || span <= 0 || span > 100000) {
+        span = 8000LL * count;
+    }
+    step = span / count;
+    for (i = 0; i < count; i++) {
+        long long t = us - (long long)(count - 1 - i) * step;
+
+        player_jog(dir, t);
+        if (g_jog_hook) {
+            g_jog_hook(dir, t);
+        }
+    }
+    g_jog_last_us = us;
+}
+
+/* A dial, volume, or jog action. percent is the volume per step. */
+static void step_action(int id, int count, int percent, long long us)
+{
+    int dir = (id == KEYID_DIAL_FWD || id == KEYID_VOL_UP || id == KEYID_JOG_UP) ? 1 : -1;
+    int mode;
+
+    if (id == KEYID_VOL_UP || id == KEYID_VOL_DOWN) {
+        mode = DIAL_VOLUME;
+    } else if (id == KEYID_JOG_UP || id == KEYID_JOG_DOWN) {
+        mode = DIAL_JOG;
+    } else {
+        mode = dial_mode_now();
+    }
+    if (mode == DIAL_VOLUME) {
+        player_volume_step(dir, percent * count);
+    } else if (mode == DIAL_JOG) {
+        jog_steps(dir, count, us);
+    }
+}
+
+static void press_action(int id)
+{
+    switch (id) {
+    case KEYID_DIAL_MODE:
+        next_dial_mode();
+        break;
+    case KEYID_PAUSE:
+        player_toggle_pause();
+        break;
+    case KEYID_SKIP:
+        player_skip();
+        break;
+    case KEYID_PREV:
+        player_previous();
+        break;
+    case KEYID_REW05:
+        player_rewind(500);
+        break;
+    case KEYID_REW10:
+        player_rewind(1000);
+        break;
+    case KEYID_REW15:
+        player_rewind(1500);
+        break;
+    case KEYID_REVERB:
+        player_fx_toggle(PLAYER_FX_REVERB);
+        break;
+    case KEYID_PITCH:
+        player_fx_toggle(PLAYER_FX_PITCH);
+        break;
+    case KEYID_AUTOPAN:
+        player_fx_toggle(PLAYER_FX_AUTOPAN);
+        break;
+    case KEYID_PHASER:
+        player_fx_toggle(PLAYER_FX_PHASER);
+        break;
+    case KEYID_CHORUS:
+        player_fx_toggle(PLAYER_FX_CHORUS);
+        break;
+    case KEYID_FLANGER:
+        player_fx_toggle(PLAYER_FX_FLANGER);
+        break;
+    case KEYID_EFFECTS_OFF:
+        player_fx_all_off();
+        break;
+    default:
+        break;
+    }
+}
+
+static long long tv_us(const struct timeval *when)
+{
+    return (long long)when->tv_sec * 1000000LL + when->tv_usec;
+}
+
+/* Action bound to a keypad or remote code, or -1. */
+static int pad_action(const struct Config *cfg, int key)
+{
+    const int codes[KEYID_COUNT] = {
+        cfg->key_pause, cfg->key_skip, cfg->key_prev, cfg->key_rew05, cfg->key_rew10,
+        cfg->key_rew15, cfg->key_dial_fwd, cfg->key_dial_back, cfg->key_dial_mode,
+        cfg->key_reverb, cfg->key_pitch, cfg->key_autopan, cfg->key_phaser,
+        cfg->key_chorus, cfg->key_flanger, cfg->key_effects_off, cfg->key_vol_up,
+        cfg->key_vol_down, cfg->key_jog_up, cfg->key_jog_down
+    };
+    int id;
+
+    for (id = 0; id < KEYID_COUNT; id++) {
+        if (codes[id] >= 0 && codes[id] == key) {
+            return id;
+        }
+    }
+    return -1;
+}
+
 static void dispatch(const struct Config *cfg, int key, int value, const struct timeval *when)
 {
     const char *name;
+    int id;
 
     if ((key & KEY_CODE_MASK) == KEY_NUMLOCK) {
         return;
     }
+    id = pad_action(cfg, key);
     /* Dial clicks come faster than the press gap when it spins, and the
-     * player measures their spacing, so they skip the debounce. */
-    if (key == cfg->key_dial_fwd || key == cfg->key_dial_back) {
-        if (value == 1) {
-            int dir = key == cfg->key_dial_fwd ? 1 : -1;
-            long long us;
-
-            if (g_dial_volume) {
-                player_volume_step(dir, 1);
-                return;
-            }
-            us = (long long)when->tv_sec * 1000000LL + when->tv_usec;
-            player_jog(dir, us);
-            if (g_jog_hook) {
-                g_jog_hook(dir, us);
-            }
+     * player measures their spacing, so they skip the debounce. A held key
+     * repeats them. The keypad and remote change the volume by 1. */
+    if (id >= 0 && is_step_action(id)) {
+        if (value == 1 || value == 2) {
+            step_action(id, 1, 1, tv_us(when));
         }
         return;
     }
     /* Value 1 is a press. Key repeat (value 2) does not fire an action. */
-    if (value == 1 && !press_accepted(when)) {
+    if (value != 1 || !press_accepted(when)) {
         return;
     }
-    if (key == cfg->key_dial_mode && value == 1) {
-        g_dial_volume = !g_dial_volume;
-        log_info("keys", "dial mode %s", g_dial_volume ? "volume" : "jog");
+    if (id >= 0) {
+        press_action(id);
         return;
     }
-    if (key == cfg->key_pause && value == 1) {
-        player_toggle_pause();
-        return;
+    name = key_name(key);
+    log_info("keys", "key %s is not mapped", name ? name : "unknown");
+}
+
+int keys_midi_dispatch(const struct Config *cfg, int code, int steps, const struct timeval *when)
+{
+    int id;
+
+    if (!cfg || !when || code < 0) {
+        return 0;
     }
-    if (key == cfg->key_skip && value == 1) {
-        player_skip();
-        return;
+    for (id = 0; id < KEYID_COUNT; id++) {
+        if (cfg->midi_code[id] == code) {
+            break;
+        }
     }
-    if (key == cfg->key_prev && value == 1) {
-        player_previous();
-        return;
+    if (id >= KEYID_COUNT) {
+        return 0;
     }
-    if (key == cfg->key_rew05 && value == 1) {
-        player_rewind(500);
-        return;
+    /* A knob changes the volume by 1 a step, and a pad by 5 like a key. */
+    if (is_step_action(id)) {
+        if (midi_is_knob(code)) {
+            step_action(id, steps, 1, tv_us(when));
+        } else {
+            step_action(id, 1, 5, tv_us(when));
+        }
+        return 1;
     }
-    if (key == cfg->key_rew10 && value == 1) {
-        player_rewind(1000);
-        return;
+    if (press_accepted(when)) {
+        press_action(id);
     }
-    if (key == cfg->key_rew15 && value == 1) {
-        player_rewind(1500);
-        return;
-    }
-    if (key == cfg->key_reverb && value == 1) {
-        player_fx_toggle(PLAYER_FX_REVERB);
-        return;
-    }
-    if (key == cfg->key_pitch && value == 1) {
-        player_fx_toggle(PLAYER_FX_PITCH);
-        return;
-    }
-    if (key == cfg->key_autopan && value == 1) {
-        player_fx_toggle(PLAYER_FX_AUTOPAN);
-        return;
-    }
-    if (key == cfg->key_phaser && value == 1) {
-        player_fx_toggle(PLAYER_FX_PHASER);
-        return;
-    }
-    if (key == cfg->key_chorus && value == 1) {
-        player_fx_toggle(PLAYER_FX_CHORUS);
-        return;
-    }
-    if (key == cfg->key_flanger && value == 1) {
-        player_fx_toggle(PLAYER_FX_FLANGER);
-        return;
-    }
-    if (key == cfg->key_effects_off && value == 1) {
-        player_fx_all_off();
-        return;
-    }
-    if (value == 1) {
-        name = key_name(key);
-        log_info("keys", "key %s is not mapped", name ? name : "unknown");
-    }
+    return 1;
 }
 
 static void drop_fd(int i)
@@ -971,95 +1111,46 @@ static int kbd_eq(const char *bound, const char *name)
     return bound && bound[0] && name && name[0] && strcmp(bound, name) == 0;
 }
 
-static void kbd_dial(int dir, const struct timeval *when)
+/* Action bound to a terminal key, or -1. */
+static int kbd_action(const struct Config *cfg, const char *name)
 {
-    long long us;
+    const char *keys[KEYID_COUNT] = {
+        cfg->kbd_pause, cfg->kbd_skip, cfg->kbd_prev, cfg->kbd_rew05, cfg->kbd_rew10,
+        cfg->kbd_rew15, cfg->kbd_dial_fwd, cfg->kbd_dial_back, cfg->kbd_dial_mode,
+        cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan, cfg->kbd_phaser,
+        cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off, cfg->kbd_vol_up,
+        cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down
+    };
+    int id;
 
-    if (g_dial_volume) {
-        player_volume_step(dir, 5);
-        return;
+    for (id = 0; id < KEYID_COUNT; id++) {
+        if (kbd_eq(keys[id], name)) {
+            return id;
+        }
     }
-    us = (long long)when->tv_sec * 1000000LL + when->tv_usec;
-    player_jog(dir, us);
-    if (g_jog_hook) {
-        g_jog_hook(dir, us);
-    }
+    return -1;
 }
 
 void keys_kbd_dispatch(const struct Config *cfg, const char *name)
 {
     struct timeval when;
+    int id;
 
     if (!cfg || !name || !name[0]) {
         return;
     }
     gettimeofday(&when, NULL);
-    if (kbd_eq(cfg->kbd_dial_fwd, name)) {
-        kbd_dial(1, &when);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_dial_back, name)) {
-        kbd_dial(-1, &when);
+    id = kbd_action(cfg, name);
+    /* Dial, volume, and jog keys repeat. A keyboard press changes the volume by 5. */
+    if (id >= 0 && is_step_action(id)) {
+        step_action(id, 1, 5, tv_us(&when));
         return;
     }
     if (!press_accepted(&when)) {
         return;
     }
-    if (kbd_eq(cfg->kbd_dial_mode, name)) {
-        g_dial_volume = !g_dial_volume;
-        log_info("keys", "dial mode %s", g_dial_volume ? "volume" : "jog");
-        return;
-    }
-    if (kbd_eq(cfg->kbd_pause, name)) {
-        player_toggle_pause();
-        return;
-    }
-    if (kbd_eq(cfg->kbd_skip, name)) {
-        player_skip();
-        return;
-    }
-    if (kbd_eq(cfg->kbd_prev, name)) {
-        player_previous();
-        return;
-    }
-    if (kbd_eq(cfg->kbd_rew05, name)) {
-        player_rewind(500);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_rew10, name)) {
-        player_rewind(1000);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_rew15, name)) {
-        player_rewind(1500);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_reverb, name)) {
-        player_fx_toggle(PLAYER_FX_REVERB);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_pitch, name)) {
-        player_fx_toggle(PLAYER_FX_PITCH);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_autopan, name)) {
-        player_fx_toggle(PLAYER_FX_AUTOPAN);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_phaser, name)) {
-        player_fx_toggle(PLAYER_FX_PHASER);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_chorus, name)) {
-        player_fx_toggle(PLAYER_FX_CHORUS);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_flanger, name)) {
-        player_fx_toggle(PLAYER_FX_FLANGER);
-        return;
-    }
-    if (kbd_eq(cfg->kbd_effects_off, name)) {
-        player_fx_all_off();
+    if (id >= 0) {
+        press_action(id);
         return;
     }
     log_info("keys", "key %s is not mapped", name);
@@ -1481,6 +1572,15 @@ static void kbd_feed(const struct Config *cfg, const char *bytes, int timed_out)
     kbd_parse(cfg, timed_out);
 }
 
+/* Test helper: the dial starts in first, and dial_mode switches to second. */
+static void dial_test_modes(int first, int second)
+{
+    g_dial_modes[0] = first;
+    g_dial_modes[1] = second;
+    g_dial_modes[2] = DIAL_NONE;
+    g_dial_slot = 0;
+}
+
 static int kbd_self_test(void)
 {
     Config cfg;
@@ -1525,10 +1625,14 @@ static int kbd_self_test(void)
     cfg.key_chorus = -1;
     cfg.key_flanger = -1;
     cfg.key_effects_off = -1;
+    cfg.key_vol_up = -1;
+    cfg.key_vol_down = -1;
+    cfg.key_jog_up = -1;
+    cfg.key_jog_down = -1;
     snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "r");
     player_set_fx(NULL);
     player_set_volume_percent(50);
-    g_dial_volume = 1;
+    dial_test_modes(DIAL_VOLUME, DIAL_JOG);
     g_press_seen = 0;
     keys_kbd_dispatch(&cfg, "r");
     if (!player_fx_enabled(PLAYER_FX_REVERB)) {
@@ -1634,12 +1738,87 @@ static int kbd_self_test(void)
     }
 
     g_kbd_len = 0;
-    g_dial_volume = 0;
+    dial_test_modes(DIAL_JOG, DIAL_NONE);
     g_press_seen = 0;
     memset(&g_press_time, 0, sizeof g_press_time);
     player_set_fx(NULL);
     player_set_volume_percent(100);
     return 0;
+}
+
+/* MIDI controls run the same actions, and the dial cycles through its modes. */
+static int midi_dispatch_self_test(void)
+{
+    static const int modes[DIAL_SLOTS] = {DIAL_VOLUME, DIAL_NONE, DIAL_JOG};
+    Config cfg;
+    struct timeval when = {100, 0};
+    int id;
+    int rc = -1;
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.key_pause = cfg.key_skip = cfg.key_prev = cfg.key_rew05 = -1;
+    cfg.key_rew10 = cfg.key_rew15 = cfg.key_dial_fwd = cfg.key_dial_back = -1;
+    cfg.key_dial_mode = cfg.key_reverb = cfg.key_pitch = cfg.key_autopan = -1;
+    cfg.key_phaser = cfg.key_chorus = cfg.key_flanger = cfg.key_effects_off = -1;
+    cfg.key_vol_up = KEY_U;
+    cfg.key_vol_down = cfg.key_jog_up = cfg.key_jog_down = -1;
+    for (id = 0; id < KEYID_COUNT; id++) {
+        cfg.midi_code[id] = -1;
+    }
+    cfg.midi_code[KEYID_VOL_UP] = MIDI_CC_UP | 3;
+    cfg.midi_code[KEYID_VOL_DOWN] = MIDI_NOTE | 40;
+    cfg.midi_code[KEYID_REVERB] = MIDI_NOTE | 36;
+    cfg.midi_code[KEYID_DIAL_MODE] = MIDI_NOTE | 37;
+    cfg.midi_code[KEYID_DIAL_FWD] = MIDI_CC_UP | 9;
+    player_set_volume_percent(50);
+    player_set_fx(NULL);
+    g_press_seen = 0;
+    keys_set_dial_modes(modes);
+    if (dial_mode_now() != DIAL_VOLUME ||
+        keys_midi_dispatch(&cfg, MIDI_CC_UP | 3, 3, &when) != 1 ||
+        player_volume_percent() != 53 ||
+        keys_midi_dispatch(&cfg, MIDI_NOTE | 40, 1, &when) != 1 ||
+        player_volume_percent() != 48 ||
+        keys_midi_dispatch(&cfg, MIDI_CC_DOWN | 3, 1, &when) != 0 ||
+        keys_midi_dispatch(&cfg, MIDI_CC_UP | 9, 2, &when) != 1 ||
+        player_volume_percent() != 50) {
+        log_error("keys", "MIDI volume left %d%%", player_volume_percent());
+        goto out;
+    }
+    if (keys_midi_dispatch(&cfg, MIDI_NOTE | 36, 1, &when) != 1 ||
+        !player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "a MIDI pad did not turn reverb on");
+        goto out;
+    }
+    /* Mode 2 is none, so the next mode is jog, and then volume again. */
+    when.tv_sec = 101;
+    keys_midi_dispatch(&cfg, MIDI_NOTE | 37, 1, &when);
+    if (dial_mode_now() != DIAL_JOG) {
+        log_error("keys", "dial mode did not skip none");
+        goto out;
+    }
+    when.tv_sec = 102;
+    keys_midi_dispatch(&cfg, MIDI_NOTE | 37, 1, &when);
+    if (dial_mode_now() != DIAL_VOLUME) {
+        log_error("keys", "dial mode did not wrap to the first mode");
+        goto out;
+    }
+    /* A volume key works whatever mode the dial is in, a keypad step is 1. */
+    dial_test_modes(DIAL_JOG, DIAL_NONE);
+    dispatch(&cfg, KEY_U, 1, &when);
+    dispatch(&cfg, KEY_U, 2, &when);
+    if (player_volume_percent() != 52) {
+        log_error("keys", "keypad volume up left %d%%", player_volume_percent());
+        goto out;
+    }
+    rc = 0;
+out:
+    dial_test_modes(DIAL_JOG, DIAL_NONE);
+    g_press_seen = 0;
+    memset(&g_press_time, 0, sizeof g_press_time);
+    player_set_fx(NULL);
+    player_set_volume_percent(100);
+    return rc;
 }
 
 static int put_key(int fd, long ms, unsigned short code, int value)
@@ -1691,6 +1870,10 @@ static int debounce_self_test(void)
     cfg.key_chorus = -1;
     cfg.key_flanger = -1;
     cfg.key_effects_off = -1;
+    cfg.key_vol_up = -1;
+    cfg.key_vol_down = -1;
+    cfg.key_jog_up = -1;
+    cfg.key_jog_down = -1;
     player_set_volume_percent(50);
     player_set_fx(NULL);
     g_press_seen = 0;
@@ -1761,7 +1944,7 @@ static int debounce_self_test(void)
     cfg.key_dial_mode = KEY_C;
     cfg.key_dial_fwd = KEY_D;
     cfg.key_dial_back = KEY_E;
-    g_dial_volume = 0;
+    dial_test_modes(DIAL_JOG, DIAL_VOLUME);
     if (put_key(pipefd[1], 10200, KEY_C, 1) != 0 ||
         put_key(pipefd[1], 10205, KEY_D, 1) != 0 ||
         put_key(pipefd[1], 10206, KEY_D, 1) != 0 ||
@@ -1770,7 +1953,7 @@ static int debounce_self_test(void)
         goto out;
     }
     keys_poll(&cfg);
-    if (!g_dial_volume || player_volume_percent() != 51) {
+    if (dial_mode_now() != DIAL_VOLUME || player_volume_percent() != 51) {
         log_error("keys", "dial in volume mode left volume %d, expected 51",
                   player_volume_percent());
         goto out;
@@ -1808,7 +1991,7 @@ static int debounce_self_test(void)
     }
     rc = 0;
 out:
-    g_dial_volume = 0;
+    dial_test_modes(DIAL_JOG, DIAL_NONE);
     g_fds[0] = -1;
     g_nfd = 0;
     close(pipefd[0]);
@@ -2026,7 +2209,8 @@ int keys_self_test(void)
             return -1;
         }
     }
-    if (debounce_self_test() != 0 || combo_self_test() != 0 || kbd_self_test() != 0) {
+    if (debounce_self_test() != 0 || combo_self_test() != 0 || kbd_self_test() != 0 ||
+        midi_dispatch_self_test() != 0) {
         return -1;
     }
     return 0;

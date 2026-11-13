@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 struct Config;
+struct timeval;
 
 /* Resolve a KEY_* name from linux/input-event-codes.h, optionally prefixed
  * by CTRL+, SHIFT+, ALT+, or META+ (for example CTRL+SHIFT+KEY_Z). The
@@ -25,9 +26,14 @@ int keys_grabbed(void);
 /* Also call fn for each dial click that keys_poll passes to player_jog.
  * NULL removes it. */
 void keys_set_jog_hook(void (*fn)(int direction, long long when_us));
-/* Make the dial a volume knob (1) or a jog wheel (0). keys_open starts it
- * as a jog wheel, and the dial_mode key switches it. */
-void keys_set_dial_volume(int on);
+/* The modes the dial_mode key steps through (DIAL_NONE, DIAL_VOLUME, or
+ * DIAL_JOG for each of DIAL_SLOTS). The dial starts in the first mode that
+ * is not DIAL_NONE. With none, the dial does nothing. keys_open starts it as
+ * a jog wheel. */
+void keys_set_dial_modes(const int *modes);
+/* Run the action bound to a MIDI control (see midi.h). steps is the size
+ * of a knob turn. Returns 1 when a binding matched. */
+int keys_midi_dispatch(const struct Config *cfg, int code, int steps, const struct timeval *when);
 /* Copy the open device fds into fds. Returns the count. */
 int keys_fds(int *fds, int max);
 /* Poll timeout to use, at most max_ms, so held remote buttons repeat. */

@@ -4,6 +4,7 @@
 #include "decode.h"
 #include "keys.h"
 #include "log.h"
+#include "midi.h"
 #include "player.h"
 #include "playlist.h"
 
@@ -59,6 +60,9 @@ static int run_checks(const Config *cfg, Playlist *pl)
     if (fx_self_test() != 0) {
         failed = 1;
     }
+    if (midi_self_test() != 0) {
+        failed = 1;
+    }
     if (playlist_next(pl, first, sizeof first) != 0 || decode_self_test(first) != 0) {
         failed = 1;
     }
@@ -70,6 +74,8 @@ static int run_checks(const Config *cfg, Playlist *pl)
     } else {
         keys_close();
     }
+    midi_open();
+    midi_close();
     if (failed) {
         log_error("autodj", "self-check failed");
         return 1;
@@ -85,15 +91,16 @@ static void log_keyboard_bindings(const Config *cfg)
         "pause/resume", "skip", "previous", "rewind 0.5s", "rewind 1s",
         "rewind 1.5s", "dial forward", "dial back", "dial mode",
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
-        "effects off"
+        "effects off", "volume up", "volume down", "jog up", "jog down"
     };
     const char *vals[] = {
         cfg->kbd_pause, cfg->kbd_skip, cfg->kbd_prev, cfg->kbd_rew05,
         cfg->kbd_rew10, cfg->kbd_rew15, cfg->kbd_dial_fwd, cfg->kbd_dial_back,
         cfg->kbd_dial_mode, cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan,
-        cfg->kbd_phaser, cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off
+        cfg->kbd_phaser, cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off,
+        cfg->kbd_vol_up, cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down
     };
-    char buf[512];
+    char buf[640];
     size_t used = 0;
     int i;
 
@@ -113,6 +120,24 @@ static void log_keyboard_bindings(const Config *cfg)
     }
     if (used) {
         log_info("autodj", "keyboard %s", buf);
+    }
+    used = 0;
+    buf[0] = '\0';
+    for (i = 0; i < KEYID_COUNT; i++) {
+        int n;
+
+        if (!cfg->midi[i][0]) {
+            continue;
+        }
+        n = snprintf(buf + used, sizeof buf - used, "%s%s %s",
+                     used ? ", " : "", labels[i], cfg->midi[i]);
+        if (n < 0 || (size_t)n >= sizeof buf - used) {
+            break;
+        }
+        used += (size_t)n;
+    }
+    if (used) {
+        log_info("autodj", "midi %s", buf);
     }
 }
 
@@ -234,6 +259,13 @@ int main(int argc, char **argv)
              cfg.key_dial_fwd_name[0] ? cfg.key_dial_fwd_name : "(none)",
              cfg.key_dial_back_name[0] ? cfg.key_dial_back_name : "(none)",
              cfg.key_dial_mode_name[0] ? cfg.key_dial_mode_name : "(none)");
+    log_info("autodj", "keys volume up %s, volume down %s, jog up %s, jog down %s",
+             cfg.key_vol_up_name[0] ? cfg.key_vol_up_name : "(none)",
+             cfg.key_vol_down_name[0] ? cfg.key_vol_down_name : "(none)",
+             cfg.key_jog_up_name[0] ? cfg.key_jog_up_name : "(none)",
+             cfg.key_jog_down_name[0] ? cfg.key_jog_down_name : "(none)");
+    log_info("autodj", "dial modes %s, %s, %s", config_dial_mode_name(cfg.dial_modes[0]),
+             config_dial_mode_name(cfg.dial_modes[1]), config_dial_mode_name(cfg.dial_modes[2]));
     log_keyboard_bindings(&cfg);
     log_info("autodj", "jog %gs per turn, %d clicks per turn, max speed %gx, spin-up %gs, grab %gs, smoothing %gs",
              cfg.jog_turn_sec, cfg.jog_clicks, cfg.jog_max_speed, cfg.jog_spinup_sec,
@@ -278,7 +310,8 @@ int main(int argc, char **argv)
         return 1;
     }
     keys_open();
-    keys_set_dial_volume(cfg.dial_volume);
+    keys_set_dial_modes(cfg.dial_modes);
+    midi_open();
 
     settings.overlap_sec = cfg.overlap_sec;
     settings.pause_sec = cfg.pause_sec;
@@ -290,6 +323,7 @@ int main(int argc, char **argv)
     keys_kbd_open();
     if (player_start(&settings, pl) != 0) {
         keys_kbd_close();
+        midi_close();
         keys_close();
         audio_close();
         decode_shutdown();
@@ -298,8 +332,8 @@ int main(int argc, char **argv)
     }
 
     while (!g_sig && player_alive()) {
-        struct pollfd pfd[9];
-        int fds[8];
+        struct pollfd pfd[17];
+        int fds[16];
         int nfds;
         int extra = 0;
         int kfd;
@@ -307,6 +341,7 @@ int main(int argc, char **argv)
         int pr;
 
         nfds = keys_fds(fds, 8);
+        nfds += midi_fds(fds + nfds, 8);
         for (i = 0; i < nfds; i++) {
             pfd[i].fd = fds[i];
             pfd[i].events = POLLIN;
@@ -325,6 +360,7 @@ int main(int argc, char **argv)
         }
         /* Also on timeout, for held remote buttons and reconnects. */
         keys_poll(&cfg);
+        midi_poll(&cfg);
         keys_kbd_poll(&cfg);
         remember_volume(path, &cfg);
     }
@@ -333,6 +369,7 @@ int main(int argc, char **argv)
     log_info("autodj", "stopping");
     player_stop();
     keys_kbd_close();
+    midi_close();
     keys_close();
     audio_close();
     decode_shutdown();
