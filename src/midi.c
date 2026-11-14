@@ -32,6 +32,11 @@
  * sends on (channel 10 until the pad is first pressed). The MPD218 lights a
  * pad while it is held and darkens it on release, so the state is sent
  * again after each release.
+ *
+ * The pause/resume pad is the play light. It stays on while a song plays
+ * and off while the song is paused. Over resume_time it blinks, starting
+ * at one flash every 0.1 seconds and speeding up until it stays on. Over
+ * pause_time it does the opposite.
  */
 
 enum {
@@ -74,6 +79,22 @@ static int g_n;
 static int g_wanted;
 static struct timespec g_retry;
 static int g_last_unmapped = -1;
+
+/* Slow end of the play-pad blink: one on/off cycle every 0.1 seconds.
+ * Faster than PLAY_BLINK_FAST_MS reads as steady red, so a stop stays
+ * solid until the blink has slowed to that, and a start never goes
+ * faster than that until the ramp ends and the lamp stays on. */
+#define PLAY_BLINK_SLOW_MS 100
+#define PLAY_BLINK_FAST_MS 16
+
+static int g_blink_mode = -1;
+static int g_blink_on;
+static long long g_blink_edge_ms;
+static int g_blink_half_ms;
+static int g_blink_active;
+static int g_have_play;
+static int g_play_note;
+static int g_play_want;
 
 static void in_reset(struct MidiIn *m, int fd)
 {
@@ -429,6 +450,145 @@ int midi_open(void)
     return g_n;
 }
 
+static long long mono_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Cycle length in ms. 0 means stay solid red (the fast end of a stop).
+ * A start is clamped so it keeps flashing until the ramp ends. */
+static int blink_period_ms(int mode, int pos)
+{
+    int period;
+
+    if (pos < 0) {
+        pos = 0;
+    }
+    if (pos > 1000) {
+        pos = 1000;
+    }
+    if (mode == PLAY_LED_START) {
+        period = PLAY_BLINK_SLOW_MS * (1000 - pos) / 1000;
+        if (period < PLAY_BLINK_FAST_MS) {
+            period = PLAY_BLINK_FAST_MS;
+        }
+        return period;
+    }
+    if (mode == PLAY_LED_STOP) {
+        period = PLAY_BLINK_SLOW_MS * pos / 1000;
+        if (period < PLAY_BLINK_FAST_MS) {
+            return 0;
+        }
+        return period;
+    }
+    return 0;
+}
+
+/* 1 lit, 0 dark. mode_io, on, edge, half, and active are the blink phase. */
+static int play_level(int mode, int pos, long long now, int *mode_io, int *on,
+                      long long *edge, int *half, int *active)
+{
+    int period;
+    int h;
+
+    if (mode != *mode_io) {
+        *mode_io = mode;
+        *edge = now;
+        *active = 0;
+        *half = 0;
+        if (mode == PLAY_LED_OFF) {
+            *on = 0;
+            return 0;
+        }
+        if (mode == PLAY_LED_ON) {
+            *on = 1;
+            return 1;
+        }
+        *on = 1;
+        period = blink_period_ms(mode, pos);
+        if (period <= 0) {
+            return 1;
+        }
+        *half = period / 2;
+        *active = 1;
+        return 1;
+    }
+    if (mode == PLAY_LED_OFF) {
+        *on = 0;
+        *active = 0;
+        return 0;
+    }
+    if (mode == PLAY_LED_ON) {
+        *on = 1;
+        *active = 0;
+        return 1;
+    }
+    period = blink_period_ms(mode, pos);
+    if (period <= 0) {
+        *on = 1;
+        *active = 0;
+        *edge = now;
+        return 1;
+    }
+    h = period / 2;
+    if (h < 1) {
+        h = 1;
+    }
+    *half = h;
+    *active = 1;
+    if (now - *edge >= h) {
+        *on = !*on;
+        *edge = now;
+    }
+    return *on;
+}
+
+static void update_play_lamp(const Config *cfg)
+{
+    int code;
+    int mode;
+    int pos;
+
+    g_have_play = 0;
+    if (!cfg) {
+        g_blink_active = 0;
+        return;
+    }
+    code = cfg->midi_code[KEYID_PAUSE];
+    if (code < 0 || (code & MIDI_KIND_MASK) != MIDI_NOTE) {
+        g_blink_active = 0;
+        return;
+    }
+    g_play_note = code & MIDI_NUM_MASK;
+    player_play_led(&mode, &pos);
+    g_play_want = play_level(mode, pos, mono_ms(), &g_blink_mode, &g_blink_on,
+                             &g_blink_edge_ms, &g_blink_half_ms, &g_blink_active);
+    g_have_play = 1;
+}
+
+int midi_wait_ms(int max_ms)
+{
+    long long left;
+
+    if (max_ms < 0) {
+        max_ms = 0;
+    }
+    if (!g_blink_active || g_blink_half_ms < 1) {
+        return max_ms;
+    }
+    left = g_blink_edge_ms + g_blink_half_ms - mono_ms();
+    if (left < 1) {
+        return max_ms < 1 ? max_ms : 1;
+    }
+    if (left > max_ms) {
+        return max_ms;
+    }
+    return (int)left;
+}
+
 static void send_led(struct MidiIn *m, int note, int on)
 {
     unsigned char msg[3];
@@ -441,11 +601,13 @@ static void send_led(struct MidiIn *m, int note, int on)
     }
 }
 
-/* Light each effect pad that is on and darken the rest. Only changes are sent. */
+/* Light each effect pad that is on and darken the rest. The play pad blinks
+ * over a pause or a resume. Only changes are sent. */
 static void leds_sync(struct MidiIn *m, const Config *cfg)
 {
     size_t i;
 
+    update_play_lamp(cfg);
     if (!m->out) {
         return;
     }
@@ -457,10 +619,16 @@ static void leds_sync(struct MidiIn *m, const Config *cfg)
         if (code < 0 || (code & MIDI_KIND_MASK) != MIDI_NOTE) {
             continue;
         }
+        if (g_have_play && note == g_play_note) {
+            continue;
+        }
         want = player_fx_enabled(g_led_fx[i].fx);
         if (m->led[note] != want) {
             send_led(m, note, want);
         }
+    }
+    if (g_have_play && m->led[g_play_note] != g_play_want) {
+        send_led(m, g_play_note, g_play_want);
     }
 }
 
@@ -729,6 +897,81 @@ static int leds_self_test(void)
         log_error("midi", "the reverb pad stayed lit with every effect off");
         goto out;
     }
+    {
+        int phase = -1;
+        int on = 0;
+        long long edge = 0;
+        int half = 0;
+        int active = 0;
+
+        if (blink_period_ms(PLAY_LED_START, 0) != 100 ||
+            blink_period_ms(PLAY_LED_START, 500) != 50 ||
+            blink_period_ms(PLAY_LED_START, 1000) != PLAY_BLINK_FAST_MS ||
+            blink_period_ms(PLAY_LED_STOP, 0) != 0 ||
+            blink_period_ms(PLAY_LED_STOP, 500) != 50 ||
+            blink_period_ms(PLAY_LED_STOP, 1000) != 100) {
+            log_error("midi", "play blink period was wrong");
+            goto out;
+        }
+        if (play_level(PLAY_LED_START, 0, 1000, &phase, &on, &edge, &half, &active) != 1 ||
+            !active || half != 50 ||
+            play_level(PLAY_LED_START, 0, 1049, &phase, &on, &edge, &half, &active) != 1 ||
+            play_level(PLAY_LED_START, 0, 1050, &phase, &on, &edge, &half, &active) != 0 ||
+            play_level(PLAY_LED_START, 0, 1100, &phase, &on, &edge, &half, &active) != 1) {
+            log_error("midi", "play blink did not speed up from a 0.1s flash");
+            goto out;
+        }
+        if (play_level(PLAY_LED_ON, 0, 1100, &phase, &on, &edge, &half, &active) != 1 ||
+            active ||
+            play_level(PLAY_LED_OFF, 0, 1200, &phase, &on, &edge, &half, &active) != 0 ||
+            active) {
+            log_error("midi", "play light was not steady outside a ramp");
+            goto out;
+        }
+        if (play_level(PLAY_LED_STOP, 0, 2000, &phase, &on, &edge, &half, &active) != 1 ||
+            active ||
+            play_level(PLAY_LED_STOP, 500, 2000, &phase, &on, &edge, &half, &active) != 1 ||
+            !active || half != 25 ||
+            play_level(PLAY_LED_STOP, 500, 2024, &phase, &on, &edge, &half, &active) != 1 ||
+            play_level(PLAY_LED_STOP, 500, 2025, &phase, &on, &edge, &half, &active) != 0) {
+            log_error("midi", "play blink did not slow down toward off");
+            goto out;
+        }
+    }
+    cfg.midi_code[KEYID_REVERB] = -1;
+    cfg.midi_code[KEYID_PAUSE] = MIDI_NOTE | 38;
+    g_blink_mode = -1;
+    player_play_led_set(PLAY_LED_OFF, 0);
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) != 3 || got[0] != 0x89 || got[1] != 38) {
+        log_error("midi", "the play pad was not dark while paused");
+        goto out;
+    }
+    player_play_led_set(PLAY_LED_ON, 0);
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) != 3 || got[0] != 0x99 || got[1] != 38 ||
+        got[2] != 127) {
+        log_error("midi", "the play pad was not steady red while playing");
+        goto out;
+    }
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) > 0) {
+        log_error("midi", "the play pad was sent its light again while steady");
+        goto out;
+    }
+    player_play_led_set(PLAY_LED_START, 0);
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) > 0) {
+        log_error("midi", "a resume blink started by turning a lit pad on again");
+        goto out;
+    }
+    usleep(60 * 1000);
+    leds_sync(&m, &cfg);
+    if (read(pipefd[0], got, sizeof got) != 3 || got[0] != 0x89 || got[1] != 38) {
+        log_error("midi", "the play pad did not blink off at the start of a resume");
+        goto out;
+    }
+    player_play_led_set(PLAY_LED_ON, 0);
     rc = 0;
 out:
     player_set_fx(NULL);

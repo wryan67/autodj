@@ -474,7 +474,15 @@ int main(int argc, char **argv)
             pfd[nfds].revents = 0;
             extra = 1;
         }
-        pr = poll(nfds + extra ? pfd : NULL, (nfds_t)(nfds + extra), keys_wait_ms(200));
+        {
+            int wait_ms = keys_wait_ms(200);
+            int blink_ms = midi_wait_ms(wait_ms);
+
+            if (blink_ms < wait_ms) {
+                wait_ms = blink_ms;
+            }
+            pr = poll(nfds + extra ? pfd : NULL, (nfds_t)(nfds + extra), wait_ms);
+        }
         if (pr < 0 && errno == EINTR) {
             continue;
         }

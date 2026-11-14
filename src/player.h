@@ -28,6 +28,19 @@ void player_stop(void);
 int player_alive(void);
 
 void player_toggle_pause(void);
+
+/* Play-pad lamp. Steady on while a song plays, steady off while it is
+ * paused, and a ramp while pause_time or resume_time is running.
+ * pos is 0..1000 through that ramp, and 0 otherwise. */
+enum {
+    PLAY_LED_OFF = 0,
+    PLAY_LED_ON = 1,
+    PLAY_LED_START = 2,
+    PLAY_LED_STOP = 3
+};
+void player_play_led(int *mode, int *pos);
+/* Self-test. The audio thread overwrites this while playback is running. */
+void player_play_led_set(int mode, int pos);
 void player_skip(void);
 void player_previous(void);
 void player_rewind(int ms);

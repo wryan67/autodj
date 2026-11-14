@@ -38,6 +38,9 @@ int midi_fds(int *fds, int max);
 /* Read pending messages and run the actions bound in cfg. Devices that
  * were unplugged are dropped, and new ones are opened every 3 seconds. */
 void midi_poll(const struct Config *cfg);
+/* How long the main loop can sleep. Shorter while the play pad is blinking,
+ * so a 0.1 second flash is not missed. max_ms is the longest wait. */
+int midi_wait_ms(int max_ms);
 
 /* Open every MIDI input for a one-shot capture in the editor. names gets
  * the device names, separated by ", ", and *busy the number of inputs that

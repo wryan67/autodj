@@ -106,6 +106,8 @@ static double g_fade_span;
 static double g_rate = 1.0;
 static int g_paused;
 static int g_ramping;
+static atomic_int g_play_led = PLAY_LED_OFF;
+static atomic_int g_play_led_pos;
 static double g_ramp_from;
 static double g_ramp_to;
 static uint64_t g_ramp_start;
@@ -628,6 +630,48 @@ static void do_back(void)
     request_nav(g_hist[dest]);
 }
 
+static void publish_play_led(void)
+{
+    int mode = g_paused ? PLAY_LED_OFF : PLAY_LED_ON;
+    int pos = 0;
+
+    if (g_ramping) {
+        mode = g_paused ? PLAY_LED_STOP : PLAY_LED_START;
+        if (g_ramp_span > 0 && g_rendered > g_ramp_start) {
+            uint64_t done = g_rendered - g_ramp_start;
+
+            if (done > g_ramp_span) {
+                done = g_ramp_span;
+            }
+            pos = (int)(done * 1000 / g_ramp_span);
+        }
+    }
+    atomic_store(&g_play_led, mode);
+    atomic_store(&g_play_led_pos, pos);
+}
+
+void player_play_led(int *mode, int *pos)
+{
+    if (mode) {
+        *mode = atomic_load(&g_play_led);
+    }
+    if (pos) {
+        *pos = atomic_load(&g_play_led_pos);
+    }
+}
+
+void player_play_led_set(int mode, int pos)
+{
+    if (pos < 0) {
+        pos = 0;
+    }
+    if (pos > 1000) {
+        pos = 1000;
+    }
+    atomic_store(&g_play_led, mode);
+    atomic_store(&g_play_led_pos, pos);
+}
+
 static void begin_ramp(int pausing)
 {
     g_paused = pausing;
@@ -648,6 +692,7 @@ static void begin_ramp(int pausing)
         log_info("audio", "%s", pausing ? "paused" : "resumed");
         g_announced_hold = 1;
     }
+    publish_play_led();
 }
 
 static void try_apply_nav(void)
@@ -846,9 +891,11 @@ static void service_commands(void)
 static void update_rate(void)
 {
     if (!g_ramping) {
+        publish_play_led();
         return;
     }
     if (g_rendered < g_ramp_start) {
+        publish_play_led();
         return;
     }
     g_rate = rate_at(g_ramp_from, g_ramp_to, g_rendered - g_ramp_start, g_ramp_span);
@@ -860,6 +907,7 @@ static void update_rate(void)
             g_announced_hold = 1;
         }
     }
+    publish_play_led();
 }
 
 static void maybe_natural_fade(void)
@@ -1166,6 +1214,7 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
         return -1;
     }
     g_threads = 1;
+    publish_play_led();
     return 0;
 }
 
@@ -1197,6 +1246,9 @@ void player_stop(void)
     track_free(g_nav_track);
     g_a = g_b = g_pending = g_nav_track = NULL;
     hist_clear();
+    g_paused = 1;
+    g_ramping = 0;
+    publish_play_led();
 }
 
 int player_alive(void)
@@ -1675,6 +1727,70 @@ int player_self_test(void)
     }
     if (jog_self_test() != 0) {
         return -1;
+    }
+    {
+        int mode = -1;
+        int pos = -1;
+
+        g_a = NULL;
+        g_b = NULL;
+        g_fading = 0;
+        g_vol = 0;
+        g_set.rate = 44100;
+        g_announced_hold = 1;
+        g_paused = 1;
+        g_ramping = 1;
+        g_ramp_from = 1.0;
+        g_ramp_to = 0.0;
+        g_ramp_start = 0;
+        g_ramp_span = (uint64_t)44100 * 2;
+        g_rendered = 0;
+        g_rate = 1.0;
+        render_frames(1);
+        player_play_led(&mode, &pos);
+        if (mode != PLAY_LED_STOP || pos > 5) {
+            log_error("audio", "play light did not start the stop (%d at %d)", mode, pos);
+            return -1;
+        }
+        g_rendered = 44100;
+        render_frames(1);
+        player_play_led(&mode, &pos);
+        if (mode != PLAY_LED_STOP || pos < 450 || pos > 550) {
+            log_error("audio", "play light stop was %d at %d, wanted halfway", mode, pos);
+            return -1;
+        }
+        g_rendered = g_ramp_span;
+        render_frames(1);
+        player_play_led(&mode, &pos);
+        if (mode != PLAY_LED_OFF) {
+            log_error("audio", "play light stayed on after the stop (%d)", mode);
+            return -1;
+        }
+        g_paused = 0;
+        g_ramping = 1;
+        g_ramp_from = 0.0;
+        g_ramp_to = 1.0;
+        g_ramp_start = g_rendered;
+        g_ramp_span = (uint64_t)44100 * 2;
+        render_frames(1);
+        player_play_led(&mode, &pos);
+        if (mode != PLAY_LED_START || pos > 5) {
+            log_error("audio", "play light did not start the resume (%d at %d)", mode, pos);
+            return -1;
+        }
+        g_rendered = g_ramp_start + g_ramp_span;
+        render_frames(1);
+        player_play_led(&mode, &pos);
+        if (mode != PLAY_LED_ON) {
+            log_error("audio", "play light did not stay on after the resume (%d)", mode);
+            return -1;
+        }
+        g_ramping = 0;
+        g_paused = 0;
+        g_rate = 1.0;
+        g_rendered = 0;
+        g_vol = 1.0f;
+        publish_play_led();
     }
 
     hist_clear();
