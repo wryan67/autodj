@@ -51,6 +51,16 @@ static atomic_int g_fx_on[PLAYER_FX_COUNT];
 static atomic_int g_rv_level = 500;
 /* Laser volume, 0 to 1000. player_set_fx starts it at the configured level. */
 static atomic_int g_lz_level = 300;
+/* Bubbles loop. The audio thread mixes it. player_load_bubbles fills it
+ * before that thread starts. */
+static float *g_bb_pcm;
+static size_t g_bb_frames;
+static size_t g_bb_pos;
+static float g_bb_gain;
+/* Bubbles volume, 0 to 1000. player_set_fx starts it at the configured volume. */
+static atomic_int g_bb_level = 500;
+/* Chorus depth in hundredths of a millisecond. 500 is 5.00 ms. */
+static atomic_int g_ch_depth = 500;
 static FxState *g_fx;
 static FxParams g_fx_params;
 static atomic_int g_stop;
@@ -934,6 +944,40 @@ static void maybe_natural_fade(void)
     start_fade(remain < span ? remain : span);
 }
 
+/* Fade the loop in and out over 20 ms, then add it on top of the song.
+ * It follows the song volume and the bubbles volume, including while the
+ * song is paused. The loop stays at normal speed while the dial is jogging. */
+static void mix_bubbles(float *left, float *right)
+{
+    unsigned rate = g_set.rate ? g_set.rate : 44100;
+    float target = 0;
+    float step;
+
+    if (atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]) && g_bb_pcm && g_bb_frames > 0) {
+        target = ((float)atomic_load(&g_bb_level) / 1000.0f) * g_vol;
+    }
+    step = 1.0f / (0.02f * (float)rate);
+    if (g_bb_gain < target) {
+        g_bb_gain += step;
+        if (g_bb_gain > target) {
+            g_bb_gain = target;
+        }
+    } else if (g_bb_gain > target) {
+        g_bb_gain -= step;
+        if (g_bb_gain < target) {
+            g_bb_gain = target;
+        }
+    }
+    if (g_bb_gain > 1e-4f && g_bb_pcm && g_bb_frames > 0) {
+        *left += g_bb_pcm[g_bb_pos * 2] * g_bb_gain;
+        *right += g_bb_pcm[g_bb_pos * 2 + 1] * g_bb_gain;
+        g_bb_pos++;
+        if (g_bb_pos >= g_bb_frames) {
+            g_bb_pos = 0;
+        }
+    }
+}
+
 static void render_frame(int16_t *dst)
 {
     float left = 0;
@@ -1001,6 +1045,7 @@ static void render_frame(int16_t *dst)
                               (g_fx_params.rv_send_max - g_fx_params.rv_send_min) *
                                   (float)atomic_load(&g_rv_level) / 1000.0f);
         fx_set_lasers(g_fx, (float)atomic_load(&g_lz_level) / 10.0f);
+        fx_set_chorus(g_fx, (float)atomic_load(&g_ch_depth) / 100.0f);
         fx_set_on(g_fx, atomic_load(&g_fx_on[PLAYER_FX_REVERB]),
                   atomic_load(&g_fx_on[PLAYER_FX_PITCH]),
                   atomic_load(&g_fx_on[PLAYER_FX_AUTOPAN]),
@@ -1011,6 +1056,7 @@ static void render_frame(int16_t *dst)
                   atomic_load(&g_fx_on[PLAYER_FX_LASERS]));
         fx_process(g_fx, &left, &right);
     }
+    mix_bubbles(&left, &right);
     if (left > 1) {
         left = 1;
     }
@@ -1229,6 +1275,11 @@ void player_stop(void)
         hist_clear();
         fx_free(g_fx);
         g_fx = NULL;
+        free(g_bb_pcm);
+        g_bb_pcm = NULL;
+        g_bb_frames = 0;
+        g_bb_pos = 0;
+        g_bb_gain = 0;
         return;
     }
     atomic_store(&g_stop, 1);
@@ -1246,6 +1297,11 @@ void player_stop(void)
     track_free(g_nav_track);
     g_a = g_b = g_pending = g_nav_track = NULL;
     hist_clear();
+    free(g_bb_pcm);
+    g_bb_pcm = NULL;
+    g_bb_frames = 0;
+    g_bb_pos = 0;
+    g_bb_gain = 0;
     g_paused = 1;
     g_ramping = 0;
     publish_play_led();
@@ -1354,6 +1410,25 @@ int player_volume_percent(void)
     return volume / 10;
 }
 
+/* Largest depth the knob may store: 10.00 ms, and strictly under delay. */
+static int chorus_depth_limit(void)
+{
+    float delay = g_fx_params.ch_delay;
+    int tenths;
+
+    if (delay > 10.0f) {
+        return 1000;
+    }
+    tenths = (int)((delay - 0.001f) * 10.0f);
+    if (tenths < 0) {
+        tenths = 0;
+    }
+    if (tenths > 100) {
+        tenths = 100;
+    }
+    return tenths * 10;
+}
+
 void player_set_fx(const FxParams *fx)
 {
     if (!fx) {
@@ -1383,6 +1458,29 @@ void player_set_fx(const FxParams *fx)
         }
         atomic_store(&g_lz_level, pct * 10);
     }
+    {
+        int pct = (int)(g_fx_params.bb_volume + 0.5f);
+
+        if (pct < 0) {
+            pct = 0;
+        }
+        if (pct > 100) {
+            pct = 100;
+        }
+        atomic_store(&g_bb_level, pct * 10);
+    }
+    {
+        int hundredths = (int)(g_fx_params.ch_depth * 100.0f + 0.5f);
+        int limit = chorus_depth_limit();
+
+        if (hundredths < 0) {
+            hundredths = 0;
+        }
+        if (hundredths > limit) {
+            hundredths = limit;
+        }
+        atomic_store(&g_ch_depth, hundredths);
+    }
     atomic_store(&g_fx_on[PLAYER_FX_REVERB], 0);
     atomic_store(&g_fx_on[PLAYER_FX_PITCH], 0);
     atomic_store(&g_fx_on[PLAYER_FX_AUTOPAN], 0);
@@ -1391,6 +1489,7 @@ void player_set_fx(const FxParams *fx)
     atomic_store(&g_fx_on[PLAYER_FX_FLANGER], 0);
     atomic_store(&g_fx_on[PLAYER_FX_UNDERWATER], 0);
     atomic_store(&g_fx_on[PLAYER_FX_LASERS], 0);
+    atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 0);
 }
 
 int player_fx_enabled(int which)
@@ -1405,7 +1504,7 @@ int player_fx_toggle(int which)
 {
     static const char *names[PLAYER_FX_COUNT] = {
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
-        "underwater", "lasers"};
+        "underwater", "lasers", "bubbles"};
     int next;
 
     if (which < 0 || which >= PLAYER_FX_COUNT) {
@@ -1476,6 +1575,90 @@ void player_lasers_step(int direction, int percent)
 int player_lasers_percent(void)
 {
     return atomic_load(&g_lz_level) / 10;
+}
+
+void player_bubbles_step(int direction, int percent)
+{
+    int level = atomic_load(&g_bb_level);
+    int next = level + direction * percent * 10;
+
+    if (next < 0) {
+        next = 0;
+    }
+    if (next > 1000) {
+        next = 1000;
+    }
+    if (next == level) {
+        return;
+    }
+    atomic_store(&g_bb_level, next);
+    log_info("keys", "bubbles %d%%%s", next / 10,
+             atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]) ? "" : " (bubbles is off)");
+}
+
+int player_bubbles_percent(void)
+{
+    return atomic_load(&g_bb_level) / 10;
+}
+
+void player_chorus_step(int direction, int percent)
+{
+    int level = atomic_load(&g_ch_depth);
+    int next = level + direction * percent * 10;
+    int limit = chorus_depth_limit();
+    int whole;
+    int frac;
+
+    if (next < 0) {
+        next = 0;
+    }
+    if (next > limit) {
+        next = limit;
+    }
+    if (next == level) {
+        return;
+    }
+    atomic_store(&g_ch_depth, next);
+    whole = next / 100;
+    frac = next % 100;
+    if (frac % 10 == 0) {
+        log_info("keys", "chorus depth %d.%d ms%s", whole, frac / 10,
+                 atomic_load(&g_fx_on[PLAYER_FX_CHORUS]) ? "" : " (chorus is off)");
+    } else {
+        log_info("keys", "chorus depth %d.%02d ms%s", whole, frac,
+                 atomic_load(&g_fx_on[PLAYER_FX_CHORUS]) ? "" : " (chorus is off)");
+    }
+}
+
+int player_chorus_hundredths(void)
+{
+    return atomic_load(&g_ch_depth);
+}
+
+int player_load_bubbles(const char *path, unsigned rate)
+{
+    Track *track;
+
+    if (!path || !path[0]) {
+        return -1;
+    }
+    if (rate == 0) {
+        rate = 44100;
+    }
+    track = track_decode(path, rate, 0, 0, 0);
+    if (!track || !track->pcm || track->frames == 0) {
+        track_free(track);
+        return -1;
+    }
+    free(g_bb_pcm);
+    g_bb_pcm = track->pcm;
+    g_bb_frames = track->frames;
+    g_bb_pos = 0;
+    g_bb_gain = 0;
+    track->pcm = NULL;
+    track_free(track);
+    log_info("audio", "bubbles loop %zu frames", g_bb_frames);
+    return 0;
 }
 
 void player_volume_step(int direction, int percent)
@@ -1884,5 +2067,172 @@ int player_self_test(void)
     g_need_prefetch = 0;
     g_prefetch_busy = 0;
     g_prefetch_path[0] = '\0';
+
+    /* A two-frame loop at full gain, then half volume, then an off ramp. */
+    {
+        float loop[4] = {0.5f, -0.25f, 0.25f, 0.5f};
+        float *saved_pcm = g_bb_pcm;
+        size_t saved_frames = g_bb_frames;
+        size_t saved_pos = g_bb_pos;
+        float saved_gain = g_bb_gain;
+        int saved_level = atomic_load(&g_bb_level);
+        int saved_on = atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]);
+        unsigned saved_out_rate = g_set.rate;
+        double saved_play = g_rate;
+        float saved_vol = g_vol;
+        int saved_jog = g_jog_on;
+        int saved_ramp = g_ramping;
+        int saved_fade = g_fading;
+        Track *saved_a = g_a;
+        Track *saved_b = g_b;
+        FxState *saved_fx = g_fx;
+        int16_t out[2];
+        int near;
+
+        g_set.rate = 44100;
+        g_rate = 1.0;
+        g_vol = 1.0f;
+        g_jog_on = 0;
+        g_ramping = 0;
+        g_fading = 0;
+        g_a = NULL;
+        g_b = NULL;
+        g_fx = NULL;
+        g_bb_pcm = loop;
+        g_bb_frames = 2;
+        g_bb_pos = 0;
+        g_bb_gain = 1.0f;
+        atomic_store(&g_bb_level, 1000);
+        atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 1);
+        render_frame(out);
+        near = out[0] >= 16383 && out[0] <= 16384 && out[1] >= -8192 && out[1] <= -8191;
+        render_frame(out);
+        if (!near || out[0] < 8191 || out[0] > 8192 || out[1] < 16383 || out[1] > 16384) {
+            log_error("audio", "bubbles loop mix failed");
+            g_bb_pcm = saved_pcm;
+            g_bb_frames = saved_frames;
+            g_bb_pos = saved_pos;
+            g_bb_gain = saved_gain;
+            atomic_store(&g_bb_level, saved_level);
+            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
+            g_set.rate = saved_out_rate;
+            g_rate = saved_play;
+            g_vol = saved_vol;
+            g_jog_on = saved_jog;
+            g_ramping = saved_ramp;
+            g_fading = saved_fade;
+            g_a = saved_a;
+            g_b = saved_b;
+            g_fx = saved_fx;
+            return -1;
+        }
+        g_bb_pos = 0;
+        g_bb_gain = 0.5f;
+        atomic_store(&g_bb_level, 500);
+        render_frame(out);
+        if (out[0] < 8191 || out[0] > 8192 || out[1] < -4096 || out[1] > -4095) {
+            log_error("audio", "bubbles volume scale failed (%d, %d)", out[0], out[1]);
+            g_bb_pcm = saved_pcm;
+            g_bb_frames = saved_frames;
+            g_bb_pos = saved_pos;
+            g_bb_gain = saved_gain;
+            atomic_store(&g_bb_level, saved_level);
+            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
+            g_set.rate = saved_out_rate;
+            g_rate = saved_play;
+            g_vol = saved_vol;
+            g_jog_on = saved_jog;
+            g_ramping = saved_ramp;
+            g_fading = saved_fade;
+            g_a = saved_a;
+            g_b = saved_b;
+            g_fx = saved_fx;
+            return -1;
+        }
+        g_rate = 0;
+        g_bb_pos = 0;
+        g_bb_gain = 0.5f;
+        render_frame(out);
+        if (out[0] < 8191 || out[0] > 8192 || out[1] < -4096 || out[1] > -4095) {
+            log_error("audio", "bubbles paused mix failed (%d, %d)", out[0], out[1]);
+            g_bb_pcm = saved_pcm;
+            g_bb_frames = saved_frames;
+            g_bb_pos = saved_pos;
+            g_bb_gain = saved_gain;
+            atomic_store(&g_bb_level, saved_level);
+            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
+            g_set.rate = saved_out_rate;
+            g_rate = saved_play;
+            g_vol = saved_vol;
+            g_jog_on = saved_jog;
+            g_ramping = saved_ramp;
+            g_fading = saved_fade;
+            g_a = saved_a;
+            g_b = saved_b;
+            g_fx = saved_fx;
+            return -1;
+        }
+        g_bb_pos = 0;
+        g_bb_gain = 1.0f;
+        atomic_store(&g_bb_level, 1000);
+        render_frame(out);
+        if (out[0] < 16383 || out[0] > 16384 || out[1] < -8192 || out[1] > -8191) {
+            log_error("audio", "bubbles paused volume failed (%d, %d)", out[0], out[1]);
+            g_bb_pcm = saved_pcm;
+            g_bb_frames = saved_frames;
+            g_bb_pos = saved_pos;
+            g_bb_gain = saved_gain;
+            atomic_store(&g_bb_level, saved_level);
+            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
+            g_set.rate = saved_out_rate;
+            g_rate = saved_play;
+            g_vol = saved_vol;
+            g_jog_on = saved_jog;
+            g_ramping = saved_ramp;
+            g_fading = saved_fade;
+            g_a = saved_a;
+            g_b = saved_b;
+            g_fx = saved_fx;
+            return -1;
+        }
+        g_rate = 1.0;
+        atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 0);
+        g_bb_gain = 0.5f;
+        render_frames(882);
+        if (g_bb_gain > 0.001f) {
+            log_error("audio", "bubbles off ramp left gain %g", (double)g_bb_gain);
+            g_bb_pcm = saved_pcm;
+            g_bb_frames = saved_frames;
+            g_bb_pos = saved_pos;
+            g_bb_gain = saved_gain;
+            atomic_store(&g_bb_level, saved_level);
+            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
+            g_set.rate = saved_out_rate;
+            g_rate = saved_play;
+            g_vol = saved_vol;
+            g_jog_on = saved_jog;
+            g_ramping = saved_ramp;
+            g_fading = saved_fade;
+            g_a = saved_a;
+            g_b = saved_b;
+            g_fx = saved_fx;
+            return -1;
+        }
+        g_bb_pcm = saved_pcm;
+        g_bb_frames = saved_frames;
+        g_bb_pos = saved_pos;
+        g_bb_gain = saved_gain;
+        atomic_store(&g_bb_level, saved_level);
+        atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
+        g_set.rate = saved_out_rate;
+        g_rate = saved_play;
+        g_vol = saved_vol;
+        g_jog_on = saved_jog;
+        g_ramping = saved_ramp;
+        g_fading = saved_fade;
+        g_a = saved_a;
+        g_b = saved_b;
+        g_fx = saved_fx;
+    }
     return 0;
 }

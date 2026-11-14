@@ -10,6 +10,7 @@
 #include "playlist.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -18,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -25,9 +27,9 @@
 
 /*
  * Full-screen editor for master.cfg. The tabs are Main, Buttons, Knobs,
- * Reverb, Chipmunk, Autopan, Phaser, Chorus, Flanger, Underwater, and
- * Lasers. Lasers wraps onto a second row even in a wide window, and more
- * tabs wrap when the window is narrower.
+ * Reverb, Chipmunk, Autopan, Phaser, Chorus, Flanger, Underwater, Lasers,
+ * and Bubbles. Lasers and Bubbles wrap onto a second row even in a wide
+ * window, and more tabs wrap when the window is narrower.
  * Tab and the arrow keys move between the fields on the current tab. Up from
  * the first field reaches the tabs, and left and right there switch tabs.
  * Left and right move the cursor in a text field, and step to the next field
@@ -36,7 +38,8 @@
  * longest value. The keyboard box is the next key typed on this terminal.
  * The keypad box is captured from the USB keypad or the shortcut remote, and
  * the MIDI box from a pad or knob of any MIDI controller. The dial modes on
- * Knobs are droplists of none, volume, and jog.
+ * Knobs are droplists of none, volume, jog, and reverb. The Bubbles file
+ * box lists the mp3 files in the sound-effects folder.
  * Esc or Cancel leaves a binding unchanged. Delete on the keypad or MIDI
  * prompt removes it. On the keyboard prompt, click Delete to remove it. Save
  * validates before it writes.
@@ -54,6 +57,7 @@ enum {
     TAB_FLANGER,
     TAB_UNDERWATER,
     TAB_LASERS,
+    TAB_BUBBLES,
     TAB_COUNT
 };
 
@@ -85,10 +89,11 @@ enum {
     FE_KEY_FLANGER,
     FE_KEY_UNDERWATER,
     FE_KEY_LASERS,
+    FE_KEY_BUBBLES,
     FE_KEY_EFFECTS_OFF,
     FE_BUTTON_END,
 
-    /* Knobs rows: dial, volume, jog, reverb, and laser bindings, then the dial modes. */
+    /* Knobs rows: dial, volume, jog, reverb, lasers, bubbles, and chorus, then the dial modes. */
     FE_KNOB_FIRST = FE_BUTTON_END,
     FE_KEY_DIAL_FWD = FE_KNOB_FIRST,
     FE_KEY_DIAL_BACK,
@@ -101,6 +106,10 @@ enum {
     FE_KEY_RV_DOWN,
     FE_KEY_LZ_UP,
     FE_KEY_LZ_DOWN,
+    FE_KEY_BB_UP,
+    FE_KEY_BB_DOWN,
+    FE_KEY_CH_UP,
+    FE_KEY_CH_DOWN,
     FE_DIAL_MODE1,
     FE_DIAL_MODE2,
     FE_DIAL_MODE3,
@@ -160,6 +169,8 @@ enum {
     FE_LZ_HIGH,
     FE_LZ_LENGTH,
     FE_LZ_LEVEL,
+    FE_BB_FILE,
+    FE_BB_VOLUME,
     FE_FIELD_COUNT,
 
     FE_TABS = FE_FIELD_COUNT,
@@ -179,11 +190,15 @@ enum {
     BIND_COLS = 3,
     /* Brackets plus one character. Used only when a value cannot fit. */
     BOX_MIN_W = 4,
-    /* Tallest tab is Buttons, with 15 fields, under one row of tabs.
-     * A wrapped tab row adds one line, checked in layout_ui. */
-    TAB_FIELDS = FE_BUTTON_END - FE_KEY_FIRST,
-    /* Rows of the dial mode droplist: none, volume, jog, reverb. */
+    /* Knobs is the tallest tab. Buttons has fewer rows. A wrapped tab row
+     * adds one line, checked in layout_ui. */
+    BUTTON_FIELDS = FE_BUTTON_END - FE_KEY_FIRST,
+    KNOB_FIELDS = FE_KNOB_END - FE_KNOB_FIRST,
+    TAB_FIELDS = BUTTON_FIELDS > KNOB_FIELDS ? BUTTON_FIELDS : KNOB_FIELDS,
+    /* Rows of the dial mode droplist: none, volume, jog, reverb.
+     * A longer list, such as the bubbles files, shows at most DROP_VIS_MAX. */
     DROP_ROWS = DIAL_MODE_COUNT,
+    DROP_VIS_MAX = 8,
     ROW_TABS = 1,
     ROW_NOTE = 2,
     ROW_FIELD0 = 3,
@@ -283,9 +298,10 @@ struct Editor {
     int capture;
     int capture_kbd;
     int capture_midi;
-    /* 1 while the droplist of the focused dial mode is open. */
+    /* 1 while a droplist is open. drop_top is the first visible row. */
     int drop;
     int drop_sel;
+    int drop_top;
     int capture_id;
     int capture_btn;
     int tab;
@@ -310,6 +326,11 @@ static int g_key_grabbed[32];
 static int g_midi_fds[8];
 static int g_midi_n;
 static char g_midi_names[256];
+
+/* mp3 names in the sound-effects folder, plus the configured file. */
+enum { SFX_MAX = 64 };
+static char g_sfx_names[SFX_MAX][256];
+static int g_sfx_count;
 
 static const char *field_label(int id)
 {
@@ -337,6 +358,7 @@ static const char *field_label(int id)
         "Flanger",
         "Underwater",
         "Lasers",
+        "Bubbles",
         "All effects off",
         "Dial forward",
         "Dial back",
@@ -349,6 +371,10 @@ static const char *field_label(int id)
         "Reverb down",
         "Lasers up",
         "Lasers down",
+        "Bubbles up",
+        "Bubbles down",
+        "Chorus up",
+        "Chorus down",
         "Dial mode 1",
         "Dial mode 2",
         "Dial mode 3",
@@ -391,7 +417,9 @@ static const char *field_label(int id)
         "Low Hz",
         "High Hz",
         "Length ms",
-        "Level %"
+        "Level %",
+        "File",
+        "Volume"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -432,6 +460,8 @@ static int fe_keyid(int id)
         return KEYID_UNDERWATER;
     case FE_KEY_LASERS:
         return KEYID_LASERS;
+    case FE_KEY_BUBBLES:
+        return KEYID_BUBBLES;
     case FE_KEY_EFFECTS_OFF:
         return KEYID_EFFECTS_OFF;
     case FE_KEY_DIAL_FWD:
@@ -456,6 +486,14 @@ static int fe_keyid(int id)
         return KEYID_LZ_UP;
     case FE_KEY_LZ_DOWN:
         return KEYID_LZ_DOWN;
+    case FE_KEY_BB_UP:
+        return KEYID_BB_UP;
+    case FE_KEY_BB_DOWN:
+        return KEYID_BB_DOWN;
+    case FE_KEY_CH_UP:
+        return KEYID_CH_UP;
+    case FE_KEY_CH_DOWN:
+        return KEYID_CH_DOWN;
     default:
         return -1;
     }
@@ -628,6 +666,12 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_LZ_LEVEL:
         *cap = sizeof edit->lz_level;
         return edit->lz_level;
+    case FE_BB_FILE:
+        *cap = sizeof edit->bb_file;
+        return edit->bb_file;
+    case FE_BB_VOLUME:
+        *cap = sizeof edit->bb_volume;
+        return edit->bb_volume;
     default:
         *cap = 0;
         return NULL;
@@ -645,7 +689,7 @@ static int is_number_field(int id)
            (id >= FE_CH_PERIOD && id <= FE_CH_MIX) ||
            (id >= FE_FL_PERIOD && id <= FE_FL_MIX) ||
            (id >= FE_UW_CUTOFF && id <= FE_UW_BOOST) ||
-           (id >= FE_LZ_RATE && id <= FE_LZ_LEVEL);
+           (id >= FE_LZ_RATE && id <= FE_LZ_LEVEL) || id == FE_BB_VOLUME;
 }
 
 static int is_key_field(int id)
@@ -672,15 +716,19 @@ static int is_check_field(const ConfigEdit *edit, int id)
     return text && config_parse_bool(text, &on) == 0;
 }
 
-/* A dial mode droplist. Enter or Space opens the list of none, volume,
- * jog, and reverb. A value that is none of them stays a text field so it can be
- * corrected. */
+/* A dial mode droplist, or the bubbles file list when the sound-effects
+ * folder has mp3 files. Enter or Space opens it. A dial value that is
+ * none of the modes stays a text field so it can be corrected. An empty
+ * file list stays a text field too. */
 static int is_choice_field(const ConfigEdit *edit, int id)
 {
     size_t cap;
     int mode = 0;
     char *text;
 
+    if (id == FE_BB_FILE) {
+        return g_sfx_count > 0;
+    }
     if (!is_dial_mode_field(id)) {
         return 0;
     }
@@ -832,7 +880,7 @@ static int tab_first(int tab)
     static const int first[] = {
         FE_FOLDER, FE_KEY_FIRST, FE_KNOB_FIRST, FE_RV_DECAY, FE_PS_SEMI,
         FE_AP_PERIOD, FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD, FE_UW_CUTOFF,
-        FE_LZ_RATE
+        FE_LZ_RATE, FE_BB_FILE
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -846,7 +894,7 @@ static int tab_last(int tab)
     static const int last[] = {
         FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_KNOB_END - 1, FE_RV_END - 1,
         FE_PS_END - 1, FE_AP_END - 1, FE_PH_END - 1, FE_CH_END - 1, FE_FL_END - 1,
-        FE_UW_END - 1, FE_FIELD_COUNT - 1
+        FE_UW_END - 1, FE_LZ_LEVEL, FE_BB_VOLUME
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1141,6 +1189,27 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
         row++;
         if (is_check_field(edit, i)) {
             ui->box_w[i] = 3;
+        } else if (i == FE_BB_FILE) {
+            int longest = value_cols(edit->bb_file);
+            int k;
+            int w;
+
+            for (k = 0; k < g_sfx_count; k++) {
+                int n = value_cols(g_sfx_names[k]);
+
+                if (n > longest) {
+                    longest = n;
+                }
+            }
+            /* Brackets, a space, and the v that marks the list. */
+            w = longest + 4;
+            if (w < NUM_W) {
+                w = NUM_W;
+            }
+            if (w > avail) {
+                w = avail;
+            }
+            ui->box_w[i] = w;
         } else if (is_number_field(i) || is_dial_mode_field(i)) {
             ui->box_w[i] = NUM_W;
         } else if (is_key_field(i) && ui->col_w[0] > 0) {
@@ -1476,7 +1545,8 @@ static const char *tab_title(int tab)
 {
     static const char *names[] = {
         "Main", "Buttons", "Knobs", "Reverb", "Chipmunk",
-        "Autopan", "Phaser", "Chorus", "Flanger", "Underwater", "Lasers"
+        "Autopan", "Phaser", "Chorus", "Flanger", "Underwater", "Lasers",
+        "Bubbles"
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1495,10 +1565,11 @@ static const char *tab_note(int tab)
         "Pitch 1 is an octave up. 0 is unchanged.",
         "Left to right and back. Period counts beats.",
         "Notches sweep from Low to High. Period is in measures.",
-        "Several slightly late copies, drifting in pitch.",
+        "Several slightly late copies, drifting in pitch. Chorus up and down move Depth.",
         "A very short delay. The sweep makes a jet-like whoosh.",
         "Muffled and boomy, with a slow wobble, like under water.",
-        "Falling laser zaps, added on top of the song."
+        "Falling laser zaps, added on top of the song.",
+        "A loop from the sound-effects folder, added on top of the song."
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1550,6 +1621,10 @@ static void draw_clipped(FILE *fp, int row, int col, int width, const char *text
         n++;
     }
 }
+
+static int drop_total(const struct Editor *ed);
+static int drop_vis(const struct Editor *ed);
+static const char *drop_name(const struct Editor *ed, int index);
 
 static void draw_screen(struct Editor *ed, FILE *fp)
 {
@@ -1621,7 +1696,7 @@ static void draw_screen(struct Editor *ed, FILE *fp)
                               v ? v : "", 0, focused && ed->col == c, 0);
             }
         } else if (is_choice_field(&ed->edit, i)) {
-            char shown[32];
+            char shown[288];
 
             /* The v marks a droplist. */
             snprintf(shown, sizeof shown, "%-*s v", ui->box_w[i] - 4, text ? text : "");
@@ -1644,21 +1719,33 @@ static void draw_screen(struct Editor *ed, FILE *fp)
         fputs(hint, fp);
     }
     if (ed->drop && is_choice_field(&ed->edit, ed->focus) && ui->field_r[ed->focus] >= 0) {
+        int vis = drop_vis(ed);
         int r = ui->field_r[ed->focus] + 1;
         int k;
 
         /* Open below the field, or above it when the Save row is in the way. */
-        if (r + DROP_ROWS > ui->save_r) {
-            r = ui->field_r[ed->focus] - DROP_ROWS;
+        if (r + vis > ui->save_r) {
+            r = ui->field_r[ed->focus] - vis;
         }
         ui->drop_r = r;
         ui->drop_c = ui->box_c;
         ui->drop_w = ui->box_w[ed->focus];
-        for (k = 0; k < DROP_ROWS; k++) {
-            char item[32];
+        for (k = 0; k < vis; k++) {
+            int idx = ed->drop_top + k;
+            const char *name = drop_name(ed, idx);
+            char item[288];
+            char clipped[256];
+            int inner = ui->drop_w - 2;
 
-            snprintf(item, sizeof item, " %-*s ", ui->drop_w - 2, config_dial_mode_name(k));
-            draw_button(fp, r + k, ui->drop_c, item, ed->drop_sel == k);
+            if (inner < 1) {
+                inner = 1;
+            }
+            snprintf(clipped, sizeof clipped, "%s", name ? name : "");
+            if ((int)strlen(clipped) > inner) {
+                clipped[inner] = '\0';
+            }
+            snprintf(item, sizeof item, " %-*s ", inner, clipped);
+            draw_button(fp, r + k, ui->drop_c, item, ed->drop_sel == idx);
         }
     }
     if (ed->capture) {
@@ -2743,16 +2830,162 @@ static int activate_key(const struct Event *ev)
            (ev->kind == EV_CHAR && ev->text[0] == ' ' && ev->text[1] == '\0');
 }
 
+static int drop_total(const struct Editor *ed)
+{
+    if (ed->focus == FE_BB_FILE) {
+        return g_sfx_count;
+    }
+    if (is_dial_mode_field(ed->focus)) {
+        return DROP_ROWS;
+    }
+    return 0;
+}
+
+static int drop_vis(const struct Editor *ed)
+{
+    int n = drop_total(ed);
+
+    if (n > DROP_VIS_MAX) {
+        n = DROP_VIS_MAX;
+    }
+    return n;
+}
+
+static const char *drop_name(const struct Editor *ed, int index)
+{
+    if (ed->focus == FE_BB_FILE) {
+        if (index < 0 || index >= g_sfx_count) {
+            return "";
+        }
+        return g_sfx_names[index];
+    }
+    return config_dial_mode_name(index);
+}
+
+/* Keep the highlighted row on screen. */
+static void drop_reveal(struct Editor *ed)
+{
+    int vis = drop_vis(ed);
+    int total = drop_total(ed);
+
+    if (ed->drop_sel < 0) {
+        ed->drop_sel = 0;
+    }
+    if (total > 0 && ed->drop_sel >= total) {
+        ed->drop_sel = total - 1;
+    }
+    if (vis < 1) {
+        ed->drop_top = 0;
+        return;
+    }
+    if (ed->drop_sel < ed->drop_top) {
+        ed->drop_top = ed->drop_sel;
+    }
+    if (ed->drop_sel >= ed->drop_top + vis) {
+        ed->drop_top = ed->drop_sel - vis + 1;
+    }
+    if (ed->drop_top < 0) {
+        ed->drop_top = 0;
+    }
+}
+
+static int sfx_has(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_sfx_count; i++) {
+        if (strcasecmp(g_sfx_names[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int sfx_cmp(const void *a, const void *b)
+{
+    return strcasecmp(a, b);
+}
+
+static int ends_mp3(const char *name)
+{
+    size_t n = strlen(name);
+
+    return n >= 4 && strcasecmp(name + n - 4, ".mp3") == 0;
+}
+
+/* List *.mp3 in dir. The configured name stays in the list even when the
+ * file is not in the folder, so Save does not wipe it. */
+static void sfx_scan(const char *dir, const char *current)
+{
+    char folder[AUTODJ_PATH];
+    DIR *d;
+    struct dirent *ent;
+    size_t len;
+
+    g_sfx_count = 0;
+    if (dir && dir[0]) {
+        snprintf(folder, sizeof folder, "%s", dir);
+        len = strlen(folder);
+        while (len > 1 && (folder[len - 1] == '/' || folder[len - 1] == '\\')) {
+            folder[--len] = '\0';
+        }
+        d = opendir(folder);
+        if (d) {
+            while ((ent = readdir(d)) != NULL && g_sfx_count < SFX_MAX - 1) {
+                if (ent->d_name[0] == '.') {
+                    continue;
+                }
+                if (!ends_mp3(ent->d_name)) {
+                    continue;
+                }
+                if (strlen(ent->d_name) >= sizeof g_sfx_names[0]) {
+                    continue;
+                }
+                snprintf(g_sfx_names[g_sfx_count], sizeof g_sfx_names[0], "%s", ent->d_name);
+                g_sfx_count++;
+            }
+            closedir(d);
+        }
+    }
+    if (current && current[0] && strlen(current) < sizeof g_sfx_names[0] && !sfx_has(current) &&
+        g_sfx_count < SFX_MAX) {
+        snprintf(g_sfx_names[g_sfx_count], sizeof g_sfx_names[0], "%s", current);
+        g_sfx_count++;
+    }
+    if (g_sfx_count > 1) {
+        qsort(g_sfx_names, (size_t)g_sfx_count, sizeof g_sfx_names[0], sfx_cmp);
+    }
+}
+
 static void open_drop(struct Editor *ed, int id)
 {
     size_t cap;
     char *text = field_text(&ed->edit, id, &cap);
-    int mode = DIAL_NONE;
+    int i;
 
     ed->focus = id;
-    if (text && config_parse_dial_mode(text, &mode) == 0) {
-        ed->drop_sel = mode;
-        ed->drop = 1;
+    ed->drop_top = 0;
+    ed->drop_sel = 0;
+    if (id == FE_BB_FILE) {
+        for (i = 0; i < g_sfx_count; i++) {
+            if (text && strcasecmp(text, g_sfx_names[i]) == 0) {
+                ed->drop_sel = i;
+                break;
+            }
+        }
+        ed->drop = g_sfx_count > 0;
+        if (ed->drop) {
+            drop_reveal(ed);
+        }
+        return;
+    }
+    {
+        int mode = DIAL_NONE;
+
+        if (text && config_parse_dial_mode(text, &mode) == 0) {
+            ed->drop_sel = mode;
+            ed->drop = 1;
+        }
     }
 }
 
@@ -2761,29 +2994,38 @@ static void pick_drop(struct Editor *ed, int sel)
     size_t cap;
     char *text = field_text(&ed->edit, ed->focus, &cap);
 
+    if (ed->focus == FE_BB_FILE) {
+        if (text && sel >= 0 && sel < g_sfx_count) {
+            snprintf(text, cap, "%s", g_sfx_names[sel]);
+        }
+        ed->drop = 0;
+        return;
+    }
     if (text && sel >= 0 && sel < DROP_ROWS) {
         snprintf(text, cap, "%s", config_dial_mode_name(sel));
     }
     ed->drop = 0;
 }
 
-/* Keys and clicks while a dial mode droplist is open. */
+/* Keys and clicks while a droplist is open. */
 static int handle_drop(struct Editor *ed, const struct Event *ev)
 {
     const struct Ui *ui = &ed->ui;
+    int total = drop_total(ed);
+    int vis = drop_vis(ed);
 
     if (ev->kind == EV_UP || ev->kind == EV_LEFT || ev->kind == EV_STAB) {
         if (ed->drop_sel > 0) {
             ed->drop_sel--;
         }
     } else if (ev->kind == EV_DOWN || ev->kind == EV_RIGHT || ev->kind == EV_TAB) {
-        if (ed->drop_sel < DROP_ROWS - 1) {
+        if (total > 0 && ed->drop_sel < total - 1) {
             ed->drop_sel++;
         }
     } else if (ev->kind == EV_HOME) {
         ed->drop_sel = 0;
     } else if (ev->kind == EV_END) {
-        ed->drop_sel = DROP_ROWS - 1;
+        ed->drop_sel = total > 0 ? total - 1 : 0;
     } else if (activate_key(ev)) {
         pick_drop(ed, ed->drop_sel);
     } else if (ev->kind == EV_ESC) {
@@ -2791,12 +3033,15 @@ static int handle_drop(struct Editor *ed, const struct Event *ev)
     } else if (ev->kind == EV_MOUSE) {
         int k = ev->y - ui->drop_r;
 
-        if (ui->drop_w > 0 && k >= 0 && k < DROP_ROWS && ev->x >= ui->drop_c &&
+        if (ui->drop_w > 0 && k >= 0 && k < vis && ev->x >= ui->drop_c &&
             ev->x < ui->drop_c + ui->drop_w) {
-            pick_drop(ed, k);
+            pick_drop(ed, ed->drop_top + k);
         } else {
             ed->drop = 0;
         }
+    }
+    if (ed->drop) {
+        drop_reveal(ed);
     }
     return 0;
 }
@@ -3050,7 +3295,7 @@ static int handle_event(struct Editor *ed, const struct Event *ev)
     return 0;
 }
 
-int config_edit(const char *path)
+int config_edit(const char *path, const char *sfx_dir)
 {
     struct Editor ed;
     size_t cap;
@@ -3065,6 +3310,7 @@ int config_edit(const char *path)
     if (config_load_edit(path, &ed.edit) != 0) {
         return -1;
     }
+    sfx_scan(sfx_dir && sfx_dir[0] ? sfx_dir : AUTODJ_SFX_DIR, ed.edit.bb_file);
     ed.tab = TAB_MAIN;
     ed.focus = FE_TABS;
     text = field_text(&ed.edit, FE_FOLDER, &cap);
@@ -4143,12 +4389,15 @@ static int screen_self_test(void)
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_MAIN] ||
         ed.ui.tab_y[TAB_UNDERWATER] != ed.ui.tab_y[TAB_MAIN] ||
         ed.ui.tab_y[TAB_LASERS] != ed.ui.tab_y[TAB_MAIN] + 1 ||
+        ed.ui.tab_y[TAB_BUBBLES] != ed.ui.tab_y[TAB_LASERS] ||
         ed.ui.field_r[FE_KEY_LASERS] <= ed.ui.field_r[FE_KEY_UNDERWATER] ||
-        ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_LASERS] ||
+        ed.ui.field_r[FE_KEY_BUBBLES] <= ed.ui.field_r[FE_KEY_LASERS] ||
+        ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_BUBBLES] ||
         !buf || strstr(buf, "[ Chorus ]") == NULL || strstr(buf, "[ Flanger ]") == NULL ||
         strstr(buf, "[ Underwater ]") == NULL || strstr(buf, "[ Lasers ]") == NULL ||
+        strstr(buf, "[ Bubbles ]") == NULL ||
         strstr(buf, "Chorus") == NULL || strstr(buf, "Flanger") == NULL ||
-        strstr(buf, "Lasers") == NULL ||
+        strstr(buf, "Lasers") == NULL || strstr(buf, "Bubbles") == NULL ||
         strstr(buf, "All effects off") == NULL) {
         log_error("cfgedit", "wide Buttons screen is missing chorus and flanger");
         free(buf);
@@ -4173,6 +4422,7 @@ static int screen_self_test(void)
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_CHORUS] ||
         ed.ui.tab_y[TAB_UNDERWATER] != ed.ui.tab_y[TAB_CHORUS] ||
         ed.ui.tab_y[TAB_LASERS] != ed.ui.tab_y[TAB_UNDERWATER] ||
+        ed.ui.tab_y[TAB_BUBBLES] != ed.ui.tab_y[TAB_LASERS] ||
         !buf || strstr(buf, "Keypad") == NULL || strstr(buf, "Keyboard") == NULL ||
         strstr(buf, "MIDI") == NULL || strstr(buf, "Keys and pads.") == NULL ||
         strstr(buf, "Dial forward") != NULL) {
@@ -4237,6 +4487,54 @@ static int screen_self_test(void)
         return -1;
     }
     free(buf);
+    buf = NULL;
+    n = 0;
+
+    snprintf(g_sfx_names[0], sizeof g_sfx_names[0], "bubbles.mp3");
+    snprintf(g_sfx_names[1], sizeof g_sfx_names[1], "zap.mp3");
+    g_sfx_count = 2;
+    if (render_tab(&ed, 24, 100, TAB_BUBBLES, &buf, &n) != 0) {
+        g_sfx_count = 0;
+        return -1;
+    }
+    if (ed.ui.field_r[FE_BB_FILE] < 0 || ed.ui.field_r[FE_BB_VOLUME] < 0 ||
+        ed.ui.field_r[FE_LZ_LEVEL] >= 0 || ed.ui.box_w[FE_BB_FILE] != 15 ||
+        !is_choice_field(&ed.edit, FE_BB_FILE) || !buf || strstr(buf, "File") == NULL ||
+        strstr(buf, "Volume") == NULL || strstr(buf, "sound-effects folder") == NULL) {
+        log_error("cfgedit", "Bubbles screen is missing its settings");
+        free(buf);
+        g_sfx_count = 0;
+        return -1;
+    }
+    free(buf);
+    snprintf(ed.edit.bb_file, sizeof ed.edit.bb_file, "bubbles.mp3");
+    ed.focus = FE_BB_FILE;
+    ed.tab = TAB_BUBBLES;
+    {
+        struct Event ev;
+
+        memset(&ev, 0, sizeof ev);
+        ev.kind = EV_ENTER;
+        if (handle_event(&ed, &ev) != 0 || ed.drop != 1 || ed.drop_sel != 0) {
+            log_error("cfgedit", "Enter did not open the bubbles file list");
+            g_sfx_count = 0;
+            return -1;
+        }
+        ev.kind = EV_DOWN;
+        handle_event(&ed, &ev);
+        ev.kind = EV_ENTER;
+        if (handle_event(&ed, &ev) != 0 || ed.drop != 0 ||
+            strcmp(ed.edit.bb_file, "zap.mp3") != 0) {
+            log_error("cfgedit", "the bubbles file list did not pick zap.mp3");
+            g_sfx_count = 0;
+            return -1;
+        }
+    }
+    g_sfx_count = 0;
+    if (is_choice_field(&ed.edit, FE_BB_FILE)) {
+        log_error("cfgedit", "an empty bubbles list was still a droplist");
+        return -1;
+    }
     return 0;
 }
 
@@ -4248,7 +4546,7 @@ static int keyboard_column_self_test(void)
     size_t n = 0;
     FILE *fp;
 
-    if (render_tab(&ed, 24, 72, TAB_BUTTONS, &buf, &n) != 0) {
+    if (render_tab(&ed, 26, 72, TAB_BUTTONS, &buf, &n) != 0) {
         return -1;
     }
     {
@@ -4283,7 +4581,7 @@ static int keyboard_column_self_test(void)
     snprintf(ed.edit.midi[KEYID_REVERB], sizeof ed.edit.midi[KEYID_REVERB], "NOTE_36");
     /* A Knobs value does not widen the Buttons boxes. */
     snprintf(ed.edit.midi[KEYID_VOL_DOWN], sizeof ed.edit.midi[KEYID_VOL_DOWN], "CC_127_DOWN");
-    layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
+    layout_ui(&ed.ui, &ed.edit, 26, 72, TAB_BUTTONS);
     if (ed.ui.too_small || ed.ui.col_w[0] != 11 || ed.ui.box_w[FE_KEY_PAUSE] != 17 ||
         ed.ui.col_w[2] != 9 || ed.ui.col_c[0] != ed.ui.box_c ||
         ed.ui.col_c[1] != ed.ui.col_c[0] + 12 || ed.ui.col_c[2] != ed.ui.col_c[1] + 18 ||
@@ -4326,7 +4624,7 @@ static int keyboard_column_self_test(void)
     }
     memset(ed.edit.key_chorus, 'K', 50);
     ed.edit.key_chorus[50] = '\0';
-    layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
+    layout_ui(&ed.ui, &ed.edit, 26, 72, TAB_BUTTONS);
     if (ed.ui.too_small || ed.ui.col_w[0] != 11 || ed.ui.box_w[FE_KEY_PAUSE] < BOX_MIN_W ||
         ed.ui.box_w[FE_KEY_PAUSE] >= 52 ||
         ed.ui.col_w[0] + ed.ui.col_w[1] + ed.ui.col_w[2] + 2 >
@@ -4335,7 +4633,7 @@ static int keyboard_column_self_test(void)
         return -1;
     }
     ed.edit.key_chorus[0] = '\0';
-    layout_ui(&ed.ui, &ed.edit, 24, 72, TAB_BUTTONS);
+    layout_ui(&ed.ui, &ed.edit, 26, 72, TAB_BUTTONS);
 
     ed.focus = FE_KEY_PAUSE;
     ed.col = 0;
@@ -4504,9 +4802,15 @@ static int knobs_tab_self_test(void)
     if (!buf || strstr(buf, "Dial and knobs.") == NULL || strstr(buf, "Next dial mode") == NULL ||
         strstr(buf, "Volume down") == NULL || strstr(buf, "Jog up") == NULL ||
         strstr(buf, "Lasers up") == NULL || strstr(buf, "Lasers down") == NULL ||
+        strstr(buf, "Bubbles up") == NULL || strstr(buf, "Bubbles down") == NULL ||
+        strstr(buf, "Chorus up") == NULL || strstr(buf, "Chorus down") == NULL ||
         strstr(buf, "Dial mode 3") == NULL || strstr(buf, "MIDI") == NULL ||
         strstr(buf, "Pause/resume") != NULL || ed.ui.field_r[FE_KEY_DIAL_FWD] < 0 ||
         ed.ui.field_r[FE_KEY_LZ_UP] <= ed.ui.field_r[FE_KEY_RV_DOWN] ||
+        ed.ui.field_r[FE_KEY_BB_UP] <= ed.ui.field_r[FE_KEY_LZ_DOWN] ||
+        ed.ui.field_r[FE_KEY_CH_UP] <= ed.ui.field_r[FE_KEY_BB_DOWN] ||
+        ed.ui.field_r[FE_DIAL_MODE1] <= ed.ui.field_r[FE_KEY_CH_DOWN] ||
+        ed.ui.field_r[FE_DIAL_MODE1] <= ed.ui.field_r[FE_KEY_BB_DOWN] ||
         ed.ui.field_r[FE_DIAL_MODE1] <= ed.ui.field_r[FE_KEY_LZ_DOWN] ||
         ed.ui.field_r[FE_DIAL_MODE3] <= ed.ui.field_r[FE_KEY_JOG_DOWN] ||
         ed.ui.field_r[FE_KEY_PAUSE] >= 0 || ed.ui.col_w[2] != MIDI_HDR_W ||

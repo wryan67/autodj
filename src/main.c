@@ -98,7 +98,8 @@ static void log_keyboard_bindings(const Config *cfg)
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
         "effects off", "volume up", "volume down", "jog up", "jog down",
         "reverb up", "reverb down", "underwater", "lasers",
-        "lasers up", "lasers down"
+        "lasers up", "lasers down", "bubbles", "bubbles up", "bubbles down",
+        "chorus up", "chorus down"
     };
     const char *vals[] = {
         cfg->kbd_pause, cfg->kbd_skip, cfg->kbd_prev, cfg->kbd_rew05,
@@ -107,9 +108,10 @@ static void log_keyboard_bindings(const Config *cfg)
         cfg->kbd_phaser, cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off,
         cfg->kbd_vol_up, cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down,
         cfg->kbd_rv_up, cfg->kbd_rv_down, cfg->kbd_underwater, cfg->kbd_lasers,
-        cfg->kbd_lz_up, cfg->kbd_lz_down
+        cfg->kbd_lz_up, cfg->kbd_lz_down, cfg->kbd_bubbles, cfg->kbd_bb_up,
+        cfg->kbd_bb_down, cfg->kbd_ch_up, cfg->kbd_ch_down
     };
-    char buf[768];
+    char buf[1536];
     size_t used = 0;
     int i;
 
@@ -227,23 +229,97 @@ static void remember_lasers(const char *path, Config *cfg)
     cfg->fx.lz_level = (float)level;
 }
 
+/* The bubbles knob moves volume in [Bubbles]. Leave the file alone until it moves. */
+static void remember_bubbles(const char *path, Config *cfg)
+{
+    int volume = player_bubbles_percent();
+    int saved = (int)(cfg->fx.bb_volume + 0.5f);
+
+    if (saved < 0) {
+        saved = 0;
+    }
+    if (saved > 100) {
+        saved = 100;
+    }
+    if (volume == saved) {
+        return;
+    }
+    if (config_save_bubbles_volume(path, volume) != 0) {
+        return;
+    }
+    cfg->fx.bb_volume = (float)volume;
+}
+
+/* The chorus knob moves depth in [Chorus]. Leave the file alone until it moves. */
+static void remember_chorus(const char *path, Config *cfg)
+{
+    int depth = player_chorus_hundredths();
+    int saved = (int)(cfg->fx.ch_depth * 100.0f + 0.5f);
+
+    if (saved < 0) {
+        saved = 0;
+    }
+    if (saved > 1000) {
+        saved = 1000;
+    }
+    if (depth == saved) {
+        return;
+    }
+    if (config_save_chorus_depth(path, depth) != 0) {
+        return;
+    }
+    cfg->fx.ch_depth = (float)depth / 100.0f;
+}
+
+/* dir plus a file name. A trailing slash on dir is dropped. */
+static void bubbles_path(char *dest, size_t n, const char *dir, const char *file)
+{
+    size_t len;
+
+    if (!dest || n == 0) {
+        return;
+    }
+    dest[0] = '\0';
+    if (!dir || !dir[0]) {
+        dir = AUTODJ_SFX_DIR;
+    }
+    if (!file || !file[0]) {
+        file = AUTODJ_BUBBLES_FILE;
+    }
+    if (snprintf(dest, n, "%s", dir) >= (int)n) {
+        dest[0] = '\0';
+        return;
+    }
+    len = strlen(dest);
+    while (len > 1 && (dest[len - 1] == '/' || dest[len - 1] == '\\')) {
+        dest[--len] = '\0';
+    }
+    if (snprintf(dest + len, n - len, "/%s", file) >= (int)(n - len)) {
+        dest[0] = '\0';
+    }
+}
+
 static void usage(void)
 {
     fprintf(stderr,
             "usage: autodj [song ...]\n"
+            "       autodj --sfx folder [song ...]\n"
             "       autodj --check\n"
             "       autodj --config [config]\n"
             "       autodj --calibrate\n"
             "  song is the start of a file name in Folder, in any letter case.\n"
             "  Every match plays first, in order, then the usual order follows.\n"
             "  Put -- before a song name that starts with a dash.\n"
-            "  config defaults to ~/.config/autodj/master.cfg\n");
+            "  config defaults to ~/.config/autodj/master.cfg\n"
+            "  --sfx folder holds sound effects such as bubbles.mp3.\n"
+            "  It defaults to /home/pi/Music/autodj/sfx\n");
 }
 
 int main(int argc, char **argv)
 {
     char path_buf[4096];
     const char *path = NULL;
+    const char *sfx = NULL;
     const char **songs;
     int nsongs = 0;
     int options = 1;
@@ -286,6 +362,15 @@ int main(int argc, char **argv)
             calibrate = 1;
             continue;
         }
+        if (strcmp(argv[i], "--sfx") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+                fprintf(stderr, "autodj: --sfx needs a folder\n");
+                usage();
+                return 2;
+            }
+            sfx = argv[++i];
+            continue;
+        }
         fprintf(stderr, "autodj: unknown option %s\n", argv[i]);
         usage();
         return 2;
@@ -296,6 +381,9 @@ int main(int argc, char **argv)
         usage();
         return 2;
     }
+    if (!sfx) {
+        sfx = AUTODJ_SFX_DIR;
+    }
     if (edit && nsongs == 1) {
         path = songs[0];
         nsongs = 0;
@@ -305,7 +393,7 @@ int main(int argc, char **argv)
         path = path_buf;
     }
     if (edit) {
-        return config_edit(path) == 0 ? 0 : 1;
+        return config_edit(path, sfx) == 0 ? 0 : 1;
     }
     if (calibrate) {
         if (lock_instance() != 0) {
@@ -320,6 +408,7 @@ int main(int argc, char **argv)
         return 1;
     }
     log_info("autodj", "folder %s", cfg.folder);
+    log_info("autodj", "sound effects %s, bubbles file %s", sfx, cfg.bubbles_file);
     log_info("autodj", "overlap %ds, trim silence %s, pause %ds, resume %ds, volume %d%%",
              cfg.overlap_sec, cfg.trim_silence ? "on" : "off", cfg.pause_sec, cfg.resume_sec,
              cfg.volume);
@@ -350,6 +439,13 @@ int main(int argc, char **argv)
              cfg.key_underwater_name[0] ? cfg.key_underwater_name : "(none)",
              cfg.key_lasers_name[0] ? cfg.key_lasers_name : "(none)",
              cfg.key_effects_off_name[0] ? cfg.key_effects_off_name : "(none)");
+    log_info("autodj", "keys bubbles %s, bubbles up %s, bubbles down %s",
+             cfg.key_bubbles_name[0] ? cfg.key_bubbles_name : "(none)",
+             cfg.key_bb_up_name[0] ? cfg.key_bb_up_name : "(none)",
+             cfg.key_bb_down_name[0] ? cfg.key_bb_down_name : "(none)");
+    log_info("autodj", "keys chorus up %s, chorus down %s",
+             cfg.key_ch_up_name[0] ? cfg.key_ch_up_name : "(none)",
+             cfg.key_ch_down_name[0] ? cfg.key_ch_down_name : "(none)");
     log_info("autodj", "effects off");
     log_info("autodj", "keys rewind 0.5s %s, rewind 1s %s, rewind 1.5s %s",
              cfg.key_rew05_name[0] ? cfg.key_rew05_name : "(none)",
@@ -441,6 +537,14 @@ int main(int argc, char **argv)
     settings.loudness_lufs = cfg.loudness_lufs;
     settings.rate = rate;
     keys_kbd_open();
+    {
+        char bb_path[AUTODJ_PATH];
+
+        bubbles_path(bb_path, sizeof bb_path, sfx, cfg.bubbles_file);
+        if (player_load_bubbles(bb_path, rate) != 0) {
+            log_warn("autodj", "cannot load bubbles from %s", bb_path);
+        }
+    }
     if (player_start(&settings, pl) != 0) {
         keys_kbd_close();
         midi_close();
@@ -492,10 +596,14 @@ int main(int argc, char **argv)
         keys_kbd_poll(&cfg);
         remember_volume(path, &cfg);
         remember_lasers(path, &cfg);
+        remember_bubbles(path, &cfg);
+        remember_chorus(path, &cfg);
     }
 
     remember_volume(path, &cfg);
     remember_lasers(path, &cfg);
+    remember_bubbles(path, &cfg);
+    remember_chorus(path, &cfg);
     log_info("autodj", "stopping");
     player_stop();
     keys_kbd_close();

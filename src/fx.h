@@ -2,7 +2,9 @@
 #define AUTODJ_FX_H
 
 /* Reverb, chipmunk (a pitch shifter), autopan, phaser, chorus, flanger,
- * underwater, and lasers.
+ * underwater, and lasers. Bubbles is a looped recording mixed in the
+ * player, not one of the processors here. Its volume is stored with the
+ * other effect settings.
  *
  * The knob names and the default numbers are the ones Mixxx shows for its
  * built-in Reverb, Pitch Shift, and Autopan. The processing here is separate.
@@ -52,7 +54,8 @@ typedef struct FxParams {
                       * up and down. 120 BPM when the tempo is unknown. */
     float ch_delay;  /* 5..40 ms, default 20. How late the copies are. */
     float ch_depth;  /* 0..10 ms, default 5, and below ch_delay. How far
-                      * the delay swings, which is the pitch drift. */
+                      * the delay swings, which is the pitch drift. The
+                      * chorus knob moves this while a song plays. */
     int ch_voices;   /* 1..4, default 2. Separate copies of the song. */
     float ch_mix;    /* 0..100, default 50. Percent of the copies in the
                       * mix. 0 leaves the song unchanged. */
@@ -86,6 +89,9 @@ typedef struct FxParams {
     float lz_level;  /* 0..100, default 30. How loud the zaps are. The
                       * song stays; 0 adds nothing. The laser knob moves
                       * this while a song plays. */
+    float bb_volume; /* 0..100, default 50. How loud the bubbles loop is.
+                      * The song stays; 0 adds nothing. The bubbles knob
+                      * moves this while a song plays. */
 } FxParams;
 
 typedef struct FxState FxState;
@@ -102,6 +108,9 @@ void fx_setup(FxState *st, const FxParams *p);
 void fx_set_send(FxState *st, float send);
 /* Laser volume, 0..100. Heard on the next sample. */
 void fx_set_lasers(FxState *st, float level);
+/* Chorus depth in milliseconds, 0..10. Heard on the next samples. A jump
+ * eases in over about 20 ms per millisecond so the delay tap does not click. */
+void fx_set_chorus(FxState *st, float depth_ms);
 void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
                int chorus, int flanger, int underwater, int lasers);
 /* Length of one beat in seconds at the current playback speed, or 0 when

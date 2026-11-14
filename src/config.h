@@ -6,6 +6,10 @@
 #include <stddef.h>
 
 #define AUTODJ_PATH 4096
+/* Where --sfx looks when the option is left out. */
+#define AUTODJ_SFX_DIR "/home/pi/Music/autodj/sfx"
+/* File name used when [Bubbles] does not name one. */
+#define AUTODJ_BUBBLES_FILE "bubbles.mp3"
 /* A terminal binding: one typed character, or a short name such as Enter. */
 #define AUTODJ_KBD_LEN 16
 /* A MIDI binding such as NOTE_36 or CC_3_DOWN. */
@@ -40,6 +44,11 @@ enum {
     KEYID_LASERS,
     KEYID_LZ_UP,
     KEYID_LZ_DOWN,
+    KEYID_BUBBLES,
+    KEYID_BB_UP,
+    KEYID_BB_DOWN,
+    KEYID_CH_UP,
+    KEYID_CH_DOWN,
     KEYID_COUNT
 };
 
@@ -94,6 +103,11 @@ typedef struct Config {
     int key_lasers;
     int key_lz_up;
     int key_lz_down;
+    int key_bubbles;
+    int key_bb_up;
+    int key_bb_down;
+    int key_ch_up;
+    int key_ch_down;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -120,6 +134,11 @@ typedef struct Config {
     char key_lasers_name[64];
     char key_lz_up_name[64];
     char key_lz_down_name[64];
+    char key_bubbles_name[64];
+    char key_bb_up_name[64];
+    char key_bb_down_name[64];
+    char key_ch_up_name[64];
+    char key_ch_down_name[64];
     /* Terminal key for the same action. Empty means unbound. */
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
@@ -147,6 +166,13 @@ typedef struct Config {
     char kbd_lasers[AUTODJ_KBD_LEN];
     char kbd_lz_up[AUTODJ_KBD_LEN];
     char kbd_lz_down[AUTODJ_KBD_LEN];
+    char kbd_bubbles[AUTODJ_KBD_LEN];
+    char kbd_bb_up[AUTODJ_KBD_LEN];
+    char kbd_bb_down[AUTODJ_KBD_LEN];
+    char kbd_ch_up[AUTODJ_KBD_LEN];
+    char kbd_ch_down[AUTODJ_KBD_LEN];
+    /* File name inside the sound-effects folder, not a path. */
+    char bubbles_file[256];
     /* Bit i is set when the file named that keyboard action, even if blank. */
     unsigned kbd_line;
     /* MIDI control for each action, by KEYID. Empty and -1 mean unbound. */
@@ -186,6 +212,12 @@ int config_save_volume(const char *path, int percent);
 /* Write the laser volume (percent, 0-100) into level in [Lasers].
  * Every other line is kept. Returns 0 on success. */
 int config_save_lasers_level(const char *path, int percent);
+/* Write the bubbles volume (percent, 0-100) into volume in [Bubbles].
+ * Every other line is kept. Returns 0 on success. */
+int config_save_bubbles_volume(const char *path, int percent);
+/* Write chorus depth into depth in [Chorus]. hundredths is milliseconds
+ * times 100 (500 is 5.00 ms). Every other line is kept. Returns 0 on success. */
+int config_save_chorus_depth(const char *path, int hundredths);
 
 /* Text the config editor shows. Bool and number fields stay text so a bad
  * value from the file can be corrected instead of silently replaced. */
@@ -228,6 +260,11 @@ typedef struct ConfigEdit {
     char key_lasers[64];
     char key_lz_up[64];
     char key_lz_down[64];
+    char key_bubbles[64];
+    char key_bb_up[64];
+    char key_bb_down[64];
+    char key_ch_up[64];
+    char key_ch_down[64];
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
     char kbd_prev[AUTODJ_KBD_LEN];
@@ -254,6 +291,11 @@ typedef struct ConfigEdit {
     char kbd_lasers[AUTODJ_KBD_LEN];
     char kbd_lz_up[AUTODJ_KBD_LEN];
     char kbd_lz_down[AUTODJ_KBD_LEN];
+    char kbd_bubbles[AUTODJ_KBD_LEN];
+    char kbd_bb_up[AUTODJ_KBD_LEN];
+    char kbd_bb_down[AUTODJ_KBD_LEN];
+    char kbd_ch_up[AUTODJ_KBD_LEN];
+    char kbd_ch_down[AUTODJ_KBD_LEN];
     /* Bit i is set when the file named the current keyboard action.
      * Defaults are filled first, so a non-empty slot is not enough to
      * tell an old name to stay out. */
@@ -299,6 +341,8 @@ typedef struct ConfigEdit {
     char lz_high[32];
     char lz_length[32];
     char lz_level[32];
+    char bb_file[256];
+    char bb_volume[32];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */

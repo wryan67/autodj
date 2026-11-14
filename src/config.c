@@ -246,6 +246,16 @@ static char *kbd_cfg(Config *cfg, int id)
         return cfg->kbd_lz_up;
     case KEYID_LZ_DOWN:
         return cfg->kbd_lz_down;
+    case KEYID_BUBBLES:
+        return cfg->kbd_bubbles;
+    case KEYID_BB_UP:
+        return cfg->kbd_bb_up;
+    case KEYID_BB_DOWN:
+        return cfg->kbd_bb_down;
+    case KEYID_CH_UP:
+        return cfg->kbd_ch_up;
+    case KEYID_CH_DOWN:
+        return cfg->kbd_ch_down;
     default:
         return NULL;
     }
@@ -306,6 +316,16 @@ static char *kbd_edit(ConfigEdit *edit, int id)
         return edit->kbd_lz_up;
     case KEYID_LZ_DOWN:
         return edit->kbd_lz_down;
+    case KEYID_BUBBLES:
+        return edit->kbd_bubbles;
+    case KEYID_BB_UP:
+        return edit->kbd_bb_up;
+    case KEYID_BB_DOWN:
+        return edit->kbd_bb_down;
+    case KEYID_CH_UP:
+        return edit->kbd_ch_up;
+    case KEYID_CH_DOWN:
+        return edit->kbd_ch_down;
     default:
         return NULL;
     }
@@ -366,6 +386,16 @@ static char *key_edit(ConfigEdit *edit, int id)
         return edit->key_lz_up;
     case KEYID_LZ_DOWN:
         return edit->key_lz_down;
+    case KEYID_BUBBLES:
+        return edit->key_bubbles;
+    case KEYID_BB_UP:
+        return edit->key_bb_up;
+    case KEYID_BB_DOWN:
+        return edit->key_bb_down;
+    case KEYID_CH_UP:
+        return edit->key_ch_up;
+    case KEYID_CH_DOWN:
+        return edit->key_ch_down;
     default:
         return NULL;
     }
@@ -400,7 +430,8 @@ static const char *kbd_default(int id)
     static const char *vals[KEYID_COUNT] = {
         "Space", "Right", "Left", "1", "2", "3",
         "Up", "Down", "Enter", "q", "w", "e", "r", "t", "y", "Tab",
-        "=", "-", ".", ",", "]", "[", "u", "i", "o", "p"
+        "=", "-", ".", ",", "]", "[", "u", "i", "o", "p",
+        "b", "k", "l", "n", "m"
     };
 
     if (id < 0 || id >= KEYID_COUNT) {
@@ -445,12 +476,6 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         if (strip_midi(action, base, sizeof base) && (id = keys_id(base)) >= 0) {
             char canon[AUTODJ_MIDI_LEN];
 
-            if ((eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
-                 eq_ci(base, "bubbles_down")) &&
-                cfg->midi[id][0]) {
-                /* A lasers line wins over the old bubbles name. */
-                return;
-            }
             cfg->midi[id][0] = '\0';
             cfg->midi_code[id] = -1;
             if (!keyname[0]) {
@@ -477,12 +502,6 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
             if (!slot) {
                 return;
             }
-            if ((eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
-                 eq_ci(base, "bubbles_down")) &&
-                (slot[0] || (cfg->kbd_line & (1u << id)))) {
-                /* A lasers line wins over the old bubbles name. */
-                return;
-            }
             /* A line that is present, even a blank or unknown one, blocks the default. */
             cfg->kbd_line |= 1u << id;
             if (!keyname[0]) {
@@ -499,12 +518,6 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     }
     if (eq_ci(action, "pitch_shift") && cfg->key_pitch >= 0) {
         /* A chipmunk line wins over the old pitch_shift name. */
-        return;
-    }
-    if ((eq_ci(action, "bubbles") && cfg->key_lasers >= 0) ||
-        (eq_ci(action, "bubbles_up") && cfg->key_lz_up >= 0) ||
-        (eq_ci(action, "bubbles_down") && cfg->key_lz_down >= 0)) {
-        /* A lasers line wins over the old bubbles name. */
         return;
     }
     if (eq_ci(action, "pause_resume")) {
@@ -600,19 +613,38 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         slot = &cfg->key_underwater;
         name = cfg->key_underwater_name;
         name_n = sizeof cfg->key_underwater_name;
-    } else if (eq_ci(action, "lasers") || eq_ci(action, "bubbles")) {
-        /* bubbles is the old name of this button. */
+    } else if (eq_ci(action, "lasers")) {
         slot = &cfg->key_lasers;
         name = cfg->key_lasers_name;
         name_n = sizeof cfg->key_lasers_name;
-    } else if (eq_ci(action, "lasers_up") || eq_ci(action, "bubbles_up")) {
+    } else if (eq_ci(action, "lasers_up")) {
         slot = &cfg->key_lz_up;
         name = cfg->key_lz_up_name;
         name_n = sizeof cfg->key_lz_up_name;
-    } else if (eq_ci(action, "lasers_down") || eq_ci(action, "bubbles_down")) {
+    } else if (eq_ci(action, "lasers_down")) {
         slot = &cfg->key_lz_down;
         name = cfg->key_lz_down_name;
         name_n = sizeof cfg->key_lz_down_name;
+    } else if (eq_ci(action, "bubbles")) {
+        slot = &cfg->key_bubbles;
+        name = cfg->key_bubbles_name;
+        name_n = sizeof cfg->key_bubbles_name;
+    } else if (eq_ci(action, "bubbles_up")) {
+        slot = &cfg->key_bb_up;
+        name = cfg->key_bb_up_name;
+        name_n = sizeof cfg->key_bb_up_name;
+    } else if (eq_ci(action, "bubbles_down")) {
+        slot = &cfg->key_bb_down;
+        name = cfg->key_bb_down_name;
+        name_n = sizeof cfg->key_bb_down_name;
+    } else if (eq_ci(action, "chorus_up")) {
+        slot = &cfg->key_ch_up;
+        name = cfg->key_ch_up_name;
+        name_n = sizeof cfg->key_ch_up_name;
+    } else if (eq_ci(action, "chorus_down")) {
+        slot = &cfg->key_ch_down;
+        name = cfg->key_ch_down_name;
+        name_n = sizeof cfg->key_ch_down_name;
     } else {
         log_warn("autodj", "unknown key action %s", action);
         return;
@@ -641,7 +673,8 @@ static void bind_kbd_defaults(Config *cfg)
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
         "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
         "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd", "lasers_kbd",
-        "lasers_up_kbd", "lasers_down_kbd"
+        "lasers_up_kbd", "lasers_down_kbd", "bubbles_kbd", "bubbles_up_kbd",
+        "bubbles_down_kbd", "chorus_up_kbd", "chorus_down_kbd"
     };
     int id;
 
@@ -655,7 +688,7 @@ static void bind_kbd_defaults(Config *cfg)
     }
 }
 
-enum { FX_SECTIONS = 8 };
+enum { FX_SECTIONS = 9 };
 
 static int fx_section(const char *section)
 {
@@ -682,9 +715,13 @@ static int fx_section(const char *section)
     if (eq_ci(section, "Underwater")) {
         return 6;
     }
-    /* Bubbles is the old name of the lasers section. */
-    if (eq_ci(section, "Lasers") || eq_ci(section, "Bubbles")) {
+    if (eq_ci(section, "Lasers")) {
         return 7;
+    }
+    /* An old [Bubbles] block stored the laser settings. Those keys are
+     * still applied to lasers. file and volume belong to the loop. */
+    if (eq_ci(section, "Bubbles")) {
+        return 8;
     }
     return -1;
 }
@@ -693,7 +730,7 @@ static const char *fx_what(int section)
 {
     static const char *names[] = {
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger", "underwater",
-        "lasers"
+        "lasers", "bubbles"
     };
 
     if (section < 0 || section >= FX_SECTIONS) {
@@ -709,6 +746,29 @@ static int old_phaser_key(const char *key)
            eq_ci(key, "stereo");
 }
 
+/* A sound-effect file name: one component, no slash. */
+static int sfx_file_ok(const char *name)
+{
+    size_t i;
+    size_t n;
+
+    if (!name || !name[0] || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return 0;
+    }
+    n = strlen(name);
+    if (n >= 256) {
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+
+        if (c < 32 || c == '/' || c == '\\') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void apply_fx(Config *cfg, int section, const char *key, const char *val)
 {
     double v = 0;
@@ -717,6 +777,12 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
 
     if (eq_ci(key, "on")) {
         /* Old configs stored the startup state here. Effects always start off. */
+        return;
+    }
+    if (section == 8 && (eq_ci(key, "rate") || eq_ci(key, "low") || eq_ci(key, "high") ||
+                         eq_ci(key, "length") || eq_ci(key, "level"))) {
+        /* Left over from when this section was the laser effect. */
+        apply_fx(cfg, 7, key, val);
         return;
     }
     if (section == 3 && old_phaser_key(key)) {
@@ -961,6 +1027,18 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
         } else {
             cfg->fx.lz_level = (float)v;
         }
+    } else if (section == 8 && eq_ci(key, "file")) {
+        if (!sfx_file_ok(val)) {
+            log_warn("autodj", "bubbles file must be a file name, got %s", val);
+        } else {
+            snprintf(cfg->bubbles_file, sizeof cfg->bubbles_file, "%s", val);
+        }
+    } else if (section == 8 && eq_ci(key, "volume")) {
+        if (parse_real(val, 0, 100, &v) != 0) {
+            log_warn("autodj", "bubbles volume must be from 0 to 100, got %s", val);
+        } else {
+            cfg->fx.bb_volume = (float)v;
+        }
     } else {
         log_warn("autodj", "unknown %s setting %s", what, key);
     }
@@ -1102,6 +1180,12 @@ int config_load(const char *path, Config *cfg)
     cfg->key_lasers = -1;
     cfg->key_lz_up = -1;
     cfg->key_lz_down = -1;
+    cfg->key_bubbles = -1;
+    cfg->key_bb_up = -1;
+    cfg->key_bb_down = -1;
+    cfg->key_ch_up = -1;
+    cfg->key_ch_down = -1;
+    snprintf(cfg->bubbles_file, sizeof cfg->bubbles_file, "%s", AUTODJ_BUBBLES_FILE);
     {
         int id;
 
@@ -1177,7 +1261,9 @@ int config_load(const char *path, Config *cfg)
             &cfg->key_chorus, &cfg->key_flanger, &cfg->key_effects_off,
             &cfg->key_vol_up, &cfg->key_vol_down, &cfg->key_jog_up, &cfg->key_jog_down,
             &cfg->key_rv_up, &cfg->key_rv_down, &cfg->key_underwater,
-            &cfg->key_lasers
+            &cfg->key_lasers, &cfg->key_lz_up, &cfg->key_lz_down,
+            &cfg->key_bubbles, &cfg->key_bb_up, &cfg->key_bb_down,
+            &cfg->key_ch_up, &cfg->key_ch_down
         };
         int i;
 
@@ -1195,6 +1281,9 @@ int config_load(const char *path, Config *cfg)
     cfg->fx.flanger_on = 0;
     cfg->fx.underwater_on = 0;
     cfg->fx.lasers_on = 0;
+    if (!cfg->bubbles_file[0]) {
+        snprintf(cfg->bubbles_file, sizeof cfg->bubbles_file, "%s", AUTODJ_BUBBLES_FILE);
+    }
     if (cfg->fx.rv_send_min >= cfg->fx.rv_send_max) {
         FxParams def;
 
@@ -1518,6 +1607,44 @@ int config_save_lasers_level(const char *path, int percent)
     return save_one_value(path, "Lasers", NULL, "level", value);
 }
 
+int config_save_bubbles_volume(const char *path, int percent)
+{
+    char value[16];
+
+    if (percent < 0) {
+        percent = 0;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+    snprintf(value, sizeof value, "%d", percent);
+    return save_one_value(path, "Bubbles", NULL, "volume", value);
+}
+
+int config_save_chorus_depth(const char *path, int hundredths)
+{
+    char value[16];
+    int whole;
+    int frac;
+
+    if (hundredths < 0) {
+        hundredths = 0;
+    }
+    if (hundredths > 1000) {
+        hundredths = 1000;
+    }
+    whole = hundredths / 100;
+    frac = hundredths % 100;
+    if (frac == 0) {
+        snprintf(value, sizeof value, "%d", whole);
+    } else if (frac % 10 == 0) {
+        snprintf(value, sizeof value, "%d.%d", whole, frac / 10);
+    } else {
+        snprintf(value, sizeof value, "%d.%02d", whole, frac);
+    }
+    return save_one_value(path, "Chorus", NULL, "depth", value);
+}
+
 static void set_err(char *err, size_t err_n, const char *fmt, ...)
 {
     va_list ap;
@@ -1614,6 +1741,8 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->lz_high, sizeof edit->lz_high, "700");
     snprintf(edit->lz_length, sizeof edit->lz_length, "260");
     snprintf(edit->lz_level, sizeof edit->lz_level, "30");
+    snprintf(edit->bb_file, sizeof edit->bb_file, "%s", AUTODJ_BUBBLES_FILE);
+    snprintf(edit->bb_volume, sizeof edit->bb_volume, "50");
 }
 
 static void copy_raw(char *dest, size_t n, const char *val)
@@ -1664,11 +1793,6 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
         int id;
 
         if (strip_midi(key, base, sizeof base) && (id = keys_id(base)) >= 0) {
-            if ((eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
-                 eq_ci(base, "bubbles_down")) &&
-                edit->midi[id][0]) {
-                return;
-            }
             if (midi_canon(val, edit->midi[id], sizeof edit->midi[id]) != 0) {
                 copy_raw(edit->midi[id], sizeof edit->midi[id], val);
             }
@@ -1676,20 +1800,13 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
         }
         if (strip_kbd(key, base, sizeof base) && (id = keys_id(base)) >= 0) {
             char *slot = kbd_edit(edit, id);
-            int old = eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
-                      eq_ci(base, "bubbles_down");
 
             if (!slot) {
                 return;
             }
-            /* Defaults already fill the slot. kbd_new records that the
-             * current name was in the file, so a later old name stays out. */
-            if (old && (edit->kbd_new & (1u << id))) {
-                return;
-            }
-            if (!old) {
-                edit->kbd_new |= 1u << id;
-            }
+            /* Defaults already fill the slot. kbd_new records that this
+             * name was in the file, so a blank line stays blank. */
+            edit->kbd_new |= 1u << id;
             copy_kbd(slot, AUTODJ_KBD_LEN, val);
             return;
         }
@@ -1744,17 +1861,20 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_underwater, sizeof edit->key_underwater, val);
         } else if (eq_ci(key, "lasers")) {
             copy_raw(edit->key_lasers, sizeof edit->key_lasers, val);
-        } else if (eq_ci(key, "bubbles") && !edit->key_lasers[0]) {
-            /* The old name of the lasers button. */
-            copy_raw(edit->key_lasers, sizeof edit->key_lasers, val);
         } else if (eq_ci(key, "lasers_up")) {
-            copy_raw(edit->key_lz_up, sizeof edit->key_lz_up, val);
-        } else if (eq_ci(key, "bubbles_up") && !edit->key_lz_up[0]) {
             copy_raw(edit->key_lz_up, sizeof edit->key_lz_up, val);
         } else if (eq_ci(key, "lasers_down")) {
             copy_raw(edit->key_lz_down, sizeof edit->key_lz_down, val);
-        } else if (eq_ci(key, "bubbles_down") && !edit->key_lz_down[0]) {
-            copy_raw(edit->key_lz_down, sizeof edit->key_lz_down, val);
+        } else if (eq_ci(key, "bubbles")) {
+            copy_raw(edit->key_bubbles, sizeof edit->key_bubbles, val);
+        } else if (eq_ci(key, "bubbles_up")) {
+            copy_raw(edit->key_bb_up, sizeof edit->key_bb_up, val);
+        } else if (eq_ci(key, "bubbles_down")) {
+            copy_raw(edit->key_bb_down, sizeof edit->key_bb_down, val);
+        } else if (eq_ci(key, "chorus_up")) {
+            copy_raw(edit->key_ch_up, sizeof edit->key_ch_up, val);
+        } else if (eq_ci(key, "chorus_down")) {
+            copy_raw(edit->key_ch_down, sizeof edit->key_ch_down, val);
         }
         return;
     }
@@ -1856,6 +1976,16 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
                 copy_raw(edit->lz_length, sizeof edit->lz_length, val);
             } else if (eq_ci(key, "level")) {
                 copy_raw(edit->lz_level, sizeof edit->lz_level, val);
+            }
+        } else if (fx == 8) {
+            if (eq_ci(key, "file")) {
+                copy_raw(edit->bb_file, sizeof edit->bb_file, val);
+            } else if (eq_ci(key, "volume")) {
+                copy_raw(edit->bb_volume, sizeof edit->bb_volume, val);
+            } else if (eq_ci(key, "rate") || eq_ci(key, "low") || eq_ci(key, "high") ||
+                       eq_ci(key, "length") || eq_ci(key, "level")) {
+                /* Left over from when this section was the laser effect. */
+                apply_edit(edit, "Lasers", key, val);
             }
         }
     }
@@ -2173,6 +2303,15 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_rv_down);
     trim(in.key_underwater);
     trim(in.key_lasers);
+    trim(in.key_lz_up);
+    trim(in.key_lz_down);
+    trim(in.key_bubbles);
+    trim(in.key_bb_up);
+    trim(in.key_bb_down);
+    trim(in.key_ch_up);
+    trim(in.key_ch_down);
+    trim(in.bb_file);
+    trim(in.bb_volume);
     for (i = 0; i < DIAL_SLOTS; i++) {
         trim(in.dial_mode[i]);
     }
@@ -2252,6 +2391,12 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_lasers = -1;
     out.key_lz_up = -1;
     out.key_lz_down = -1;
+    out.key_bubbles = -1;
+    out.key_bb_up = -1;
+    out.key_bb_down = -1;
+    out.key_ch_up = -1;
+    out.key_ch_down = -1;
+    snprintf(out.bubbles_file, sizeof out.bubbles_file, "%s", AUTODJ_BUBBLES_FILE);
     out.dial_default = -1;
     fx_defaults(&out.fx);
     out.volume_set = 1;
@@ -2394,6 +2539,21 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_LZ_DOWN] = take_key(err, err_n, in.key_lz_down, "Lasers down",
                                      &out.key_lz_down, out.key_lz_down_name,
                                      sizeof out.key_lz_down_name) == 0;
+    key_ok[KEYID_BUBBLES] = take_key(err, err_n, in.key_bubbles, "Bubbles",
+                                     &out.key_bubbles, out.key_bubbles_name,
+                                     sizeof out.key_bubbles_name) == 0;
+    key_ok[KEYID_BB_UP] = take_key(err, err_n, in.key_bb_up, "Bubbles up",
+                                   &out.key_bb_up, out.key_bb_up_name,
+                                   sizeof out.key_bb_up_name) == 0;
+    key_ok[KEYID_BB_DOWN] = take_key(err, err_n, in.key_bb_down, "Bubbles down",
+                                     &out.key_bb_down, out.key_bb_down_name,
+                                     sizeof out.key_bb_down_name) == 0;
+    key_ok[KEYID_CH_UP] = take_key(err, err_n, in.key_ch_up, "Chorus up",
+                                   &out.key_ch_up, out.key_ch_up_name,
+                                   sizeof out.key_ch_up_name) == 0;
+    key_ok[KEYID_CH_DOWN] = take_key(err, err_n, in.key_ch_down, "Chorus down",
+                                     &out.key_ch_down, out.key_ch_down_name,
+                                     sizeof out.key_ch_down_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
@@ -2420,6 +2580,11 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     keys[KEYID_LASERS] = in.key_lasers;
     keys[KEYID_LZ_UP] = in.key_lz_up;
     keys[KEYID_LZ_DOWN] = in.key_lz_down;
+    keys[KEYID_BUBBLES] = in.key_bubbles;
+    keys[KEYID_BB_UP] = in.key_bb_up;
+    keys[KEYID_BB_DOWN] = in.key_bb_down;
+    keys[KEYID_CH_UP] = in.key_ch_up;
+    keys[KEYID_CH_DOWN] = in.key_ch_down;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
@@ -2446,6 +2611,11 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_LASERS] = "lasers";
     labels[KEYID_LZ_UP] = "lasers up";
     labels[KEYID_LZ_DOWN] = "lasers down";
+    labels[KEYID_BUBBLES] = "bubbles";
+    labels[KEYID_BB_UP] = "bubbles up";
+    labels[KEYID_BB_DOWN] = "bubbles down";
+    labels[KEYID_CH_UP] = "chorus up";
+    labels[KEYID_CH_DOWN] = "chorus down";
     kbd_ok[KEYID_PAUSE] = take_kbd(err, err_n, in.kbd_pause, "Pause/resume",
                                    out.kbd_pause, sizeof out.kbd_pause) == 0;
     kbd_ok[KEYID_SKIP] = take_kbd(err, err_n, in.kbd_skip, "Skip",
@@ -2498,6 +2668,16 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
                                    out.kbd_lz_up, sizeof out.kbd_lz_up) == 0;
     kbd_ok[KEYID_LZ_DOWN] = take_kbd(err, err_n, in.kbd_lz_down, "Lasers down",
                                      out.kbd_lz_down, sizeof out.kbd_lz_down) == 0;
+    kbd_ok[KEYID_BUBBLES] = take_kbd(err, err_n, in.kbd_bubbles, "Bubbles",
+                                     out.kbd_bubbles, sizeof out.kbd_bubbles) == 0;
+    kbd_ok[KEYID_BB_UP] = take_kbd(err, err_n, in.kbd_bb_up, "Bubbles up",
+                                   out.kbd_bb_up, sizeof out.kbd_bb_up) == 0;
+    kbd_ok[KEYID_BB_DOWN] = take_kbd(err, err_n, in.kbd_bb_down, "Bubbles down",
+                                     out.kbd_bb_down, sizeof out.kbd_bb_down) == 0;
+    kbd_ok[KEYID_CH_UP] = take_kbd(err, err_n, in.kbd_ch_up, "Chorus up",
+                                   out.kbd_ch_up, sizeof out.kbd_ch_up) == 0;
+    kbd_ok[KEYID_CH_DOWN] = take_kbd(err, err_n, in.kbd_ch_down, "Chorus down",
+                                     out.kbd_ch_down, sizeof out.kbd_ch_down) == 0;
     for (i = 0; i < KEYID_COUNT; i++) {
         char what[32];
 
@@ -2695,6 +2875,18 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
             add_err(err, err_n, "Lasers low must be at most high.");
             failed = 1;
         }
+    }
+    if (in.bb_volume[0] && take_real(err, err_n, in.bb_volume, 0, 100, "Bubbles volume",
+                                     &out.fx.bb_volume) != 0) {
+        failed = 1;
+    }
+    if (!in.bb_file[0]) {
+        snprintf(out.bubbles_file, sizeof out.bubbles_file, "%s", AUTODJ_BUBBLES_FILE);
+    } else if (!sfx_file_ok(in.bb_file)) {
+        add_err(err, err_n, "Bubbles file must be a file name, without a folder.");
+        failed = 1;
+    } else {
+        snprintf(out.bubbles_file, sizeof out.bubbles_file, "%s", in.bb_file);
     }
     for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
@@ -2905,14 +3097,29 @@ static int keys_id(const char *key)
     if (eq_ci(key, "underwater")) {
         return KEYID_UNDERWATER;
     }
-    if (eq_ci(key, "lasers") || eq_ci(key, "bubbles")) {
+    if (eq_ci(key, "lasers")) {
         return KEYID_LASERS;
     }
-    if (eq_ci(key, "lasers_up") || eq_ci(key, "bubbles_up")) {
+    if (eq_ci(key, "lasers_up")) {
         return KEYID_LZ_UP;
     }
-    if (eq_ci(key, "lasers_down") || eq_ci(key, "bubbles_down")) {
+    if (eq_ci(key, "lasers_down")) {
         return KEYID_LZ_DOWN;
+    }
+    if (eq_ci(key, "bubbles")) {
+        return KEYID_BUBBLES;
+    }
+    if (eq_ci(key, "bubbles_up")) {
+        return KEYID_BB_UP;
+    }
+    if (eq_ci(key, "bubbles_down")) {
+        return KEYID_BB_DOWN;
+    }
+    if (eq_ci(key, "chorus_up")) {
+        return KEYID_CH_UP;
+    }
+    if (eq_ci(key, "chorus_down")) {
+        return KEYID_CH_DOWN;
     }
     return -1;
 }
@@ -2956,10 +3163,11 @@ static const char *const g_fx_keys[FX_SECTIONS][7] = {
     {"period", "delay", "depth", "voices", "mix"},
     {"period", "delay", "depth", "feedback", "mix"},
     {"cutoff", "resonance", "period", "wobble", "mix", "boost"},
-    {"rate", "low", "high", "length", "level"}
+    {"rate", "low", "high", "length", "level"},
+    {"file", "volume"}
 };
 
-static const int g_fx_key_count[FX_SECTIONS] = {5, 4, 3, 7, 5, 5, 6, 5};
+static const int g_fx_key_count[FX_SECTIONS] = {5, 4, 3, 7, 5, 5, 6, 5, 2};
 
 static int fx_key_id(int section, const char *key)
 {
@@ -3080,6 +3288,14 @@ static void fx_value(const Config *cfg, int section, int id, char *dest, size_t 
                                fx->lz_level};
 
         fmt_float(dest, n, vals[id >= 0 && id < 5 ? id : 0]);
+        return;
+    }
+    if (section == 8) {
+        if (id == 0) {
+            snprintf(dest, n, "%s", cfg->bubbles_file[0] ? cfg->bubbles_file : AUTODJ_BUBBLES_FILE);
+        } else {
+            fmt_float(dest, n, fx->bb_volume);
+        }
         return;
     }
     if (section == 5) {
@@ -3268,6 +3484,21 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
         break;
     case KEYID_LZ_DOWN:
         s = cfg->key_lz_down_name;
+        break;
+    case KEYID_BUBBLES:
+        s = cfg->key_bubbles_name;
+        break;
+    case KEYID_BB_UP:
+        s = cfg->key_bb_up_name;
+        break;
+    case KEYID_BB_DOWN:
+        s = cfg->key_bb_down_name;
+        break;
+    case KEYID_CH_UP:
+        s = cfg->key_ch_up_name;
+        break;
+    case KEYID_CH_DOWN:
+        s = cfg->key_ch_down_name;
         break;
     default:
         break;
@@ -3487,7 +3718,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
         "effects_off", "volume_up", "volume_down", "jog_up", "jog_down",
         "reverb_up", "reverb_down", "underwater", "lasers",
-        "lasers_up", "lasers_down"
+        "lasers_up", "lasers_down", "bubbles", "bubbles_up", "bubbles_down",
+        "chorus_up", "chorus_down"
     };
     static const char *kbd_names[KEYID_COUNT] = {
         "pause_resume_kbd", "skip_kbd", "previous_kbd", "rewind_0_5_kbd",
@@ -3496,7 +3728,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
         "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
         "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd", "lasers_kbd",
-        "lasers_up_kbd", "lasers_down_kbd"
+        "lasers_up_kbd", "lasers_down_kbd", "bubbles_kbd", "bubbles_up_kbd",
+        "bubbles_down_kbd", "chorus_up_kbd", "chorus_down_kbd"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -3578,14 +3811,12 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             in_jog = eq_ci(section, "Jog");
             in_fx = fx_section(section);
             in_old_fx = 0;
-            /* Pitch Shift is written again as Chipmunk, or dropped if both are there.
-             * Bubbles is written again as Lasers, the same way. */
-            if (!jog && ((in_fx == 1 && !eq_ci(section, "Chipmunk")) ||
-                         (in_fx == 7 && !eq_ci(section, "Lasers")))) {
+            /* Pitch Shift is written again as Chipmunk, or dropped if both are there. */
+            if (!jog && in_fx == 1 && !eq_ci(section, "Chipmunk")) {
                 struct CfgLine *ck_header;
                 struct CfgLine *ck_last;
                 char *repl;
-                const char *neu = in_fx == 1 ? "Chipmunk" : "Lasers";
+                const char *neu = "Chipmunk";
                 char header[32];
 
                 find_section(head, neu, &ck_header, &ck_last);
@@ -3648,6 +3879,14 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             line = next;
             continue;
         }
+        /* Laser numbers left in [Bubbles] move to [Lasers] on the way out. */
+        if (!jog && in_fx == 8 && line_setting_key(line->text, key, sizeof key) &&
+            (eq_ci(key, "rate") || eq_ci(key, "low") || eq_ci(key, "high") ||
+             eq_ci(key, "length") || eq_ci(key, "level"))) {
+            unlink_line(&head, prev, line);
+            line = next;
+            continue;
+        }
         if (!jog && in_fx >= 0 && line_setting_key(line->text, key, sizeof key) &&
             (id = fx_key_id(in_fx, key)) >= 0) {
             fx_seen[in_fx][id] = 1;
@@ -3667,13 +3906,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
 
             /* The old names are written again under the new ones. */
             if (in_keys && (eq_ci(key, "jog_forward") || eq_ci(key, "jog_back") ||
-                            eq_ci(key, "pitch_shift") ||
-                            eq_ci(key, "bubbles") || eq_ci(key, "bubbles_up") ||
-                            eq_ci(key, "bubbles_down") ||
-                            eq_ci(key, "bubbles_kbd") || eq_ci(key, "bubbles_up_kbd") ||
-                            eq_ci(key, "bubbles_down_kbd") ||
-                            eq_ci(key, "bubbles_midi") || eq_ci(key, "bubbles_up_midi") ||
-                            eq_ci(key, "bubbles_down_midi"))) {
+                            eq_ci(key, "pitch_shift"))) {
                 unlink_line(&head, prev, line);
                 line = next;
                 continue;
@@ -3820,7 +4053,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     if (!jog) {
         static const char *fx_names[] = {
             "Reverb", "Chipmunk", "Autopan", "Phaser", "Chorus", "Flanger", "Underwater",
-            "Lasers"
+            "Lasers", "Bubbles"
         };
         int fx;
 
@@ -3833,8 +4066,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
                 goto done;
             }
             for (id = 0; id < g_fx_key_count[fx]; id++) {
-                char text[80];
-                char fxv[32];
+                char text[AUTODJ_PATH];
+                char fxv[256];
 
                 if (fx_seen[fx][id]) {
                     continue;
@@ -4048,6 +4281,11 @@ static int edit_self_test(void)
         "lasers_kbd=\n"
         "lasers_up_kbd=\n"
         "lasers_down_kbd=\n"
+        "bubbles_kbd=\n"
+        "bubbles_up_kbd=\n"
+        "bubbles_down_kbd=\n"
+        "chorus_up_kbd=\n"
+        "chorus_down_kbd=\n"
         "volume_up_midi=CC_3_UP\n"
         "volume_down_midi=CC_3_DOWN\n"
         "[Reverb]\n"
@@ -4097,7 +4335,10 @@ static int edit_self_test(void)
         "low=280\n"
         "high=700\n"
         "length=260\n"
-        "level=30\n";
+        "level=30\n"
+        "[Bubbles]\n"
+        "file=bubbles.mp3\n"
+        "volume=50\n";
     Config cfg;
     ConfigEdit edit;
     char err[512];
@@ -4695,15 +4936,23 @@ int config_self_test(void)
                file_count(path, "volume=0\n") != 1) {
         log_error("autodj", "config test did not store laser volume");
         rc = -1;
+    } else if (config_save_chorus_depth(path, 620) != 0 ||
+               file_count(path, "depth=6.2\n") != 1 ||
+               file_count(path, "level=30\n") != 1 ||
+               file_count(path, "volume=0\n") != 1 ||
+               config_save_chorus_depth(path, 500) != 0 ||
+               file_count(path, "depth=5\n") != 1 ||
+               file_count(path, "depth=6.2\n") != 0) {
+        log_error("autodj", "config test did not store chorus depth");
+        rc = -1;
     } else {
         char err[512];
         char got[8192];
 
         err[0] = '\0';
         got[0] = '\0';
-        /* Old bubbles names still load. A lasers line wins, and a later
-         * [Bubbles] section still supplies the numbers. Saving writes
-         * only the new names. */
+        /* bubbles is the loop. An old [Bubbles] block that still has the
+         * laser numbers is read as lasers, then saved under [Lasers]. */
         fp = fopen(path, "w");
         if (!fp) {
             log_error("autodj", "config test could not rewrite the temp file");
@@ -4737,48 +4986,81 @@ int config_self_test(void)
             fclose(fp);
             if (config_load(path, &cfg) != 0 ||
                 cfg.key_lasers != key_b || cfg.key_lz_up != key_b ||
-                cfg.key_lz_down != key_a ||
+                cfg.key_lz_down != -1 || cfg.key_bubbles != key_a ||
+                cfg.key_bb_up != key_a || cfg.key_bb_down != key_a ||
                 strcmp(cfg.kbd_lasers, "x") != 0 ||
-                strcmp(cfg.kbd_lz_up, "v") != 0 ||
-                strcmp(cfg.kbd_lz_down, "c") != 0 ||
+                strcmp(cfg.kbd_lz_up, "o") != 0 ||
+                strcmp(cfg.kbd_lz_down, "p") != 0 ||
+                strcmp(cfg.kbd_bubbles, "z") != 0 ||
+                strcmp(cfg.kbd_bb_up, "v") != 0 ||
+                strcmp(cfg.kbd_bb_down, "c") != 0 ||
                 strcmp(cfg.midi[KEYID_LASERS], "NOTE_42") != 0 ||
-                strcmp(cfg.midi[KEYID_LZ_UP], "CC_13_UP") != 0 ||
-                strcmp(cfg.midi[KEYID_LZ_DOWN], "CC_13_DOWN") != 0 ||
+                cfg.midi[KEYID_LZ_UP][0] != '\0' ||
+                cfg.midi[KEYID_LZ_DOWN][0] != '\0' ||
+                strcmp(cfg.midi[KEYID_BUBBLES], "NOTE_9") != 0 ||
+                strcmp(cfg.midi[KEYID_BB_UP], "CC_13_UP") != 0 ||
+                strcmp(cfg.midi[KEYID_BB_DOWN], "CC_13_DOWN") != 0 ||
                 cfg.fx.lasers_on != 0 || cfg.fx.lz_rate != 6.0f ||
                 cfg.fx.lz_low != 300.0f || cfg.fx.lz_high != 800.0f ||
                 cfg.fx.lz_length != 200.0f || cfg.fx.lz_level != 55.0f ||
+                strcmp(cfg.bubbles_file, "bubbles.mp3") != 0 ||
+                cfg.fx.bb_volume != 50.0f ||
                 config_load_edit(path, &edit) != 0 ||
                 strcmp(edit.key_lasers, "KEY_B") != 0 ||
                 strcmp(edit.key_lz_up, "KEY_B") != 0 ||
-                strcmp(edit.key_lz_down, "KEY_A") != 0 ||
+                edit.key_lz_down[0] != '\0' ||
+                strcmp(edit.key_bubbles, "KEY_A") != 0 ||
+                strcmp(edit.key_bb_up, "KEY_A") != 0 ||
+                strcmp(edit.key_bb_down, "KEY_A") != 0 ||
                 strcmp(edit.kbd_lasers, "x") != 0 ||
-                strcmp(edit.kbd_lz_up, "v") != 0 ||
-                strcmp(edit.kbd_lz_down, "c") != 0 ||
+                strcmp(edit.kbd_lz_up, "o") != 0 ||
+                strcmp(edit.kbd_lz_down, "p") != 0 ||
+                strcmp(edit.kbd_bubbles, "z") != 0 ||
+                strcmp(edit.kbd_bb_up, "v") != 0 ||
+                strcmp(edit.kbd_bb_down, "c") != 0 ||
                 strcmp(edit.midi[KEYID_LASERS], "NOTE_42") != 0 ||
-                strcmp(edit.midi[KEYID_LZ_UP], "CC_13_UP") != 0 ||
-                strcmp(edit.midi[KEYID_LZ_DOWN], "CC_13_DOWN") != 0 ||
+                edit.midi[KEYID_LZ_UP][0] != '\0' ||
+                edit.midi[KEYID_LZ_DOWN][0] != '\0' ||
+                strcmp(edit.midi[KEYID_BUBBLES], "NOTE_9") != 0 ||
+                strcmp(edit.midi[KEYID_BB_UP], "CC_13_UP") != 0 ||
+                strcmp(edit.midi[KEYID_BB_DOWN], "CC_13_DOWN") != 0 ||
                 strcmp(edit.lz_rate, "6") != 0 ||
                 strcmp(edit.lz_low, "300") != 0 ||
                 strcmp(edit.lz_high, "800") != 0 ||
                 strcmp(edit.lz_length, "200") != 0 ||
                 strcmp(edit.lz_level, "55") != 0 ||
+                strcmp(edit.bb_file, "bubbles.mp3") != 0 ||
+                strcmp(edit.bb_volume, "50") != 0 ||
                 config_save(path, &cfg, err, sizeof err) != 0 ||
                 read_text(path, got, sizeof got) != 0 ||
-                strstr(got, "bubbles") != NULL || strstr(got, "Bubbles") != NULL ||
+                strstr(got, "bubbles=KEY_A\n") == NULL ||
+                strstr(got, "bubbles_up=KEY_A\n") == NULL ||
+                strstr(got, "bubbles_down=KEY_A\n") == NULL ||
                 strstr(got, "lasers=KEY_B\n") == NULL ||
                 strstr(got, "lasers_up=KEY_B\n") == NULL ||
-                strstr(got, "lasers_down=KEY_A\n") == NULL ||
+                strstr(got, "lasers_down=") != NULL ||
                 strstr(got, "lasers_kbd=x\n") == NULL ||
-                strstr(got, "lasers_up_kbd=v\n") == NULL ||
-                strstr(got, "lasers_down_kbd=c\n") == NULL ||
+                strstr(got, "bubbles_kbd=z\n") == NULL ||
+                strstr(got, "lasers_up_kbd=o\n") == NULL ||
+                strstr(got, "bubbles_up_kbd=v\n") == NULL ||
+                strstr(got, "lasers_down_kbd=p\n") == NULL ||
+                strstr(got, "bubbles_down_kbd=c\n") == NULL ||
                 strstr(got, "lasers_midi=NOTE_42\n") == NULL ||
-                strstr(got, "lasers_up_midi=CC_13_UP\n") == NULL ||
-                strstr(got, "lasers_down_midi=CC_13_DOWN\n") == NULL ||
+                strstr(got, "bubbles_midi=NOTE_9\n") == NULL ||
+                strstr(got, "lasers_up_midi=") != NULL ||
+                strstr(got, "bubbles_up_midi=CC_13_UP\n") == NULL ||
+                strstr(got, "bubbles_down_midi=CC_13_DOWN\n") == NULL ||
                 strstr(got, "[Lasers]\n") == NULL ||
                 strstr(got, "rate=6\n") == NULL ||
                 strstr(got, "level=55\n") == NULL ||
-                file_count(path, "[Lasers]") != 1) {
-                log_error("autodj", "config test did not rename bubbles: %s\n%s", err, got);
+                strstr(got, "[Bubbles]\n") == NULL ||
+                strstr(got, "file=bubbles.mp3\n") == NULL ||
+                strstr(got, "volume=50\n") == NULL ||
+                strstr(got, "[Bubbles]\nrate=") != NULL ||
+                file_count(path, "[Lasers]") != 1 ||
+                file_count(path, "[Bubbles]") != 1 ||
+                file_count(path, "rate=") != 1) {
+                log_error("autodj", "config test did not split bubbles from lasers: %s\n%s", err, got);
                 rc = -1;
             }
         }

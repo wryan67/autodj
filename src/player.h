@@ -70,6 +70,7 @@ enum {
     PLAYER_FX_FLANGER = 5,
     PLAYER_FX_UNDERWATER = 6,
     PLAYER_FX_LASERS = 7,
+    PLAYER_FX_BUBBLES = 8,
     PLAYER_FX_COUNT
 };
 
@@ -91,6 +92,21 @@ int player_reverb_percent(void);
  * A change is heard at once. */
 void player_lasers_step(int direction, int percent);
 int player_lasers_percent(void);
+/* The bubbles volume, 0..100, which is volume in [Bubbles]. player_set_fx
+ * starts it at the configured volume (default 50). direction is +1 or -1.
+ * A change is heard at once. */
+void player_bubbles_step(int direction, int percent);
+int player_bubbles_percent(void);
+/* Chorus depth, which is depth in [Chorus], in hundredths of a millisecond
+ * (500 is 5.00 ms). player_set_fx starts it at the configured depth
+ * (default 5 ms) and keeps it below delay. direction is +1 or -1.
+ * A change is heard at once. */
+void player_chorus_step(int direction, int percent);
+int player_chorus_hundredths(void);
+/* Decode path at rate (44100 when rate is 0) and loop it under the song
+ * while bubbles is on. Call this before player_start. A missing file
+ * leaves the effect silent. Returns 0 when a loop is loaded. */
+int player_load_bubbles(const char *path, unsigned rate);
 
 int player_self_test(void);
 

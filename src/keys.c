@@ -801,7 +801,9 @@ static int is_step_action(int id)
     return id == KEYID_DIAL_FWD || id == KEYID_DIAL_BACK || id == KEYID_VOL_UP ||
            id == KEYID_VOL_DOWN || id == KEYID_JOG_UP || id == KEYID_JOG_DOWN ||
            id == KEYID_RV_UP || id == KEYID_RV_DOWN ||
-           id == KEYID_LZ_UP || id == KEYID_LZ_DOWN;
+           id == KEYID_LZ_UP || id == KEYID_LZ_DOWN ||
+           id == KEYID_BB_UP || id == KEYID_BB_DOWN ||
+           id == KEYID_CH_UP || id == KEYID_CH_DOWN;
 }
 
 /* Jog by count clicks. A knob can report several clicks in one message, so
@@ -831,17 +833,27 @@ static void jog_steps(int dir, int count, long long us)
     g_jog_last_us = us;
 }
 
-/* A dial, volume, jog, reverb, or laser action. percent is the volume per
- * step. The reverb knob and the laser volume move twice that, so a knob
- * covers its range in 50 steps. */
+/* A dial, volume, jog, reverb, laser, bubbles, or chorus action. percent
+ * is the volume per step. The reverb knob, the laser volume, the bubbles
+ * volume, and the chorus depth move twice that, so a knob covers its range
+ * in 50 steps. Chorus depth is 0 to 10 ms, so one of those steps is 0.2 ms. */
 static void step_action(int id, int count, int percent, long long us)
 {
     int dir = (id == KEYID_DIAL_FWD || id == KEYID_VOL_UP || id == KEYID_JOG_UP ||
-               id == KEYID_RV_UP || id == KEYID_LZ_UP) ? 1 : -1;
+               id == KEYID_RV_UP || id == KEYID_LZ_UP || id == KEYID_BB_UP ||
+               id == KEYID_CH_UP) ? 1 : -1;
     int mode;
 
     if (id == KEYID_LZ_UP || id == KEYID_LZ_DOWN) {
         player_lasers_step(dir, 2 * percent * count);
+        return;
+    }
+    if (id == KEYID_BB_UP || id == KEYID_BB_DOWN) {
+        player_bubbles_step(dir, 2 * percent * count);
+        return;
+    }
+    if (id == KEYID_CH_UP || id == KEYID_CH_DOWN) {
+        player_chorus_step(dir, 2 * percent * count);
         return;
     }
     if (id == KEYID_VOL_UP || id == KEYID_VOL_DOWN) {
@@ -910,6 +922,9 @@ static void press_action(int id)
     case KEYID_LASERS:
         player_fx_toggle(PLAYER_FX_LASERS);
         break;
+    case KEYID_BUBBLES:
+        player_fx_toggle(PLAYER_FX_BUBBLES);
+        break;
     case KEYID_EFFECTS_OFF:
         player_fx_all_off();
         break;
@@ -933,7 +948,8 @@ static int pad_action(const struct Config *cfg, int key)
         cfg->key_chorus, cfg->key_flanger, cfg->key_effects_off, cfg->key_vol_up,
         cfg->key_vol_down, cfg->key_jog_up, cfg->key_jog_down, cfg->key_rv_up,
         cfg->key_rv_down, cfg->key_underwater, cfg->key_lasers, cfg->key_lz_up,
-        cfg->key_lz_down
+        cfg->key_lz_down, cfg->key_bubbles, cfg->key_bb_up, cfg->key_bb_down,
+        cfg->key_ch_up, cfg->key_ch_down
     };
     int id;
 
@@ -1142,7 +1158,8 @@ static int kbd_action(const struct Config *cfg, const char *name)
         cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off, cfg->kbd_vol_up,
         cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down, cfg->kbd_rv_up,
         cfg->kbd_rv_down, cfg->kbd_underwater, cfg->kbd_lasers, cfg->kbd_lz_up,
-        cfg->kbd_lz_down
+        cfg->kbd_lz_down, cfg->kbd_bubbles, cfg->kbd_bb_up, cfg->kbd_bb_down,
+        cfg->kbd_ch_up, cfg->kbd_ch_down
     };
     int id;
 
@@ -1658,6 +1675,11 @@ static int kbd_self_test(void)
     cfg.key_lasers = -1;
     cfg.key_lz_up = -1;
     cfg.key_lz_down = -1;
+    cfg.key_bubbles = -1;
+    cfg.key_bb_up = -1;
+    cfg.key_bb_down = -1;
+    cfg.key_ch_up = -1;
+    cfg.key_ch_down = -1;
     snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "r");
     player_set_fx(NULL);
     player_set_volume_percent(50);
@@ -1702,12 +1724,44 @@ static int kbd_self_test(void)
         log_error("keys", "keyboard lasers down left %d%%", player_lasers_percent());
         return -1;
     }
+    snprintf(cfg.kbd_bb_up, sizeof cfg.kbd_bb_up, "k");
+    snprintf(cfg.kbd_bb_down, sizeof cfg.kbd_bb_down, "l");
+    keys_kbd_dispatch(&cfg, "k");
+    if (player_bubbles_percent() != 60) {
+        log_error("keys", "keyboard bubbles up left %d%%", player_bubbles_percent());
+        return -1;
+    }
+    keys_kbd_dispatch(&cfg, "l");
+    if (player_bubbles_percent() != 50) {
+        log_error("keys", "keyboard bubbles down left %d%%", player_bubbles_percent());
+        return -1;
+    }
+    snprintf(cfg.kbd_ch_up, sizeof cfg.kbd_ch_up, "n");
+    snprintf(cfg.kbd_ch_down, sizeof cfg.kbd_ch_down, "m");
+    keys_kbd_dispatch(&cfg, "n");
+    if (player_chorus_hundredths() != 600) {
+        log_error("keys", "keyboard chorus up left depth %d", player_chorus_hundredths());
+        return -1;
+    }
+    keys_kbd_dispatch(&cfg, "m");
+    if (player_chorus_hundredths() != 500) {
+        log_error("keys", "keyboard chorus down left depth %d", player_chorus_hundredths());
+        return -1;
+    }
+    snprintf(cfg.kbd_bubbles, sizeof cfg.kbd_bubbles, "b");
+    g_press_seen = 0;
+    keys_kbd_dispatch(&cfg, "b");
+    if (!player_fx_enabled(PLAYER_FX_BUBBLES)) {
+        log_error("keys", "keyboard b did not turn bubbles on");
+        return -1;
+    }
 
     snprintf(cfg.kbd_effects_off, sizeof cfg.kbd_effects_off, "x");
     player_fx_toggle(PLAYER_FX_CHORUS);
     g_press_seen = 0;
     keys_kbd_dispatch(&cfg, "x");
-    if (player_fx_enabled(PLAYER_FX_REVERB) || player_fx_enabled(PLAYER_FX_CHORUS)) {
+    if (player_fx_enabled(PLAYER_FX_REVERB) || player_fx_enabled(PLAYER_FX_CHORUS) ||
+        player_fx_enabled(PLAYER_FX_BUBBLES)) {
         log_error("keys", "keyboard all-off left an effect on");
         return -1;
     }
@@ -1805,6 +1859,8 @@ static int midi_dispatch_self_test(void)
     cfg.key_vol_down = cfg.key_jog_up = cfg.key_jog_down = -1;
     cfg.key_rv_up = cfg.key_rv_down = cfg.key_underwater = cfg.key_lasers = -1;
     cfg.key_lz_up = cfg.key_lz_down = -1;
+    cfg.key_bubbles = cfg.key_bb_up = cfg.key_bb_down = -1;
+    cfg.key_ch_up = cfg.key_ch_down = -1;
     for (id = 0; id < KEYID_COUNT; id++) {
         cfg.midi_code[id] = -1;
     }
@@ -1874,6 +1930,66 @@ static int midi_dispatch_self_test(void)
     player_lasers_step(1, 200);
     if (player_lasers_percent() != 100) {
         log_error("keys", "lasers did not stop at 100 (left %d%%)", player_lasers_percent());
+        goto out;
+    }
+    /* Bubbles volume starts at 50. A knob step is 2. */
+    if (player_bubbles_percent() != 50) {
+        log_error("keys", "bubbles started at %d%%", player_bubbles_percent());
+        goto out;
+    }
+    cfg.midi_code[KEYID_BB_UP] = MIDI_CC_UP | 14;
+    keys_midi_dispatch(&cfg, MIDI_CC_UP | 14, 2, &when);
+    if (player_bubbles_percent() != 54) {
+        log_error("keys", "bubbles knob left %d%%", player_bubbles_percent());
+        goto out;
+    }
+    cfg.midi_code[KEYID_BUBBLES] = MIDI_NOTE | 41;
+    when.tv_sec = 103;
+    if (keys_midi_dispatch(&cfg, MIDI_NOTE | 41, 1, &when) != 1 ||
+        !player_fx_enabled(PLAYER_FX_BUBBLES)) {
+        log_error("keys", "a MIDI pad did not turn bubbles on");
+        goto out;
+    }
+    /* Chorus depth starts at 5.00 ms. A knob step is 0.2 ms. */
+    if (player_chorus_hundredths() != 500) {
+        log_error("keys", "chorus depth started at %d", player_chorus_hundredths());
+        goto out;
+    }
+    cfg.midi_code[KEYID_CH_UP] = MIDI_CC_UP | 16;
+    keys_midi_dispatch(&cfg, MIDI_CC_UP | 16, 2, &when);
+    if (player_chorus_hundredths() != 540) {
+        log_error("keys", "chorus knob left depth %d", player_chorus_hundredths());
+        goto out;
+    }
+    player_chorus_step(-1, 100);
+    if (player_chorus_hundredths() != 0) {
+        log_error("keys", "chorus depth did not stop at 0 (left %d)",
+                  player_chorus_hundredths());
+        goto out;
+    }
+    player_chorus_step(1, 200);
+    if (player_chorus_hundredths() != 1000) {
+        log_error("keys", "chorus depth did not stop at 10 ms (left %d)",
+                  player_chorus_hundredths());
+        goto out;
+    }
+    {
+        FxParams fx;
+
+        fx_defaults(&fx);
+        fx.ch_delay = 6;
+        fx.ch_depth = 5;
+        player_set_fx(&fx);
+        player_chorus_step(1, 200);
+        if (player_chorus_hundredths() != 590) {
+            log_error("keys", "chorus depth passed the delay (left %d)",
+                      player_chorus_hundredths());
+            goto out;
+        }
+    }
+    player_fx_all_off();
+    if (player_fx_enabled(PLAYER_FX_BUBBLES) || player_fx_enabled(PLAYER_FX_REVERB)) {
+        log_error("keys", "all-off left bubbles or reverb on");
         goto out;
     }
     /* A volume key works whatever mode the dial is in, a keypad step is 1. */
@@ -1953,6 +2069,11 @@ static int debounce_self_test(void)
     cfg.key_lasers = -1;
     cfg.key_lz_up = -1;
     cfg.key_lz_down = -1;
+    cfg.key_bubbles = -1;
+    cfg.key_bb_up = -1;
+    cfg.key_bb_down = -1;
+    cfg.key_ch_up = -1;
+    cfg.key_ch_down = -1;
     player_set_volume_percent(50);
     player_set_fx(NULL);
     g_press_seen = 0;

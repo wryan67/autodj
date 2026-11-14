@@ -132,6 +132,7 @@ struct FxState {
     int ch_w;
     double ch_phase;
     float ch_mix;
+    float ch_depth_now; /* milliseconds actually heard; eases toward ch_depth */
     int ch_on;
     int ch_live;
     float *fl_buf[2];
@@ -224,6 +225,7 @@ void fx_defaults(FxParams *p)
     p->lz_high = 700.0f;
     p->lz_length = 260.0f;
     p->lz_level = 30.0f;
+    p->bb_volume = 50.0f;
 }
 
 static int scaled(unsigned rate, int n)
@@ -597,6 +599,7 @@ void fx_setup(FxState *st, const FxParams *p)
     st->ph_live = 0;
     st->ch_mix = 0;
     st->ch_live = 0;
+    st->ch_depth_now = st->p.ch_depth;
     st->fl_mix = 0;
     st->fl_live = 0;
     st->uw_mix = 0;
@@ -624,6 +627,13 @@ void fx_set_lasers(FxState *st, float level)
 {
     if (st) {
         st->p.lz_level = level;
+    }
+}
+
+void fx_set_chorus(FxState *st, float depth_ms)
+{
+    if (st) {
+        st->p.ch_depth = depth_ms;
     }
 }
 
@@ -1441,6 +1451,7 @@ static void process_chorus(FxState *st, float *left, float *right)
     if (st->ch_on && !st->ch_live) {
         ch_clear(st);
         st->ch_live = 1;
+        st->ch_depth_now = st->p.ch_depth;
     }
     amount = clamp_unit(st->p.ch_mix * 0.01f) * st->ch_mix;
     if (amount == 0) {
@@ -1459,6 +1470,25 @@ static void process_chorus(FxState *st, float *left, float *right)
     }
     if (depth > 10.0f) {
         depth = 10.0f;
+    }
+    /* One millisecond of depth takes about 20 ms, so a knob step does not
+     * jump the delay tap. */
+    {
+        unsigned rate = st->rate ? st->rate : 44100;
+        float step = 1.0f / (0.02f * (float)rate);
+
+        if (st->ch_depth_now < depth) {
+            st->ch_depth_now += step;
+            if (st->ch_depth_now > depth) {
+                st->ch_depth_now = depth;
+            }
+        } else if (st->ch_depth_now > depth) {
+            st->ch_depth_now -= step;
+            if (st->ch_depth_now < depth) {
+                st->ch_depth_now = depth;
+            }
+        }
+        depth = st->ch_depth_now;
     }
     voices = st->p.ch_voices < 1 ? 1 : st->p.ch_voices > 4 ? 4 : st->p.ch_voices;
     io[0] = left;
