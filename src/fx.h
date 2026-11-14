@@ -86,9 +86,9 @@ typedef struct FxParams {
     float lz_high;   /* 80..6000 Hz, default 700, and at least lz_low.
                       * Highest zap. */
     float lz_length; /* 30..400 ms, default 260. How long one zap lasts. */
-    float lz_level;  /* 0..100, default 30. How loud the zaps are. The
-                      * song stays; 0 adds nothing. The laser knob moves
-                      * this while a song plays. */
+    float lz_level;  /* 0..100, default 30. How loud the zaps are. 100
+                      * mixes at 2. The song stays; 0 adds nothing. The
+                      * laser knob moves this while a song plays. */
     float bb_volume; /* 0..100, default 50. How loud the bubbles loop is.
                       * The song stays; 0 adds nothing. The bubbles knob
                       * moves this while a song plays. */

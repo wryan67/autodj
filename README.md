@@ -474,7 +474,7 @@ Adds falling zaps on top of the song. The song itself is left as it is. Each zap
 `30` to `400`. Default `260`. How long one zap lasts, in milliseconds. Lower ones run longer than this, and higher ones run shorter. The pitch falls through this whole time.
 
 `level`  
-`0` to `100`. Default `30`. How loud the zaps are. `0` adds nothing. The song is not turned down to make room. `lasers_up` and `lasers_down` move this while a song plays, and the value is saved.
+`0` to `100`. Default `30`. How loud the zaps are. `0` adds nothing. `100` mixes them at twice unity, so the same saved number is twice as loud as it was before. The song is not turned down to make room. `lasers_up` and `lasers_down` move this while a song plays, and the value is saved.
 
 ### [Bubbles]
 

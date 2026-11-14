@@ -1865,12 +1865,13 @@ static void process_lasers(FxState *st, float *left, float *right)
     if (length > 400.0f) {
         length = 400.0f;
     }
-    level = st->p.lz_level * 0.01f;
+    /* 100 on the knob mixes at 2, twice the earlier full setting. */
+    level = st->p.lz_level * 0.02f;
     if (level < 0) {
         level = 0;
     }
-    if (level > 1.0f) {
-        level = 1.0f;
+    if (level > 2.0f) {
+        level = 2.0f;
     }
     if (st->lz_on || st->lz_follow) {
         st->lz_wait -= 1.0f;
@@ -2159,7 +2160,7 @@ static int lasers_self_test(void)
         float r = 0;
 
         fx_process(st, &l, &r);
-        if (l != l || r != r || l > 2.0f || l < -2.0f || r > 2.0f || r < -2.0f) {
+        if (l != l || r != r || l > 4.0f || l < -4.0f || r > 4.0f || r < -4.0f) {
             log_error("fx", "lasers ran away to %.3f", (double)l);
             goto done;
         }
