@@ -77,10 +77,14 @@ enum {
 /* Copy the effect settings. Call this before player_start. The power
  * buttons can change while a song plays. */
 void player_set_fx(const FxParams *fx);
+/* 1 while the effect is sounding. Lasers and bubbles report 0 while a
+ * pause is holding them quiet. */
 int player_fx_enabled(int which);
-/* Returns the new state, 1 on and 0 off. */
+/* Returns the new state, 1 on and 0 off. While a pause is holding lasers
+ * or bubbles quiet, the button turns that effect on. */
 int player_fx_toggle(int which);
-/* Turn every effect off. A second press leaves them off. */
+/* Turn every effect off. A second press leaves them off. They stay off
+ * when the song resumes. */
 void player_fx_all_off(void);
 /* The reverb knob: how far reverb send is from its minimum to its maximum
  * (FxParams rv_send_min and rv_send_max), in percent. player_set_fx puts it

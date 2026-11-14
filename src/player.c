@@ -32,6 +32,11 @@
  * direction. While the dial turns, the normal motor speed is held back.
  * When it stops, the record spins back up to the pause/resume rate, so a
  * paused song stays paused.
+ *
+ * Lasers and bubbles are added on top of the song. A pause quiets each one
+ * that is on. Pressing its button while the song is paused turns that one
+ * back on, and it is heard while the song stays paused. Another press turns
+ * it off. Resuming brings back the ones left on.
  */
 
 #define HIST_MAX 21 /* the song playing, plus 20 before it */
@@ -47,6 +52,9 @@ static atomic_int g_back_gen;
 static atomic_int g_rewind_ms;
 static atomic_int g_volume = 1000;
 static atomic_int g_fx_on[PLAYER_FX_COUNT];
+/* Pause quiets lasers and bubbles that are on. A press of that effect's
+ * button clears its hold and the effect is heard while the song stays paused. */
+static atomic_int g_fx_hold[PLAYER_FX_COUNT];
 /* Reverb knob position, 0 to 1000 from rv_send_min to rv_send_max. */
 static atomic_int g_rv_level = 500;
 /* Laser volume, 0 to 1000. player_set_fx starts it at the configured level. */
@@ -698,8 +706,51 @@ void player_play_led_set(int mode, int pos)
     atomic_store(&g_play_led_pos, pos);
 }
 
+static int fx_overlay(int which)
+{
+    return which == PLAYER_FX_LASERS || which == PLAYER_FX_BUBBLES;
+}
+
+/* 0 while a pause is holding this effect quiet. */
+static int fx_sounding(int which)
+{
+    if (which < 0 || which >= PLAYER_FX_COUNT) {
+        return 0;
+    }
+    if (atomic_load(&g_fx_hold[which])) {
+        return 0;
+    }
+    return atomic_load(&g_fx_on[which]) ? 1 : 0;
+}
+
+/* Remember overlays that are on, so the pause can quiet them and resume
+ * can bring those same ones back. */
+static void hold_additive(void)
+{
+    int i;
+
+    for (i = 0; i < PLAYER_FX_COUNT; i++) {
+        if (fx_overlay(i)) {
+            atomic_store(&g_fx_hold[i], atomic_load(&g_fx_on[i]) ? 1 : 0);
+        } else {
+            atomic_store(&g_fx_hold[i], 0);
+        }
+    }
+}
+
+static void release_additive(void)
+{
+    int i;
+
+    for (i = 0; i < PLAYER_FX_COUNT; i++) {
+        atomic_store(&g_fx_hold[i], 0);
+    }
+}
+
 static void begin_ramp(int pausing)
 {
+    int was = g_paused;
+
     g_paused = pausing;
     g_ramp_from = g_rate;
     g_ramp_to = pausing ? 0.0 : 1.0;
@@ -708,8 +759,12 @@ static void begin_ramp(int pausing)
     g_announced_hold = 0;
     g_ramping = 1;
     if (pausing) {
+        if (!was) {
+            hold_additive();
+        }
         log_info("audio", "pausing over %ds", g_set.pause_sec);
     } else {
+        release_additive();
         log_info("audio", "resuming over %ds", g_set.resume_sec);
     }
     if (g_ramp_span == 0) {
@@ -961,15 +1016,16 @@ static void maybe_natural_fade(void)
 }
 
 /* Fade the loop in and out over 20 ms, then add it on top of the song.
- * It follows the song volume and the bubbles volume, including while the
- * song is paused. The loop stays at normal speed while the dial is jogging. */
+ * It follows the song volume and the bubbles volume. A pause fades it out.
+ * The bubbles button fades it back in while the song stays paused. The loop
+ * keeps its normal speed while the dial is jogging and the loop is sounding. */
 static void mix_bubbles(float *left, float *right)
 {
     unsigned rate = g_set.rate ? g_set.rate : 44100;
     float target = 0;
     float step;
 
-    if (atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]) && g_bb_pcm && g_bb_frames > 0) {
+    if (fx_sounding(PLAYER_FX_BUBBLES) && g_bb_pcm && g_bb_frames > 0) {
         target = ((float)atomic_load(&g_bb_level) / 1000.0f) * g_vol;
     }
     step = 1.0f / (0.02f * (float)rate);
@@ -1069,7 +1125,7 @@ static void render_frame(int16_t *dst)
                   atomic_load(&g_fx_on[PLAYER_FX_CHORUS]),
                   atomic_load(&g_fx_on[PLAYER_FX_FLANGER]),
                   atomic_load(&g_fx_on[PLAYER_FX_UNDERWATER]),
-                  atomic_load(&g_fx_on[PLAYER_FX_LASERS]));
+                  fx_sounding(PLAYER_FX_LASERS));
         fx_process(g_fx, &left, &right);
     }
     mix_bubbles(&left, &right);
@@ -1198,6 +1254,7 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
     g_pl = playlist;
     g_rate = 1.0;
     g_paused = 0;
+    release_additive();
     g_ramping = 0;
     g_rendered = 0;
     g_seen_pause = atomic_load(&g_pause_gen);
@@ -1319,6 +1376,7 @@ void player_stop(void)
     g_bb_pos = 0;
     g_bb_gain = 0;
     g_paused = 1;
+    release_additive();
     g_ramping = 0;
     publish_play_led();
 }
@@ -1506,14 +1564,12 @@ void player_set_fx(const FxParams *fx)
     atomic_store(&g_fx_on[PLAYER_FX_UNDERWATER], 0);
     atomic_store(&g_fx_on[PLAYER_FX_LASERS], 0);
     atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 0);
+    release_additive();
 }
 
 int player_fx_enabled(int which)
 {
-    if (which < 0 || which >= PLAYER_FX_COUNT) {
-        return 0;
-    }
-    return atomic_load(&g_fx_on[which]) ? 1 : 0;
+    return fx_sounding(which);
 }
 
 int player_fx_toggle(int which)
@@ -1526,6 +1582,14 @@ int player_fx_toggle(int which)
     if (which < 0 || which >= PLAYER_FX_COUNT) {
         return 0;
     }
+    /* The pad is dark while a pause holds the effect. That press turns it
+     * back on, and a later press is an ordinary toggle. */
+    if (fx_overlay(which) && atomic_load(&g_fx_hold[which])) {
+        atomic_store(&g_fx_on[which], 1);
+        atomic_store(&g_fx_hold[which], 0);
+        log_info("keys", "%s on", names[which]);
+        return 1;
+    }
     next = !atomic_load(&g_fx_on[which]);
     atomic_store(&g_fx_on[which], next);
     log_info("keys", "%s %s", names[which], next ? "on" : "off");
@@ -1536,6 +1600,7 @@ void player_fx_all_off(void)
 {
     int i;
 
+    release_additive();
     for (i = 0; i < PLAYER_FX_COUNT; i++) {
         atomic_store(&g_fx_on[i], 0);
     }
@@ -1585,7 +1650,7 @@ void player_lasers_step(int direction, int percent)
     }
     atomic_store(&g_lz_level, next);
     log_info("keys", "lasers %d%%%s", next / 10,
-             atomic_load(&g_fx_on[PLAYER_FX_LASERS]) ? "" : " (lasers is off)");
+             fx_sounding(PLAYER_FX_LASERS) ? "" : " (lasers is off)");
 }
 
 int player_lasers_percent(void)
@@ -1609,7 +1674,7 @@ void player_bubbles_step(int direction, int percent)
     }
     atomic_store(&g_bb_level, next);
     log_info("keys", "bubbles %d%%%s", next / 10,
-             atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]) ? "" : " (bubbles is off)");
+             fx_sounding(PLAYER_FX_BUBBLES) ? "" : " (bubbles is off)");
 }
 
 int player_bubbles_percent(void)
@@ -1791,6 +1856,142 @@ out:
     g_vol = 1.0f;
     free(track.pcm);
     return rc;
+}
+
+static int heard_overlay(int frames, int abs_min)
+{
+    int i;
+
+    for (i = 0; i < frames; i++) {
+        int16_t out[2];
+
+        render_frame(out);
+        if (out[0] >= abs_min || out[0] <= -abs_min || out[1] >= abs_min ||
+            out[1] <= -abs_min) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int silent_overlay(int frames)
+{
+    int i;
+
+    for (i = 0; i < frames; i++) {
+        int16_t out[2];
+
+        render_frame(out);
+        if (out[0] != 0 || out[1] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Lasers go quiet on pause, the button brings them back, and resume
+ * brings back the ones left on. */
+static int lasers_pause_self_test(void)
+{
+    FxParams p;
+    FxState *st;
+    FxState *saved_fx = g_fx;
+    int saved_on = atomic_load(&g_fx_on[PLAYER_FX_LASERS]);
+    int saved_level = atomic_load(&g_lz_level);
+    int saved_paused = g_paused;
+    double saved_rate = g_rate;
+    float saved_vol = g_vol;
+    int saved_jog = g_jog_on;
+    int saved_ramp = g_ramping;
+    int saved_fade = g_fading;
+    Track *saved_a = g_a;
+    Track *saved_b = g_b;
+    int saved_pause_sec = g_set.pause_sec;
+    int saved_resume_sec = g_set.resume_sec;
+    unsigned saved_out_rate = g_set.rate;
+    int fail = 0;
+
+    fx_defaults(&p);
+    p.lz_rate = 20.0f;
+    p.lz_length = 40.0f;
+    p.lz_level = 100.0f;
+    st = fx_new(44100);
+    if (!st) {
+        log_error("audio", "out of memory for the lasers pause test");
+        return -1;
+    }
+    fx_setup(st, &p);
+    g_fx = st;
+    g_a = NULL;
+    g_b = NULL;
+    g_fading = 0;
+    g_jog_on = 0;
+    g_ramping = 0;
+    g_vol = 1.0f;
+    g_rate = 0;
+    g_paused = 0;
+    g_set.rate = 44100;
+    g_set.pause_sec = 0;
+    g_set.resume_sec = 0;
+    atomic_store(&g_lz_level, 1000);
+    atomic_store(&g_fx_on[PLAYER_FX_LASERS], 1);
+    release_additive();
+
+    if (!heard_overlay(44100, 200)) {
+        log_error("audio", "lasers were silent before the pause");
+        fail = 1;
+        goto done;
+    }
+    begin_ramp(1);
+    render_frames(88200);
+    if (!silent_overlay(2000) || player_fx_enabled(PLAYER_FX_LASERS) ||
+        !atomic_load(&g_fx_on[PLAYER_FX_LASERS]) || !g_paused) {
+        log_error("audio", "lasers kept firing while paused");
+        fail = 1;
+        goto done;
+    }
+    if (player_fx_toggle(PLAYER_FX_LASERS) != 1 || !player_fx_enabled(PLAYER_FX_LASERS)) {
+        log_error("audio", "lasers button did not turn them back on while paused");
+        fail = 1;
+        goto done;
+    }
+    if (!heard_overlay(44100, 200) || !g_paused) {
+        log_error("audio", "lasers stayed silent after the button while paused");
+        fail = 1;
+        goto done;
+    }
+    begin_ramp(0);
+    begin_ramp(1);
+    render_frames(88200);
+    if (player_fx_enabled(PLAYER_FX_LASERS) || !atomic_load(&g_fx_on[PLAYER_FX_LASERS])) {
+        log_error("audio", "lasers did not pause");
+        fail = 1;
+        goto done;
+    }
+    begin_ramp(0);
+    if (!heard_overlay(44100, 200) || g_paused || !player_fx_enabled(PLAYER_FX_LASERS)) {
+        log_error("audio", "lasers did not return when the song resumed");
+        fail = 1;
+        goto done;
+    }
+done:
+    fx_free(st);
+    g_fx = saved_fx;
+    atomic_store(&g_fx_on[PLAYER_FX_LASERS], saved_on);
+    atomic_store(&g_lz_level, saved_level);
+    g_paused = saved_paused;
+    g_rate = saved_rate;
+    g_vol = saved_vol;
+    g_jog_on = saved_jog;
+    g_ramping = saved_ramp;
+    g_fading = saved_fade;
+    g_a = saved_a;
+    g_b = saved_b;
+    g_set.pause_sec = saved_pause_sec;
+    g_set.resume_sec = saved_resume_sec;
+    g_set.rate = saved_out_rate;
+    release_additive();
+    return fail ? -1 : 0;
 }
 
 int player_self_test(void)
@@ -2084,7 +2285,7 @@ int player_self_test(void)
     g_prefetch_busy = 0;
     g_prefetch_path[0] = '\0';
 
-    /* A two-frame loop at full gain, then half volume, then an off ramp. */
+    /* A two-frame loop at full gain, then half volume, then pause. */
     {
         float loop[4] = {0.5f, -0.25f, 0.25f, 0.5f};
         float *saved_pcm = g_bb_pcm;
@@ -2092,25 +2293,37 @@ int player_self_test(void)
         size_t saved_pos = g_bb_pos;
         float saved_gain = g_bb_gain;
         int saved_level = atomic_load(&g_bb_level);
-        int saved_on = atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]);
+        int saved_on[PLAYER_FX_COUNT];
         unsigned saved_out_rate = g_set.rate;
         double saved_play = g_rate;
         float saved_vol = g_vol;
         int saved_jog = g_jog_on;
         int saved_ramp = g_ramping;
         int saved_fade = g_fading;
+        int saved_paused = g_paused;
+        int saved_pause_sec = g_set.pause_sec;
+        int saved_resume_sec = g_set.resume_sec;
         Track *saved_a = g_a;
         Track *saved_b = g_b;
         FxState *saved_fx = g_fx;
         int16_t out[2];
         int near;
+        int fail = 0;
+        int i;
+        size_t held_pos;
 
+        for (i = 0; i < PLAYER_FX_COUNT; i++) {
+            saved_on[i] = atomic_load(&g_fx_on[i]);
+        }
         g_set.rate = 44100;
+        g_set.pause_sec = 0;
+        g_set.resume_sec = 0;
         g_rate = 1.0;
         g_vol = 1.0f;
         g_jog_on = 0;
         g_ramping = 0;
         g_fading = 0;
+        g_paused = 0;
         g_a = NULL;
         g_b = NULL;
         g_fx = NULL;
@@ -2118,6 +2331,7 @@ int player_self_test(void)
         g_bb_frames = 2;
         g_bb_pos = 0;
         g_bb_gain = 1.0f;
+        release_additive();
         atomic_store(&g_bb_level, 1000);
         atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 1);
         render_frame(out);
@@ -2125,22 +2339,8 @@ int player_self_test(void)
         render_frame(out);
         if (!near || out[0] < 8191 || out[0] > 8192 || out[1] < 16383 || out[1] > 16384) {
             log_error("audio", "bubbles loop mix failed");
-            g_bb_pcm = saved_pcm;
-            g_bb_frames = saved_frames;
-            g_bb_pos = saved_pos;
-            g_bb_gain = saved_gain;
-            atomic_store(&g_bb_level, saved_level);
-            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
-            g_set.rate = saved_out_rate;
-            g_rate = saved_play;
-            g_vol = saved_vol;
-            g_jog_on = saved_jog;
-            g_ramping = saved_ramp;
-            g_fading = saved_fade;
-            g_a = saved_a;
-            g_b = saved_b;
-            g_fx = saved_fx;
-            return -1;
+            fail = 1;
+            goto bubbles_done;
         }
         g_bb_pos = 0;
         g_bb_gain = 0.5f;
@@ -2148,107 +2348,168 @@ int player_self_test(void)
         render_frame(out);
         if (out[0] < 8191 || out[0] > 8192 || out[1] < -4096 || out[1] > -4095) {
             log_error("audio", "bubbles volume scale failed (%d, %d)", out[0], out[1]);
-            g_bb_pcm = saved_pcm;
-            g_bb_frames = saved_frames;
-            g_bb_pos = saved_pos;
-            g_bb_gain = saved_gain;
-            atomic_store(&g_bb_level, saved_level);
-            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
-            g_set.rate = saved_out_rate;
-            g_rate = saved_play;
-            g_vol = saved_vol;
-            g_jog_on = saved_jog;
-            g_ramping = saved_ramp;
-            g_fading = saved_fade;
-            g_a = saved_a;
-            g_b = saved_b;
-            g_fx = saved_fx;
-            return -1;
+            fail = 1;
+            goto bubbles_done;
         }
+        /* A stopped rate while playback is running still mixes the loop. */
         g_rate = 0;
+        g_paused = 0;
         g_bb_pos = 0;
         g_bb_gain = 0.5f;
         render_frame(out);
         if (out[0] < 8191 || out[0] > 8192 || out[1] < -4096 || out[1] > -4095) {
-            log_error("audio", "bubbles paused mix failed (%d, %d)", out[0], out[1]);
-            g_bb_pcm = saved_pcm;
-            g_bb_frames = saved_frames;
-            g_bb_pos = saved_pos;
-            g_bb_gain = saved_gain;
-            atomic_store(&g_bb_level, saved_level);
-            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
-            g_set.rate = saved_out_rate;
-            g_rate = saved_play;
-            g_vol = saved_vol;
-            g_jog_on = saved_jog;
-            g_ramping = saved_ramp;
-            g_fading = saved_fade;
-            g_a = saved_a;
-            g_b = saved_b;
-            g_fx = saved_fx;
-            return -1;
+            log_error("audio", "bubbles rate-0 mix failed (%d, %d)", out[0], out[1]);
+            fail = 1;
+            goto bubbles_done;
         }
-        g_bb_pos = 0;
-        g_bb_gain = 1.0f;
+        atomic_store(&g_fx_on[PLAYER_FX_REVERB], 1);
         atomic_store(&g_bb_level, 1000);
-        render_frame(out);
-        if (out[0] < 16383 || out[0] > 16384 || out[1] < -8192 || out[1] > -8191) {
-            log_error("audio", "bubbles paused volume failed (%d, %d)", out[0], out[1]);
-            g_bb_pcm = saved_pcm;
-            g_bb_frames = saved_frames;
-            g_bb_pos = saved_pos;
-            g_bb_gain = saved_gain;
-            atomic_store(&g_bb_level, saved_level);
-            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
-            g_set.rate = saved_out_rate;
-            g_rate = saved_play;
-            g_vol = saved_vol;
-            g_jog_on = saved_jog;
-            g_ramping = saved_ramp;
-            g_fading = saved_fade;
-            g_a = saved_a;
-            g_b = saved_b;
-            g_fx = saved_fx;
-            return -1;
-        }
+        g_bb_gain = 1.0f;
         g_rate = 1.0;
+        begin_ramp(1);
+        if (player_fx_enabled(PLAYER_FX_BUBBLES) ||
+            !atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]) ||
+            !player_fx_enabled(PLAYER_FX_REVERB) || !g_paused) {
+            log_error("audio", "pause did not hold bubbles");
+            fail = 1;
+            goto bubbles_done;
+        }
+        atomic_store(&g_fx_on[PLAYER_FX_REVERB], 0);
+        render_frames(2000);
+        g_bb_pos = 0;
+        render_frame(out);
+        held_pos = g_bb_pos;
+        render_frames(100);
+        if (g_bb_gain > 0.001f || out[0] != 0 || out[1] != 0 || g_bb_pos != held_pos) {
+            log_error("audio", "bubbles stayed audible while paused");
+            fail = 1;
+            goto bubbles_done;
+        }
+        if (player_fx_toggle(PLAYER_FX_BUBBLES) != 1 ||
+            !player_fx_enabled(PLAYER_FX_BUBBLES) || !g_paused) {
+            log_error("audio", "bubbles button did not turn the loop back on while paused");
+            fail = 1;
+            goto bubbles_done;
+        }
+        render_frames(2000);
+        g_bb_pos = 0;
+        render_frame(out);
+        if (g_bb_gain < 0.999f || out[0] < 16383 || out[0] > 16384 || out[1] < -8192 ||
+            out[1] > -8191) {
+            log_error("audio", "bubbles paused wake failed (%d, %d)", out[0], out[1]);
+            fail = 1;
+            goto bubbles_done;
+        }
+        atomic_store(&g_bb_level, 500);
+        render_frames(1000);
+        g_bb_pos = 0;
+        render_frame(out);
+        if (out[0] < 8191 || out[0] > 8192 || out[1] < -4096 || out[1] > -4095) {
+            log_error("audio", "bubbles paused volume failed (%d, %d)", out[0], out[1]);
+            fail = 1;
+            goto bubbles_done;
+        }
+        atomic_store(&g_bb_level, 1000);
+        if (player_fx_toggle(PLAYER_FX_BUBBLES) != 0) {
+            log_error("audio", "bubbles second press while paused did not turn it off");
+            fail = 1;
+            goto bubbles_done;
+        }
+        render_frames(2000);
+        begin_ramp(0);
+        render_frames(2000);
+        if (g_bb_gain > 0.001f || player_fx_enabled(PLAYER_FX_BUBBLES) || g_paused) {
+            log_error("audio", "bubbles turned off while paused came back");
+            fail = 1;
+            goto bubbles_done;
+        }
+        atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 1);
+        g_bb_gain = 1.0f;
+        begin_ramp(1);
+        render_frames(2000);
+        if (g_bb_gain > 0.001f || player_fx_enabled(PLAYER_FX_BUBBLES) ||
+            !atomic_load(&g_fx_on[PLAYER_FX_BUBBLES])) {
+            log_error("audio", "bubbles did not pause");
+            fail = 1;
+            goto bubbles_done;
+        }
+        begin_ramp(0);
+        render_frames(2000);
+        g_bb_pos = 0;
+        render_frame(out);
+        if (!player_fx_enabled(PLAYER_FX_BUBBLES) || g_paused || g_bb_gain < 0.999f ||
+            out[0] < 16383 || out[0] > 16384 || out[1] < -8192 || out[1] > -8191) {
+            log_error("audio", "bubbles did not return when the song resumed (%d, %d)", out[0],
+                      out[1]);
+            fail = 1;
+            goto bubbles_done;
+        }
+        begin_ramp(1);
+        player_fx_all_off();
+        render_frames(2000);
+        begin_ramp(0);
+        render_frames(200);
+        if (player_fx_enabled(PLAYER_FX_BUBBLES) ||
+            atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]) || g_bb_gain > 0.001f) {
+            log_error("audio", "effects off did not keep bubbles off");
+            fail = 1;
+            goto bubbles_done;
+        }
+        begin_ramp(1);
+        if (atomic_load(&g_fx_hold[PLAYER_FX_BUBBLES]) ||
+            player_fx_toggle(PLAYER_FX_BUBBLES) != 1) {
+            log_error("audio", "bubbles that were off did not turn on while paused");
+            fail = 1;
+            goto bubbles_done;
+        }
+        render_frames(2000);
+        g_bb_pos = 0;
+        render_frame(out);
+        if (!g_paused || g_bb_gain < 0.999f || out[0] < 16383 || out[0] > 16384 ||
+            out[1] < -8192 || out[1] > -8191) {
+            log_error("audio", "bubbles turned on while paused were silent (%d, %d)", out[0],
+                      out[1]);
+            fail = 1;
+            goto bubbles_done;
+        }
+        begin_ramp(0);
         atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 0);
         g_bb_gain = 0.5f;
+        g_rate = 1.0;
         render_frames(882);
         if (g_bb_gain > 0.001f) {
             log_error("audio", "bubbles off ramp left gain %g", (double)g_bb_gain);
-            g_bb_pcm = saved_pcm;
-            g_bb_frames = saved_frames;
-            g_bb_pos = saved_pos;
-            g_bb_gain = saved_gain;
-            atomic_store(&g_bb_level, saved_level);
-            atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
-            g_set.rate = saved_out_rate;
-            g_rate = saved_play;
-            g_vol = saved_vol;
-            g_jog_on = saved_jog;
-            g_ramping = saved_ramp;
-            g_fading = saved_fade;
-            g_a = saved_a;
-            g_b = saved_b;
-            g_fx = saved_fx;
-            return -1;
+            fail = 1;
+            goto bubbles_done;
         }
+    bubbles_done:
         g_bb_pcm = saved_pcm;
         g_bb_frames = saved_frames;
         g_bb_pos = saved_pos;
         g_bb_gain = saved_gain;
         atomic_store(&g_bb_level, saved_level);
-        atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], saved_on);
+        for (i = 0; i < PLAYER_FX_COUNT; i++) {
+            atomic_store(&g_fx_on[i], saved_on[i]);
+        }
         g_set.rate = saved_out_rate;
+        g_set.pause_sec = saved_pause_sec;
+        g_set.resume_sec = saved_resume_sec;
         g_rate = saved_play;
         g_vol = saved_vol;
         g_jog_on = saved_jog;
         g_ramping = saved_ramp;
         g_fading = saved_fade;
+        g_paused = saved_paused;
         g_a = saved_a;
         g_b = saved_b;
         g_fx = saved_fx;
+        release_additive();
+        if (fail) {
+            return -1;
+        }
+    }
+    if (lasers_pause_self_test() != 0) {
+        return -1;
     }
     return 0;
 }
