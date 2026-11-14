@@ -22,7 +22,8 @@
  * muffled, boomy body, plus a slow pitch wobble from a moving delay.
  * Lasers adds falling zaps on top of the song. Each one is a low tone that
  * falls the whole time it is loud. They often come as a pair, then a gap.
- * The song itself is left as it is.
+ * Turning lasers off lets a zap that is already sounding finish, and a
+ * second one that is about to follow it. The song itself is left as it is.
  */
 
 #define AP_DELAY 512
@@ -153,7 +154,8 @@ struct FxState {
     float uw_q;
     Laser lz[LZ_VOICES];
     float lz_wait; /* samples until the next zap */
-    int lz_pair;   /* the next zap is the second of a pair */
+    int lz_pair;   /* the next gap is the long one before a pair */
+    int lz_follow; /* a second zap is already due, a short gap from now */
     float lz_mix;
     int lz_on;
     int lz_live;
@@ -547,6 +549,23 @@ static void lz_clear(FxState *st)
     memset(st->lz, 0, sizeof st->lz);
     st->lz_wait = 0;
     st->lz_pair = 0;
+    st->lz_follow = 0;
+}
+
+/* A zap is still sounding, or the second of a pair is already coming. */
+static int lz_sounding(const FxState *st)
+{
+    int i;
+
+    if (st->lz_follow) {
+        return 1;
+    }
+    for (i = 0; i < LZ_VOICES; i++) {
+        if (st->lz[i].amp >= 1.0e-5f) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void fx_setup(FxState *st, const FxParams *p)
@@ -1750,7 +1769,9 @@ static float lz_gap(FxState *st, float per_sec)
 }
 
 /* Adds the zaps. A level of 0, or the effect settled in the off state,
- * leaves the song sample untouched. */
+ * leaves the song sample untouched. Turning it off does not cut a zap
+ * that is already sounding: that one finishes, and so does a second zap
+ * that was about to follow it. No new zap is started. */
 static void process_lasers(FxState *st, float *left, float *right)
 {
     float per_sec;
@@ -1763,17 +1784,22 @@ static void process_lasers(FxState *st, float *left, float *right)
     float sum_r = 0;
     int i;
 
-    mod_ramp(&st->lz_mix, st->lz_on);
-    if (!st->lz_on && st->lz_mix == 0) {
-        if (st->lz_live) {
-            lz_clear(st);
-            st->lz_live = 0;
-        }
-        return;
-    }
     if (st->lz_on && !st->lz_live) {
         lz_clear(st);
         st->lz_live = 1;
+    }
+    if (!st->lz_on && !lz_sounding(st)) {
+        if (st->lz_live || st->lz_mix != 0) {
+            lz_clear(st);
+            st->lz_live = 0;
+            st->lz_mix = 0;
+        }
+        return;
+    }
+    /* Fade in when it is turned on. While it is turned off, hold the level
+     * so the zap that is already sounding does not fade out. */
+    if (st->lz_on) {
+        mod_ramp(&st->lz_mix, 1);
     }
     per_sec = st->p.lz_rate;
     if (per_sec < 0.2f) {
@@ -1816,16 +1842,23 @@ static void process_lasers(FxState *st, float *left, float *right)
     if (level > 1.0f) {
         level = 1.0f;
     }
-    if (st->lz_on) {
+    if (st->lz_on || st->lz_follow) {
         st->lz_wait -= 1.0f;
         if (st->lz_wait <= 0) {
             lz_spawn(st, low, high, length);
-            if (st->lz_pair) {
+            if (!st->lz_on) {
+                /* That was the second zap. Do not start another. */
+                st->lz_pair = 0;
+                st->lz_follow = 0;
+                st->lz_wait = 1.0f;
+            } else if (st->lz_pair) {
                 st->lz_pair = 0;
                 /* The second of the pair. Far enough out that a pitch
                  * check of the first zap does not hear it. */
+                st->lz_follow = 1;
                 st->lz_wait = (0.09f + 0.08f * lz_unit(st)) * (float)st->rate;
             } else {
+                st->lz_follow = 0;
                 if (lz_unit(st) < 0.5f) {
                     st->lz_pair = 1;
                 }
@@ -2210,14 +2243,31 @@ static int lasers_self_test(void)
     fx_defaults(&p);
     fx_setup(st, &p);
     fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
-    for (i = 0; i < 200; i++) {
+    for (i = 0; i < 1000; i++) {
         float l = 0;
         float r = 0;
 
         fx_process(st, &l, &r);
     }
     fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
-    for (i = 0; i < 8000; i++) {
+    {
+        /* The zap that was already sounding keeps going. */
+        double tail = 0;
+
+        for (i = 0; i < 8000; i++) {
+            float l = 0;
+            float r = 0;
+
+            fx_process(st, &l, &r);
+            tail += (double)l * l;
+        }
+        if (tail < 1.0e-3) {
+            log_error("fx", "turning lasers off cut a zap that was still sounding");
+            goto done;
+        }
+    }
+    /* Long enough for that zap, and a second one that was about to follow, to end. */
+    for (i = 0; i < 44100 * 3; i++) {
         float l = 0;
         float r = 0;
 
@@ -2230,9 +2280,68 @@ static int lasers_self_test(void)
 
         fx_process(st, &l, &r);
         if (l != x || r != x) {
-            log_error("fx", "lasers stayed on after it was turned off");
+            log_error("fx", "lasers stayed on after its zaps finished");
             goto done;
         }
+    }
+    /* In the gap, with nothing sounding, turning it off adds nothing. */
+    p.lz_rate = 0.2f;
+    p.lz_length = 40;
+    p.lz_level = 100;
+    fx_setup(st, &p);
+    st->lz_rng = 0x12345678u;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    for (i = 0; i < 44100 * 8 && lz_sounding(st); i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+    }
+    if (lz_sounding(st)) {
+        log_error("fx", "lasers never left a gap to turn off in");
+        goto done;
+    }
+    /* A zap that is only scheduled, not sounding and not the second of a
+     * pair, must not start after the effect is turned off. */
+    st->lz_wait = 1.0f;
+    st->lz_pair = 1;
+    st->lz_follow = 0;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
+    for (i = 0; i < 1000; i++) {
+        float x = 0.25f;
+        float l = x;
+        float r = x;
+
+        fx_process(st, &l, &r);
+        if (l != x || r != x) {
+            log_error("fx", "turning lasers off in a gap started another zap");
+            goto done;
+        }
+    }
+    fx_defaults(&p);
+    fx_setup(st, &p);
+    st->lz_rng = 0x89abcdefu;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    for (i = 0; i < 44100 * 4 && !(st->lz_follow && st->lz_wait > 400.0f); i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+    }
+    if (!st->lz_follow) {
+        log_error("fx", "lasers never lined up a second zap");
+        goto done;
+    }
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
+    for (i = 0; i < 44100 && st->lz_follow; i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+    }
+    if (st->lz_follow || !lz_sounding(st)) {
+        log_error("fx", "the second zap did not finish starting after lasers turned off");
+        goto done;
     }
     rc = 0;
 done:
