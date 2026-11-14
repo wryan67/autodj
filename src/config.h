@@ -37,6 +37,9 @@ enum {
     KEYID_RV_UP,
     KEYID_RV_DOWN,
     KEYID_UNDERWATER,
+    KEYID_LASERS,
+    KEYID_LZ_UP,
+    KEYID_LZ_DOWN,
     KEYID_COUNT
 };
 
@@ -88,6 +91,9 @@ typedef struct Config {
     int key_rv_up;
     int key_rv_down;
     int key_underwater;
+    int key_lasers;
+    int key_lz_up;
+    int key_lz_down;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -111,6 +117,9 @@ typedef struct Config {
     char key_rv_up_name[64];
     char key_rv_down_name[64];
     char key_underwater_name[64];
+    char key_lasers_name[64];
+    char key_lz_up_name[64];
+    char key_lz_down_name[64];
     /* Terminal key for the same action. Empty means unbound. */
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
@@ -135,6 +144,9 @@ typedef struct Config {
     char kbd_rv_up[AUTODJ_KBD_LEN];
     char kbd_rv_down[AUTODJ_KBD_LEN];
     char kbd_underwater[AUTODJ_KBD_LEN];
+    char kbd_lasers[AUTODJ_KBD_LEN];
+    char kbd_lz_up[AUTODJ_KBD_LEN];
+    char kbd_lz_down[AUTODJ_KBD_LEN];
     /* Bit i is set when the file named that keyboard action, even if blank. */
     unsigned kbd_line;
     /* MIDI control for each action, by KEYID. Empty and -1 mean unbound. */
@@ -171,6 +183,9 @@ int config_load(const char *path, Config *cfg);
 /* Write volume (percent, 0-100) into the [Main] section of path.
  * Every other line is kept. Returns 0 on success. */
 int config_save_volume(const char *path, int percent);
+/* Write the laser volume (percent, 0-100) into level in [Lasers].
+ * Every other line is kept. Returns 0 on success. */
+int config_save_lasers_level(const char *path, int percent);
 
 /* Text the config editor shows. Bool and number fields stay text so a bad
  * value from the file can be corrected instead of silently replaced. */
@@ -210,6 +225,9 @@ typedef struct ConfigEdit {
     char key_rv_up[64];
     char key_rv_down[64];
     char key_underwater[64];
+    char key_lasers[64];
+    char key_lz_up[64];
+    char key_lz_down[64];
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
     char kbd_prev[AUTODJ_KBD_LEN];
@@ -233,6 +251,13 @@ typedef struct ConfigEdit {
     char kbd_rv_up[AUTODJ_KBD_LEN];
     char kbd_rv_down[AUTODJ_KBD_LEN];
     char kbd_underwater[AUTODJ_KBD_LEN];
+    char kbd_lasers[AUTODJ_KBD_LEN];
+    char kbd_lz_up[AUTODJ_KBD_LEN];
+    char kbd_lz_down[AUTODJ_KBD_LEN];
+    /* Bit i is set when the file named the current keyboard action.
+     * Defaults are filled first, so a non-empty slot is not enough to
+     * tell an old name to stay out. */
+    unsigned kbd_new;
     char midi[KEYID_COUNT][AUTODJ_MIDI_LEN];
     char rv_decay[32];
     char rv_bw[32];
@@ -269,6 +294,11 @@ typedef struct ConfigEdit {
     char uw_wobble[32];
     char uw_mix[32];
     char uw_boost[32];
+    char lz_rate[32];
+    char lz_low[32];
+    char lz_high[32];
+    char lz_length[32];
+    char lz_level[32];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */

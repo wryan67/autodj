@@ -56,6 +56,7 @@ enum {
     PLAYER_FX_CHORUS = 4,
     PLAYER_FX_FLANGER = 5,
     PLAYER_FX_UNDERWATER = 6,
+    PLAYER_FX_LASERS = 7,
     PLAYER_FX_COUNT
 };
 
@@ -72,6 +73,11 @@ void player_fx_all_off(void);
  * at 50. direction is +1 or -1. A change is heard at once, smoothed. */
 void player_reverb_step(int direction, int percent);
 int player_reverb_percent(void);
+/* The laser volume, 0..100, which is level in [Lasers]. player_set_fx
+ * starts it at the configured level (default 30). direction is +1 or -1.
+ * A change is heard at once. */
+void player_lasers_step(int direction, int percent);
+int player_lasers_percent(void);
 
 int player_self_test(void);
 

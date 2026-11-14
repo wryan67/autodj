@@ -1,8 +1,8 @@
 #ifndef AUTODJ_FX_H
 #define AUTODJ_FX_H
 
-/* Reverb, chipmunk (a pitch shifter), autopan, phaser, chorus, flanger, and
- * underwater.
+/* Reverb, chipmunk (a pitch shifter), autopan, phaser, chorus, flanger,
+ * underwater, and lasers.
  *
  * The knob names and the default numbers are the ones Mixxx shows for its
  * built-in Reverb, Pitch Shift, and Autopan. The processing here is separate.
@@ -77,6 +77,15 @@ typedef struct FxParams {
     float uw_mix;      /* 0..100, default 100. Percent underwater sound. */
     float uw_boost;    /* 0..100, default 20. Percent louder, to make up
                         * for the highs the filter takes out. */
+    int lasers_on;
+    float lz_rate;   /* 0.2..20, default 4. Average zaps per second. */
+    float lz_low;    /* 80..4000 Hz, default 280. Lowest zap. */
+    float lz_high;   /* 80..6000 Hz, default 700, and at least lz_low.
+                      * Highest zap. */
+    float lz_length; /* 30..400 ms, default 260. How long one zap lasts. */
+    float lz_level;  /* 0..100, default 30. How loud the zaps are. The
+                      * song stays; 0 adds nothing. The laser knob moves
+                      * this while a song plays. */
 } FxParams;
 
 typedef struct FxState FxState;
@@ -91,8 +100,10 @@ void fx_setup(FxState *st, const FxParams *p);
 /* How much reverb is added, 0..1. The change is smoothed, so it can move
  * while a song plays. */
 void fx_set_send(FxState *st, float send);
+/* Laser volume, 0..100. Heard on the next sample. */
+void fx_set_lasers(FxState *st, float level);
 void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
-               int chorus, int flanger, int underwater);
+               int chorus, int flanger, int underwater, int lasers);
 /* Length of one beat in seconds at the current playback speed, or 0 when
  * the tempo is unknown. The autopan period counts beats when this is set.
  */

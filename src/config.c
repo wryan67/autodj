@@ -240,6 +240,12 @@ static char *kbd_cfg(Config *cfg, int id)
         return cfg->kbd_rv_down;
     case KEYID_UNDERWATER:
         return cfg->kbd_underwater;
+    case KEYID_LASERS:
+        return cfg->kbd_lasers;
+    case KEYID_LZ_UP:
+        return cfg->kbd_lz_up;
+    case KEYID_LZ_DOWN:
+        return cfg->kbd_lz_down;
     default:
         return NULL;
     }
@@ -294,6 +300,12 @@ static char *kbd_edit(ConfigEdit *edit, int id)
         return edit->kbd_rv_down;
     case KEYID_UNDERWATER:
         return edit->kbd_underwater;
+    case KEYID_LASERS:
+        return edit->kbd_lasers;
+    case KEYID_LZ_UP:
+        return edit->kbd_lz_up;
+    case KEYID_LZ_DOWN:
+        return edit->kbd_lz_down;
     default:
         return NULL;
     }
@@ -348,6 +360,12 @@ static char *key_edit(ConfigEdit *edit, int id)
         return edit->key_rv_down;
     case KEYID_UNDERWATER:
         return edit->key_underwater;
+    case KEYID_LASERS:
+        return edit->key_lasers;
+    case KEYID_LZ_UP:
+        return edit->key_lz_up;
+    case KEYID_LZ_DOWN:
+        return edit->key_lz_down;
     default:
         return NULL;
     }
@@ -382,7 +400,7 @@ static const char *kbd_default(int id)
     static const char *vals[KEYID_COUNT] = {
         "Space", "Right", "Left", "1", "2", "3",
         "Up", "Down", "Enter", "q", "w", "e", "r", "t", "y", "Tab",
-        "=", "-", ".", ",", "]", "[", "u"
+        "=", "-", ".", ",", "]", "[", "u", "i", "o", "p"
     };
 
     if (id < 0 || id >= KEYID_COUNT) {
@@ -427,6 +445,12 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         if (strip_midi(action, base, sizeof base) && (id = keys_id(base)) >= 0) {
             char canon[AUTODJ_MIDI_LEN];
 
+            if ((eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
+                 eq_ci(base, "bubbles_down")) &&
+                cfg->midi[id][0]) {
+                /* A lasers line wins over the old bubbles name. */
+                return;
+            }
             cfg->midi[id][0] = '\0';
             cfg->midi_code[id] = -1;
             if (!keyname[0]) {
@@ -453,6 +477,12 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
             if (!slot) {
                 return;
             }
+            if ((eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
+                 eq_ci(base, "bubbles_down")) &&
+                (slot[0] || (cfg->kbd_line & (1u << id)))) {
+                /* A lasers line wins over the old bubbles name. */
+                return;
+            }
             /* A line that is present, even a blank or unknown one, blocks the default. */
             cfg->kbd_line |= 1u << id;
             if (!keyname[0]) {
@@ -469,6 +499,12 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
     }
     if (eq_ci(action, "pitch_shift") && cfg->key_pitch >= 0) {
         /* A chipmunk line wins over the old pitch_shift name. */
+        return;
+    }
+    if ((eq_ci(action, "bubbles") && cfg->key_lasers >= 0) ||
+        (eq_ci(action, "bubbles_up") && cfg->key_lz_up >= 0) ||
+        (eq_ci(action, "bubbles_down") && cfg->key_lz_down >= 0)) {
+        /* A lasers line wins over the old bubbles name. */
         return;
     }
     if (eq_ci(action, "pause_resume")) {
@@ -564,6 +600,19 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         slot = &cfg->key_underwater;
         name = cfg->key_underwater_name;
         name_n = sizeof cfg->key_underwater_name;
+    } else if (eq_ci(action, "lasers") || eq_ci(action, "bubbles")) {
+        /* bubbles is the old name of this button. */
+        slot = &cfg->key_lasers;
+        name = cfg->key_lasers_name;
+        name_n = sizeof cfg->key_lasers_name;
+    } else if (eq_ci(action, "lasers_up") || eq_ci(action, "bubbles_up")) {
+        slot = &cfg->key_lz_up;
+        name = cfg->key_lz_up_name;
+        name_n = sizeof cfg->key_lz_up_name;
+    } else if (eq_ci(action, "lasers_down") || eq_ci(action, "bubbles_down")) {
+        slot = &cfg->key_lz_down;
+        name = cfg->key_lz_down_name;
+        name_n = sizeof cfg->key_lz_down_name;
     } else {
         log_warn("autodj", "unknown key action %s", action);
         return;
@@ -591,7 +640,8 @@ static void bind_kbd_defaults(Config *cfg)
         "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
         "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
-        "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd"
+        "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd", "lasers_kbd",
+        "lasers_up_kbd", "lasers_down_kbd"
     };
     int id;
 
@@ -605,7 +655,7 @@ static void bind_kbd_defaults(Config *cfg)
     }
 }
 
-enum { FX_SECTIONS = 7 };
+enum { FX_SECTIONS = 8 };
 
 static int fx_section(const char *section)
 {
@@ -632,16 +682,21 @@ static int fx_section(const char *section)
     if (eq_ci(section, "Underwater")) {
         return 6;
     }
+    /* Bubbles is the old name of the lasers section. */
+    if (eq_ci(section, "Lasers") || eq_ci(section, "Bubbles")) {
+        return 7;
+    }
     return -1;
 }
 
 static const char *fx_what(int section)
 {
     static const char *names[] = {
-        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger", "underwater"
+        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger", "underwater",
+        "lasers"
     };
 
-    if (section < 0 || section > 6) {
+    if (section < 0 || section >= FX_SECTIONS) {
         return "effect";
     }
     return names[section];
@@ -876,6 +931,36 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
         } else {
             cfg->fx.uw_boost = (float)v;
         }
+    } else if (section == 7 && eq_ci(key, "rate")) {
+        if (parse_real(val, 0.2, 20, &v) != 0) {
+            log_warn("autodj", "lasers rate must be from 0.2 to 20, got %s", val);
+        } else {
+            cfg->fx.lz_rate = (float)v;
+        }
+    } else if (section == 7 && eq_ci(key, "low")) {
+        if (parse_real(val, 80, 4000, &v) != 0) {
+            log_warn("autodj", "lasers low must be from 80 to 4000 Hz, got %s", val);
+        } else {
+            cfg->fx.lz_low = (float)v;
+        }
+    } else if (section == 7 && eq_ci(key, "high")) {
+        if (parse_real(val, 80, 6000, &v) != 0) {
+            log_warn("autodj", "lasers high must be from 80 to 6000 Hz, got %s", val);
+        } else {
+            cfg->fx.lz_high = (float)v;
+        }
+    } else if (section == 7 && eq_ci(key, "length")) {
+        if (parse_real(val, 30, 400, &v) != 0) {
+            log_warn("autodj", "lasers length must be from 30 to 400 ms, got %s", val);
+        } else {
+            cfg->fx.lz_length = (float)v;
+        }
+    } else if (section == 7 && eq_ci(key, "level")) {
+        if (parse_real(val, 0, 100, &v) != 0) {
+            log_warn("autodj", "lasers level must be from 0 to 100, got %s", val);
+        } else {
+            cfg->fx.lz_level = (float)v;
+        }
     } else {
         log_warn("autodj", "unknown %s setting %s", what, key);
     }
@@ -1014,6 +1099,9 @@ int config_load(const char *path, Config *cfg)
     cfg->key_rv_up = -1;
     cfg->key_rv_down = -1;
     cfg->key_underwater = -1;
+    cfg->key_lasers = -1;
+    cfg->key_lz_up = -1;
+    cfg->key_lz_down = -1;
     {
         int id;
 
@@ -1088,7 +1176,8 @@ int config_load(const char *path, Config *cfg)
             &cfg->key_pitch, &cfg->key_autopan, &cfg->key_phaser,
             &cfg->key_chorus, &cfg->key_flanger, &cfg->key_effects_off,
             &cfg->key_vol_up, &cfg->key_vol_down, &cfg->key_jog_up, &cfg->key_jog_down,
-            &cfg->key_rv_up, &cfg->key_rv_down, &cfg->key_underwater
+            &cfg->key_rv_up, &cfg->key_rv_down, &cfg->key_underwater,
+            &cfg->key_lasers
         };
         int i;
 
@@ -1105,6 +1194,7 @@ int config_load(const char *path, Config *cfg)
     cfg->fx.chorus_on = 0;
     cfg->fx.flanger_on = 0;
     cfg->fx.underwater_on = 0;
+    cfg->fx.lasers_on = 0;
     if (cfg->fx.rv_send_min >= cfg->fx.rv_send_max) {
         FxParams def;
 
@@ -1144,6 +1234,16 @@ int config_load(const char *path, Config *cfg)
                  (double)def.fl_delay, (double)def.fl_depth);
         cfg->fx.fl_delay = def.fl_delay;
         cfg->fx.fl_depth = def.fl_depth;
+    }
+    if (cfg->fx.lz_low > cfg->fx.lz_high) {
+        FxParams def;
+
+        fx_defaults(&def);
+        log_warn("autodj", "lasers low (%g) must be at most high (%g), using %g and %g",
+                 (double)cfg->fx.lz_low, (double)cfg->fx.lz_high, (double)def.lz_low,
+                 (double)def.lz_high);
+        cfg->fx.lz_low = def.lz_low;
+        cfg->fx.lz_high = def.lz_high;
     }
     return 0;
 }
@@ -1404,6 +1504,20 @@ int config_save_volume(const char *path, int percent)
     return save_one_value(path, "Main", NULL, "volume", value);
 }
 
+int config_save_lasers_level(const char *path, int percent)
+{
+    char value[16];
+
+    if (percent < 0) {
+        percent = 0;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+    snprintf(value, sizeof value, "%d", percent);
+    return save_one_value(path, "Lasers", NULL, "level", value);
+}
+
 static void set_err(char *err, size_t err_n, const char *fmt, ...)
 {
     va_list ap;
@@ -1495,6 +1609,11 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->uw_wobble, sizeof edit->uw_wobble, "1.5");
     snprintf(edit->uw_mix, sizeof edit->uw_mix, "100");
     snprintf(edit->uw_boost, sizeof edit->uw_boost, "20");
+    snprintf(edit->lz_rate, sizeof edit->lz_rate, "4");
+    snprintf(edit->lz_low, sizeof edit->lz_low, "280");
+    snprintf(edit->lz_high, sizeof edit->lz_high, "700");
+    snprintf(edit->lz_length, sizeof edit->lz_length, "260");
+    snprintf(edit->lz_level, sizeof edit->lz_level, "30");
 }
 
 static void copy_raw(char *dest, size_t n, const char *val)
@@ -1545,6 +1664,11 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
         int id;
 
         if (strip_midi(key, base, sizeof base) && (id = keys_id(base)) >= 0) {
+            if ((eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
+                 eq_ci(base, "bubbles_down")) &&
+                edit->midi[id][0]) {
+                return;
+            }
             if (midi_canon(val, edit->midi[id], sizeof edit->midi[id]) != 0) {
                 copy_raw(edit->midi[id], sizeof edit->midi[id], val);
             }
@@ -1552,10 +1676,21 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
         }
         if (strip_kbd(key, base, sizeof base) && (id = keys_id(base)) >= 0) {
             char *slot = kbd_edit(edit, id);
+            int old = eq_ci(base, "bubbles") || eq_ci(base, "bubbles_up") ||
+                      eq_ci(base, "bubbles_down");
 
-            if (slot) {
-                copy_kbd(slot, AUTODJ_KBD_LEN, val);
+            if (!slot) {
+                return;
             }
+            /* Defaults already fill the slot. kbd_new records that the
+             * current name was in the file, so a later old name stays out. */
+            if (old && (edit->kbd_new & (1u << id))) {
+                return;
+            }
+            if (!old) {
+                edit->kbd_new |= 1u << id;
+            }
+            copy_kbd(slot, AUTODJ_KBD_LEN, val);
             return;
         }
         if (eq_ci(key, "pause_resume")) {
@@ -1607,6 +1742,19 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_rv_down, sizeof edit->key_rv_down, val);
         } else if (eq_ci(key, "underwater")) {
             copy_raw(edit->key_underwater, sizeof edit->key_underwater, val);
+        } else if (eq_ci(key, "lasers")) {
+            copy_raw(edit->key_lasers, sizeof edit->key_lasers, val);
+        } else if (eq_ci(key, "bubbles") && !edit->key_lasers[0]) {
+            /* The old name of the lasers button. */
+            copy_raw(edit->key_lasers, sizeof edit->key_lasers, val);
+        } else if (eq_ci(key, "lasers_up")) {
+            copy_raw(edit->key_lz_up, sizeof edit->key_lz_up, val);
+        } else if (eq_ci(key, "bubbles_up") && !edit->key_lz_up[0]) {
+            copy_raw(edit->key_lz_up, sizeof edit->key_lz_up, val);
+        } else if (eq_ci(key, "lasers_down")) {
+            copy_raw(edit->key_lz_down, sizeof edit->key_lz_down, val);
+        } else if (eq_ci(key, "bubbles_down") && !edit->key_lz_down[0]) {
+            copy_raw(edit->key_lz_down, sizeof edit->key_lz_down, val);
         }
         return;
     }
@@ -1696,6 +1844,18 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
                 copy_raw(edit->uw_mix, sizeof edit->uw_mix, val);
             } else if (eq_ci(key, "boost")) {
                 copy_raw(edit->uw_boost, sizeof edit->uw_boost, val);
+            }
+        } else if (fx == 7) {
+            if (eq_ci(key, "rate")) {
+                copy_raw(edit->lz_rate, sizeof edit->lz_rate, val);
+            } else if (eq_ci(key, "low")) {
+                copy_raw(edit->lz_low, sizeof edit->lz_low, val);
+            } else if (eq_ci(key, "high")) {
+                copy_raw(edit->lz_high, sizeof edit->lz_high, val);
+            } else if (eq_ci(key, "length")) {
+                copy_raw(edit->lz_length, sizeof edit->lz_length, val);
+            } else if (eq_ci(key, "level")) {
+                copy_raw(edit->lz_level, sizeof edit->lz_level, val);
             }
         }
     }
@@ -2012,6 +2172,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_rv_up);
     trim(in.key_rv_down);
     trim(in.key_underwater);
+    trim(in.key_lasers);
     for (i = 0; i < DIAL_SLOTS; i++) {
         trim(in.dial_mode[i]);
     }
@@ -2058,6 +2219,11 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.uw_wobble);
     trim(in.uw_mix);
     trim(in.uw_boost);
+    trim(in.lz_rate);
+    trim(in.lz_low);
+    trim(in.lz_high);
+    trim(in.lz_length);
+    trim(in.lz_level);
 
     memset(&out, 0, sizeof out);
     out.key_pause = -1;
@@ -2083,6 +2249,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_rv_up = -1;
     out.key_rv_down = -1;
     out.key_underwater = -1;
+    out.key_lasers = -1;
+    out.key_lz_up = -1;
+    out.key_lz_down = -1;
     out.dial_default = -1;
     fx_defaults(&out.fx);
     out.volume_set = 1;
@@ -2216,6 +2385,15 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_UNDERWATER] = take_key(err, err_n, in.key_underwater, "Underwater",
                                         &out.key_underwater, out.key_underwater_name,
                                         sizeof out.key_underwater_name) == 0;
+    key_ok[KEYID_LASERS] = take_key(err, err_n, in.key_lasers, "Lasers",
+                                     &out.key_lasers, out.key_lasers_name,
+                                     sizeof out.key_lasers_name) == 0;
+    key_ok[KEYID_LZ_UP] = take_key(err, err_n, in.key_lz_up, "Lasers up",
+                                   &out.key_lz_up, out.key_lz_up_name,
+                                   sizeof out.key_lz_up_name) == 0;
+    key_ok[KEYID_LZ_DOWN] = take_key(err, err_n, in.key_lz_down, "Lasers down",
+                                     &out.key_lz_down, out.key_lz_down_name,
+                                     sizeof out.key_lz_down_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
@@ -2239,6 +2417,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     keys[KEYID_RV_UP] = in.key_rv_up;
     keys[KEYID_RV_DOWN] = in.key_rv_down;
     keys[KEYID_UNDERWATER] = in.key_underwater;
+    keys[KEYID_LASERS] = in.key_lasers;
+    keys[KEYID_LZ_UP] = in.key_lz_up;
+    keys[KEYID_LZ_DOWN] = in.key_lz_down;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
@@ -2262,6 +2443,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_RV_UP] = "reverb up";
     labels[KEYID_RV_DOWN] = "reverb down";
     labels[KEYID_UNDERWATER] = "underwater";
+    labels[KEYID_LASERS] = "lasers";
+    labels[KEYID_LZ_UP] = "lasers up";
+    labels[KEYID_LZ_DOWN] = "lasers down";
     kbd_ok[KEYID_PAUSE] = take_kbd(err, err_n, in.kbd_pause, "Pause/resume",
                                    out.kbd_pause, sizeof out.kbd_pause) == 0;
     kbd_ok[KEYID_SKIP] = take_kbd(err, err_n, in.kbd_skip, "Skip",
@@ -2308,6 +2492,12 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
                                      out.kbd_rv_down, sizeof out.kbd_rv_down) == 0;
     kbd_ok[KEYID_UNDERWATER] = take_kbd(err, err_n, in.kbd_underwater, "Underwater",
                                         out.kbd_underwater, sizeof out.kbd_underwater) == 0;
+    kbd_ok[KEYID_LASERS] = take_kbd(err, err_n, in.kbd_lasers, "Lasers",
+                                     out.kbd_lasers, sizeof out.kbd_lasers) == 0;
+    kbd_ok[KEYID_LZ_UP] = take_kbd(err, err_n, in.kbd_lz_up, "Lasers up",
+                                   out.kbd_lz_up, sizeof out.kbd_lz_up) == 0;
+    kbd_ok[KEYID_LZ_DOWN] = take_kbd(err, err_n, in.kbd_lz_down, "Lasers down",
+                                     out.kbd_lz_down, sizeof out.kbd_lz_down) == 0;
     for (i = 0; i < KEYID_COUNT; i++) {
         char what[32];
 
@@ -2478,6 +2668,33 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     if (in.uw_boost[0] && take_real(err, err_n, in.uw_boost, 0, 100, "Underwater boost",
                                     &out.fx.uw_boost) != 0) {
         failed = 1;
+    }
+    if (in.lz_rate[0] && take_real(err, err_n, in.lz_rate, 0.2, 20, "Lasers rate",
+                                   &out.fx.lz_rate) != 0) {
+        failed = 1;
+    }
+    if (in.lz_length[0] && take_real(err, err_n, in.lz_length, 30, 400, "Lasers length",
+                                     &out.fx.lz_length) != 0) {
+        failed = 1;
+    }
+    if (in.lz_level[0] && take_real(err, err_n, in.lz_level, 0, 100, "Lasers level",
+                                    &out.fx.lz_level) != 0) {
+        failed = 1;
+    }
+    {
+        int low_ok = !in.lz_low[0] ||
+                     take_real(err, err_n, in.lz_low, 80, 4000, "Lasers low",
+                               &out.fx.lz_low) == 0;
+        int high_ok = !in.lz_high[0] ||
+                      take_real(err, err_n, in.lz_high, 80, 6000, "Lasers high",
+                                &out.fx.lz_high) == 0;
+
+        if (!low_ok || !high_ok) {
+            failed = 1;
+        } else if (out.fx.lz_low > out.fx.lz_high) {
+            add_err(err, err_n, "Lasers low must be at most high.");
+            failed = 1;
+        }
     }
     for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
@@ -2688,6 +2905,15 @@ static int keys_id(const char *key)
     if (eq_ci(key, "underwater")) {
         return KEYID_UNDERWATER;
     }
+    if (eq_ci(key, "lasers") || eq_ci(key, "bubbles")) {
+        return KEYID_LASERS;
+    }
+    if (eq_ci(key, "lasers_up") || eq_ci(key, "bubbles_up")) {
+        return KEYID_LZ_UP;
+    }
+    if (eq_ci(key, "lasers_down") || eq_ci(key, "bubbles_down")) {
+        return KEYID_LZ_DOWN;
+    }
     return -1;
 }
 
@@ -2729,10 +2955,11 @@ static const char *const g_fx_keys[FX_SECTIONS][7] = {
     {"period", "low", "high", "stages", "feedback", "mix", "boost"},
     {"period", "delay", "depth", "voices", "mix"},
     {"period", "delay", "depth", "feedback", "mix"},
-    {"cutoff", "resonance", "period", "wobble", "mix", "boost"}
+    {"cutoff", "resonance", "period", "wobble", "mix", "boost"},
+    {"rate", "low", "high", "length", "level"}
 };
 
-static const int g_fx_key_count[FX_SECTIONS] = {5, 4, 3, 7, 5, 5, 6};
+static const int g_fx_key_count[FX_SECTIONS] = {5, 4, 3, 7, 5, 5, 6, 5};
 
 static int fx_key_id(int section, const char *key)
 {
@@ -2846,6 +3073,13 @@ static void fx_value(const Config *cfg, int section, int id, char *dest, size_t 
                                fx->uw_wobble, fx->uw_mix, fx->uw_boost};
 
         fmt_float(dest, n, vals[id >= 0 && id < 6 ? id : 0]);
+        return;
+    }
+    if (section == 7) {
+        const float vals[5] = {fx->lz_rate, fx->lz_low, fx->lz_high, fx->lz_length,
+                               fx->lz_level};
+
+        fmt_float(dest, n, vals[id >= 0 && id < 5 ? id : 0]);
         return;
     }
     if (section == 5) {
@@ -3025,6 +3259,15 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
         break;
     case KEYID_UNDERWATER:
         s = cfg->key_underwater_name;
+        break;
+    case KEYID_LASERS:
+        s = cfg->key_lasers_name;
+        break;
+    case KEYID_LZ_UP:
+        s = cfg->key_lz_up_name;
+        break;
+    case KEYID_LZ_DOWN:
+        s = cfg->key_lz_down_name;
         break;
     default:
         break;
@@ -3243,7 +3486,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "rewind_1_5", "dial_forward", "dial_back", "dial_mode",
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
         "effects_off", "volume_up", "volume_down", "jog_up", "jog_down",
-        "reverb_up", "reverb_down", "underwater"
+        "reverb_up", "reverb_down", "underwater", "lasers",
+        "lasers_up", "lasers_down"
     };
     static const char *kbd_names[KEYID_COUNT] = {
         "pause_resume_kbd", "skip_kbd", "previous_kbd", "rewind_0_5_kbd",
@@ -3251,7 +3495,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
         "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
-        "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd"
+        "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd", "lasers_kbd",
+        "lasers_up_kbd", "lasers_down_kbd"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -3333,17 +3578,22 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             in_jog = eq_ci(section, "Jog");
             in_fx = fx_section(section);
             in_old_fx = 0;
-            /* Pitch Shift is written again as Chipmunk, or dropped if both are there. */
-            if (!jog && in_fx == 1 && !eq_ci(section, "Chipmunk")) {
+            /* Pitch Shift is written again as Chipmunk, or dropped if both are there.
+             * Bubbles is written again as Lasers, the same way. */
+            if (!jog && ((in_fx == 1 && !eq_ci(section, "Chipmunk")) ||
+                         (in_fx == 7 && !eq_ci(section, "Lasers")))) {
                 struct CfgLine *ck_header;
                 struct CfgLine *ck_last;
                 char *repl;
+                const char *neu = in_fx == 1 ? "Chipmunk" : "Lasers";
+                char header[32];
 
-                find_section(head, "Chipmunk", &ck_header, &ck_last);
+                find_section(head, neu, &ck_header, &ck_last);
                 if (ck_header) {
                     in_old_fx = 1;
                 } else {
-                    repl = strdup("[Chipmunk]\n");
+                    snprintf(header, sizeof header, "[%s]\n", neu);
+                    repl = strdup(header);
                     if (!repl) {
                         set_err(err, err_n, "out of memory updating %s", path);
                         goto done;
@@ -3417,7 +3667,13 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
 
             /* The old names are written again under the new ones. */
             if (in_keys && (eq_ci(key, "jog_forward") || eq_ci(key, "jog_back") ||
-                            eq_ci(key, "pitch_shift"))) {
+                            eq_ci(key, "pitch_shift") ||
+                            eq_ci(key, "bubbles") || eq_ci(key, "bubbles_up") ||
+                            eq_ci(key, "bubbles_down") ||
+                            eq_ci(key, "bubbles_kbd") || eq_ci(key, "bubbles_up_kbd") ||
+                            eq_ci(key, "bubbles_down_kbd") ||
+                            eq_ci(key, "bubbles_midi") || eq_ci(key, "bubbles_up_midi") ||
+                            eq_ci(key, "bubbles_down_midi"))) {
                 unlink_line(&head, prev, line);
                 line = next;
                 continue;
@@ -3563,7 +3819,8 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
 
     if (!jog) {
         static const char *fx_names[] = {
-            "Reverb", "Chipmunk", "Autopan", "Phaser", "Chorus", "Flanger", "Underwater"
+            "Reverb", "Chipmunk", "Autopan", "Phaser", "Chorus", "Flanger", "Underwater",
+            "Lasers"
         };
         int fx;
 
@@ -3788,6 +4045,9 @@ static int edit_self_test(void)
         "reverb_up_kbd=\n"
         "reverb_down_kbd=\n"
         "underwater_kbd=\n"
+        "lasers_kbd=\n"
+        "lasers_up_kbd=\n"
+        "lasers_down_kbd=\n"
         "volume_up_midi=CC_3_UP\n"
         "volume_down_midi=CC_3_DOWN\n"
         "[Reverb]\n"
@@ -3831,7 +4091,13 @@ static int edit_self_test(void)
         "period=0.5\n"
         "wobble=1.5\n"
         "mix=100\n"
-        "boost=20\n";
+        "boost=20\n"
+        "[Lasers]\n"
+        "rate=4\n"
+        "low=280\n"
+        "high=700\n"
+        "length=260\n"
+        "level=30\n";
     Config cfg;
     ConfigEdit edit;
     char err[512];
@@ -3959,7 +4225,12 @@ static int edit_self_test(void)
                     strcmp(edit.kbd_phaser, "r") != 0 ||
                     strcmp(edit.kbd_chorus, "t") != 0 ||
                     strcmp(edit.kbd_flanger, "y") != 0 ||
-                    strcmp(edit.kbd_effects_off, "Tab") != 0)) {
+                    strcmp(edit.kbd_effects_off, "Tab") != 0 ||
+                    strcmp(edit.kbd_lasers, "i") != 0 ||
+                    strcmp(edit.kbd_lz_up, "o") != 0 ||
+                    strcmp(edit.kbd_lz_down, "p") != 0 ||
+                    strcmp(edit.lz_rate, "4") != 0 ||
+                    strcmp(edit.lz_level, "30") != 0)) {
         log_error("autodj", "config editor test rejected a missing file");
         rc = -1;
     }
@@ -3989,7 +4260,9 @@ static int edit_self_test(void)
                     cfg.fx.ch_delay != 20 || cfg.fx.ch_voices != 2 ||
                     cfg.fx.fl_delay != 1 || cfg.fx.fl_depth != 0.5f ||
                     cfg.key_chorus != -1 || cfg.key_flanger != -1 ||
-                    cfg.key_effects_off != -1)) {
+                    cfg.key_effects_off != -1 || cfg.key_lasers != -1 ||
+                    cfg.key_lz_up != -1 || cfg.key_lz_down != -1 ||
+                    cfg.fx.lz_rate != 4 || cfg.fx.lz_level != 30)) {
         log_error("autodj", "config editor test rejected a valid form: %s", err);
         rc = -1;
     }
@@ -4152,6 +4425,8 @@ static int kbd_config_self_test(void)
         remove(path);
         return -1;
     }
+    /* p is the lasers-down default, so this form gives that key to pause. */
+    edit.kbd_lz_down[0] = '\0';
     snprintf(edit.kbd_pause, sizeof edit.kbd_pause, "p");
     snprintf(edit.kbd_skip, sizeof edit.kbd_skip, "p");
     if (config_validate_edit(&edit, &cfg, err, sizeof err) == 0 ||
@@ -4375,7 +4650,13 @@ int config_self_test(void)
                cfg.fx.ch_delay != 20 || cfg.fx.ch_voices != 2 || cfg.fx.ch_depth != 5 ||
                cfg.fx.fl_delay != 1 || cfg.fx.fl_depth != 0.5f || cfg.fx.fl_feedback != 0.5f ||
                cfg.key_chorus != -1 || cfg.key_flanger != -1 ||
-               cfg.key_effects_off != -1 ||
+               cfg.key_effects_off != -1 || cfg.key_lasers != -1 ||
+               cfg.key_lz_up != -1 || cfg.key_lz_down != -1 ||
+               cfg.fx.lasers_on != 0 || cfg.fx.lz_rate != 4.0f ||
+               cfg.fx.lz_low != 280.0f || cfg.fx.lz_high != 700.0f ||
+               cfg.fx.lz_length != 260.0f || cfg.fx.lz_level != 30.0f ||
+               strcmp(cfg.kbd_lasers, "i") != 0 ||
+               strcmp(cfg.kbd_lz_up, "o") != 0 || strcmp(cfg.kbd_lz_down, "p") != 0 ||
                strcmp(cfg.kbd_pause, "Space") != 0 || strcmp(cfg.kbd_skip, "Right") != 0 ||
                strcmp(cfg.kbd_prev, "Left") != 0 || strcmp(cfg.kbd_rew05, "1") != 0 ||
                strcmp(cfg.kbd_pitch, "w") != 0 || strcmp(cfg.kbd_effects_off, "Tab") != 0 ||
@@ -4404,6 +4685,103 @@ int config_self_test(void)
                cfg.fx.reverb_on != 0 || cfg.fx.autopan_on != 0) {
         log_error("autodj", "config test changed other lines or turned an effect on");
         rc = -1;
+    } else if (config_save_lasers_level(path, 22) != 0 ||
+               file_count(path, "[Lasers]\n") != 1 ||
+               file_count(path, "level=22\n") != 1 ||
+               file_count(path, "volume=0\n") != 1 ||
+               config_save_lasers_level(path, 30) != 0 ||
+               file_count(path, "level=") != 1 ||
+               file_count(path, "level=30\n") != 1 ||
+               file_count(path, "volume=0\n") != 1) {
+        log_error("autodj", "config test did not store laser volume");
+        rc = -1;
+    } else {
+        char err[512];
+        char got[8192];
+
+        err[0] = '\0';
+        got[0] = '\0';
+        /* Old bubbles names still load. A lasers line wins, and a later
+         * [Bubbles] section still supplies the numbers. Saving writes
+         * only the new names. */
+        fp = fopen(path, "w");
+        if (!fp) {
+            log_error("autodj", "config test could not rewrite the temp file");
+            rc = -1;
+        } else {
+            fputs("[Main]\n"
+                  "Folder=/tmp/music folder\n"
+                  "[Keys]\n"
+                  "lasers=KEY_B\n"
+                  "bubbles=KEY_A\n"
+                  "bubbles_up=KEY_A\n"
+                  "lasers_up=KEY_B\n"
+                  "bubbles_down=KEY_A\n"
+                  "bubbles_kbd=z\n"
+                  "lasers_kbd=x\n"
+                  "bubbles_up_kbd=v\n"
+                  "bubbles_down_kbd=c\n"
+                  "lasers_midi=NOTE_42\n"
+                  "bubbles_midi=NOTE_9\n"
+                  "bubbles_up_midi=CC_13_UP\n"
+                  "bubbles_down_midi=CC_13_DOWN\n"
+                  "[Lasers]\n"
+                  "level=10\n"
+                  "[Bubbles]\n"
+                  "rate=6\n"
+                  "low=300\n"
+                  "high=800\n"
+                  "length=200\n"
+                  "level=55\n",
+                  fp);
+            fclose(fp);
+            if (config_load(path, &cfg) != 0 ||
+                cfg.key_lasers != key_b || cfg.key_lz_up != key_b ||
+                cfg.key_lz_down != key_a ||
+                strcmp(cfg.kbd_lasers, "x") != 0 ||
+                strcmp(cfg.kbd_lz_up, "v") != 0 ||
+                strcmp(cfg.kbd_lz_down, "c") != 0 ||
+                strcmp(cfg.midi[KEYID_LASERS], "NOTE_42") != 0 ||
+                strcmp(cfg.midi[KEYID_LZ_UP], "CC_13_UP") != 0 ||
+                strcmp(cfg.midi[KEYID_LZ_DOWN], "CC_13_DOWN") != 0 ||
+                cfg.fx.lasers_on != 0 || cfg.fx.lz_rate != 6.0f ||
+                cfg.fx.lz_low != 300.0f || cfg.fx.lz_high != 800.0f ||
+                cfg.fx.lz_length != 200.0f || cfg.fx.lz_level != 55.0f ||
+                config_load_edit(path, &edit) != 0 ||
+                strcmp(edit.key_lasers, "KEY_B") != 0 ||
+                strcmp(edit.key_lz_up, "KEY_B") != 0 ||
+                strcmp(edit.key_lz_down, "KEY_A") != 0 ||
+                strcmp(edit.kbd_lasers, "x") != 0 ||
+                strcmp(edit.kbd_lz_up, "v") != 0 ||
+                strcmp(edit.kbd_lz_down, "c") != 0 ||
+                strcmp(edit.midi[KEYID_LASERS], "NOTE_42") != 0 ||
+                strcmp(edit.midi[KEYID_LZ_UP], "CC_13_UP") != 0 ||
+                strcmp(edit.midi[KEYID_LZ_DOWN], "CC_13_DOWN") != 0 ||
+                strcmp(edit.lz_rate, "6") != 0 ||
+                strcmp(edit.lz_low, "300") != 0 ||
+                strcmp(edit.lz_high, "800") != 0 ||
+                strcmp(edit.lz_length, "200") != 0 ||
+                strcmp(edit.lz_level, "55") != 0 ||
+                config_save(path, &cfg, err, sizeof err) != 0 ||
+                read_text(path, got, sizeof got) != 0 ||
+                strstr(got, "bubbles") != NULL || strstr(got, "Bubbles") != NULL ||
+                strstr(got, "lasers=KEY_B\n") == NULL ||
+                strstr(got, "lasers_up=KEY_B\n") == NULL ||
+                strstr(got, "lasers_down=KEY_A\n") == NULL ||
+                strstr(got, "lasers_kbd=x\n") == NULL ||
+                strstr(got, "lasers_up_kbd=v\n") == NULL ||
+                strstr(got, "lasers_down_kbd=c\n") == NULL ||
+                strstr(got, "lasers_midi=NOTE_42\n") == NULL ||
+                strstr(got, "lasers_up_midi=CC_13_UP\n") == NULL ||
+                strstr(got, "lasers_down_midi=CC_13_DOWN\n") == NULL ||
+                strstr(got, "[Lasers]\n") == NULL ||
+                strstr(got, "rate=6\n") == NULL ||
+                strstr(got, "level=55\n") == NULL ||
+                file_count(path, "[Lasers]") != 1) {
+                log_error("autodj", "config test did not rename bubbles: %s\n%s", err, got);
+                rc = -1;
+            }
+        }
     }
     remove(path);
     if (rc != 0) {

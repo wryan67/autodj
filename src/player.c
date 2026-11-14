@@ -49,6 +49,8 @@ static atomic_int g_volume = 1000;
 static atomic_int g_fx_on[PLAYER_FX_COUNT];
 /* Reverb knob position, 0 to 1000 from rv_send_min to rv_send_max. */
 static atomic_int g_rv_level = 500;
+/* Laser volume, 0 to 1000. player_set_fx starts it at the configured level. */
+static atomic_int g_lz_level = 300;
 static FxState *g_fx;
 static FxParams g_fx_params;
 static atomic_int g_stop;
@@ -950,13 +952,15 @@ static void render_frame(int16_t *dst)
         fx_set_send(g_fx, g_fx_params.rv_send_min +
                               (g_fx_params.rv_send_max - g_fx_params.rv_send_min) *
                                   (float)atomic_load(&g_rv_level) / 1000.0f);
+        fx_set_lasers(g_fx, (float)atomic_load(&g_lz_level) / 10.0f);
         fx_set_on(g_fx, atomic_load(&g_fx_on[PLAYER_FX_REVERB]),
                   atomic_load(&g_fx_on[PLAYER_FX_PITCH]),
                   atomic_load(&g_fx_on[PLAYER_FX_AUTOPAN]),
                   atomic_load(&g_fx_on[PLAYER_FX_PHASER]),
                   atomic_load(&g_fx_on[PLAYER_FX_CHORUS]),
                   atomic_load(&g_fx_on[PLAYER_FX_FLANGER]),
-                  atomic_load(&g_fx_on[PLAYER_FX_UNDERWATER]));
+                  atomic_load(&g_fx_on[PLAYER_FX_UNDERWATER]),
+                  atomic_load(&g_fx_on[PLAYER_FX_LASERS]));
         fx_process(g_fx, &left, &right);
     }
     if (left > 1) {
@@ -1313,8 +1317,20 @@ void player_set_fx(const FxParams *fx)
     g_fx_params.chorus_on = 0;
     g_fx_params.flanger_on = 0;
     g_fx_params.underwater_on = 0;
+    g_fx_params.lasers_on = 0;
     atomic_store(&g_rv_level, 500);
     g_fx_params.rv_send = 0.5f * (g_fx_params.rv_send_min + g_fx_params.rv_send_max);
+    {
+        int pct = (int)(g_fx_params.lz_level + 0.5f);
+
+        if (pct < 0) {
+            pct = 0;
+        }
+        if (pct > 100) {
+            pct = 100;
+        }
+        atomic_store(&g_lz_level, pct * 10);
+    }
     atomic_store(&g_fx_on[PLAYER_FX_REVERB], 0);
     atomic_store(&g_fx_on[PLAYER_FX_PITCH], 0);
     atomic_store(&g_fx_on[PLAYER_FX_AUTOPAN], 0);
@@ -1322,6 +1338,7 @@ void player_set_fx(const FxParams *fx)
     atomic_store(&g_fx_on[PLAYER_FX_CHORUS], 0);
     atomic_store(&g_fx_on[PLAYER_FX_FLANGER], 0);
     atomic_store(&g_fx_on[PLAYER_FX_UNDERWATER], 0);
+    atomic_store(&g_fx_on[PLAYER_FX_LASERS], 0);
 }
 
 int player_fx_enabled(int which)
@@ -1334,8 +1351,9 @@ int player_fx_enabled(int which)
 
 int player_fx_toggle(int which)
 {
-    static const char *names[] = {"reverb", "chipmunk", "autopan",
-                                   "phaser", "chorus", "flanger", "underwater"};
+    static const char *names[PLAYER_FX_COUNT] = {
+        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
+        "underwater", "lasers"};
     int next;
 
     if (which < 0 || which >= PLAYER_FX_COUNT) {
@@ -1382,6 +1400,30 @@ void player_reverb_step(int direction, int percent)
 int player_reverb_percent(void)
 {
     return atomic_load(&g_rv_level) / 10;
+}
+
+void player_lasers_step(int direction, int percent)
+{
+    int level = atomic_load(&g_lz_level);
+    int next = level + direction * percent * 10;
+
+    if (next < 0) {
+        next = 0;
+    }
+    if (next > 1000) {
+        next = 1000;
+    }
+    if (next == level) {
+        return;
+    }
+    atomic_store(&g_lz_level, next);
+    log_info("keys", "lasers %d%%%s", next / 10,
+             atomic_load(&g_fx_on[PLAYER_FX_LASERS]) ? "" : " (lasers is off)");
+}
+
+int player_lasers_percent(void)
+{
+    return atomic_load(&g_lz_level) / 10;
 }
 
 void player_volume_step(int direction, int percent)

@@ -97,7 +97,8 @@ static void log_keyboard_bindings(const Config *cfg)
         "rewind 1.5s", "dial forward", "dial back", "dial mode",
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
         "effects off", "volume up", "volume down", "jog up", "jog down",
-        "reverb up", "reverb down", "underwater"
+        "reverb up", "reverb down", "underwater", "lasers",
+        "lasers up", "lasers down"
     };
     const char *vals[] = {
         cfg->kbd_pause, cfg->kbd_skip, cfg->kbd_prev, cfg->kbd_rew05,
@@ -105,7 +106,8 @@ static void log_keyboard_bindings(const Config *cfg)
         cfg->kbd_dial_mode, cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan,
         cfg->kbd_phaser, cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off,
         cfg->kbd_vol_up, cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down,
-        cfg->kbd_rv_up, cfg->kbd_rv_down, cfg->kbd_underwater
+        cfg->kbd_rv_up, cfg->kbd_rv_down, cfg->kbd_underwater, cfg->kbd_lasers,
+        cfg->kbd_lz_up, cfg->kbd_lz_down
     };
     char buf[768];
     size_t used = 0;
@@ -202,6 +204,27 @@ static void remember_volume(const char *path, Config *cfg)
     }
     cfg->volume = volume;
     cfg->volume_set = 1;
+}
+
+/* The laser knob moves level in [Lasers]. Leave the file alone until it moves. */
+static void remember_lasers(const char *path, Config *cfg)
+{
+    int level = player_lasers_percent();
+    int saved = (int)(cfg->fx.lz_level + 0.5f);
+
+    if (saved < 0) {
+        saved = 0;
+    }
+    if (saved > 100) {
+        saved = 100;
+    }
+    if (level == saved) {
+        return;
+    }
+    if (config_save_lasers_level(path, level) != 0) {
+        return;
+    }
+    cfg->fx.lz_level = (float)level;
 }
 
 static void usage(void)
@@ -321,10 +344,11 @@ int main(int argc, char **argv)
              cfg.key_pitch_name[0] ? cfg.key_pitch_name : "(none)",
              cfg.key_autopan_name[0] ? cfg.key_autopan_name : "(none)",
              cfg.key_phaser_name[0] ? cfg.key_phaser_name : "(none)");
-    log_info("autodj", "keys chorus %s, flanger %s, underwater %s, effects off %s",
+    log_info("autodj", "keys chorus %s, flanger %s, underwater %s, lasers %s, effects off %s",
              cfg.key_chorus_name[0] ? cfg.key_chorus_name : "(none)",
              cfg.key_flanger_name[0] ? cfg.key_flanger_name : "(none)",
              cfg.key_underwater_name[0] ? cfg.key_underwater_name : "(none)",
+             cfg.key_lasers_name[0] ? cfg.key_lasers_name : "(none)",
              cfg.key_effects_off_name[0] ? cfg.key_effects_off_name : "(none)");
     log_info("autodj", "effects off");
     log_info("autodj", "keys rewind 0.5s %s, rewind 1s %s, rewind 1.5s %s",
@@ -459,9 +483,11 @@ int main(int argc, char **argv)
         midi_poll(&cfg);
         keys_kbd_poll(&cfg);
         remember_volume(path, &cfg);
+        remember_lasers(path, &cfg);
     }
 
     remember_volume(path, &cfg);
+    remember_lasers(path, &cfg);
     log_info("autodj", "stopping");
     player_stop();
     keys_kbd_close();

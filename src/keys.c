@@ -800,7 +800,8 @@ static int is_step_action(int id)
 {
     return id == KEYID_DIAL_FWD || id == KEYID_DIAL_BACK || id == KEYID_VOL_UP ||
            id == KEYID_VOL_DOWN || id == KEYID_JOG_UP || id == KEYID_JOG_DOWN ||
-           id == KEYID_RV_UP || id == KEYID_RV_DOWN;
+           id == KEYID_RV_UP || id == KEYID_RV_DOWN ||
+           id == KEYID_LZ_UP || id == KEYID_LZ_DOWN;
 }
 
 /* Jog by count clicks. A knob can report several clicks in one message, so
@@ -830,14 +831,19 @@ static void jog_steps(int dir, int count, long long us)
     g_jog_last_us = us;
 }
 
-/* A dial, volume, jog, or reverb action. percent is the volume per step.
- * The reverb knob moves twice that, so a knob covers its range in 50 steps. */
+/* A dial, volume, jog, reverb, or laser action. percent is the volume per
+ * step. The reverb knob and the laser volume move twice that, so a knob
+ * covers its range in 50 steps. */
 static void step_action(int id, int count, int percent, long long us)
 {
     int dir = (id == KEYID_DIAL_FWD || id == KEYID_VOL_UP || id == KEYID_JOG_UP ||
-               id == KEYID_RV_UP) ? 1 : -1;
+               id == KEYID_RV_UP || id == KEYID_LZ_UP) ? 1 : -1;
     int mode;
 
+    if (id == KEYID_LZ_UP || id == KEYID_LZ_DOWN) {
+        player_lasers_step(dir, 2 * percent * count);
+        return;
+    }
     if (id == KEYID_VOL_UP || id == KEYID_VOL_DOWN) {
         mode = DIAL_VOLUME;
     } else if (id == KEYID_JOG_UP || id == KEYID_JOG_DOWN) {
@@ -901,6 +907,9 @@ static void press_action(int id)
     case KEYID_UNDERWATER:
         player_fx_toggle(PLAYER_FX_UNDERWATER);
         break;
+    case KEYID_LASERS:
+        player_fx_toggle(PLAYER_FX_LASERS);
+        break;
     case KEYID_EFFECTS_OFF:
         player_fx_all_off();
         break;
@@ -923,7 +932,8 @@ static int pad_action(const struct Config *cfg, int key)
         cfg->key_reverb, cfg->key_pitch, cfg->key_autopan, cfg->key_phaser,
         cfg->key_chorus, cfg->key_flanger, cfg->key_effects_off, cfg->key_vol_up,
         cfg->key_vol_down, cfg->key_jog_up, cfg->key_jog_down, cfg->key_rv_up,
-        cfg->key_rv_down, cfg->key_underwater
+        cfg->key_rv_down, cfg->key_underwater, cfg->key_lasers, cfg->key_lz_up,
+        cfg->key_lz_down
     };
     int id;
 
@@ -1131,7 +1141,8 @@ static int kbd_action(const struct Config *cfg, const char *name)
         cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan, cfg->kbd_phaser,
         cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off, cfg->kbd_vol_up,
         cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down, cfg->kbd_rv_up,
-        cfg->kbd_rv_down, cfg->kbd_underwater
+        cfg->kbd_rv_down, cfg->kbd_underwater, cfg->kbd_lasers, cfg->kbd_lz_up,
+        cfg->kbd_lz_down
     };
     int id;
 
@@ -1644,6 +1655,9 @@ static int kbd_self_test(void)
     cfg.key_rv_up = -1;
     cfg.key_rv_down = -1;
     cfg.key_underwater = -1;
+    cfg.key_lasers = -1;
+    cfg.key_lz_up = -1;
+    cfg.key_lz_down = -1;
     snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "r");
     player_set_fx(NULL);
     player_set_volume_percent(50);
@@ -1674,6 +1688,18 @@ static int kbd_self_test(void)
     if (player_volume_percent() != 55) {
         log_error("keys", "keyboard dial down left volume %d, expected 55",
                   player_volume_percent());
+        return -1;
+    }
+    snprintf(cfg.kbd_lz_up, sizeof cfg.kbd_lz_up, "o");
+    snprintf(cfg.kbd_lz_down, sizeof cfg.kbd_lz_down, "p");
+    keys_kbd_dispatch(&cfg, "o");
+    if (player_lasers_percent() != 40) {
+        log_error("keys", "keyboard lasers up left %d%%", player_lasers_percent());
+        return -1;
+    }
+    keys_kbd_dispatch(&cfg, "p");
+    if (player_lasers_percent() != 30) {
+        log_error("keys", "keyboard lasers down left %d%%", player_lasers_percent());
         return -1;
     }
 
@@ -1777,7 +1803,8 @@ static int midi_dispatch_self_test(void)
     cfg.key_phaser = cfg.key_chorus = cfg.key_flanger = cfg.key_effects_off = -1;
     cfg.key_vol_up = KEY_U;
     cfg.key_vol_down = cfg.key_jog_up = cfg.key_jog_down = -1;
-    cfg.key_rv_up = cfg.key_rv_down = cfg.key_underwater = -1;
+    cfg.key_rv_up = cfg.key_rv_down = cfg.key_underwater = cfg.key_lasers = -1;
+    cfg.key_lz_up = cfg.key_lz_down = -1;
     for (id = 0; id < KEYID_COUNT; id++) {
         cfg.midi_code[id] = -1;
     }
@@ -1826,6 +1853,27 @@ static int midi_dispatch_self_test(void)
     keys_midi_dispatch(&cfg, MIDI_CC_UP | 9, 1, &when);
     if (player_reverb_percent() != 46) {
         log_error("keys", "reverb knob left %d%%", player_reverb_percent());
+        goto out;
+    }
+    /* Laser volume starts at the configured level. A knob step is 2%. */
+    if (player_lasers_percent() != 30) {
+        log_error("keys", "lasers started at %d%%", player_lasers_percent());
+        goto out;
+    }
+    cfg.midi_code[KEYID_LZ_UP] = MIDI_CC_UP | 13;
+    keys_midi_dispatch(&cfg, MIDI_CC_UP | 13, 2, &when);
+    if (player_lasers_percent() != 34) {
+        log_error("keys", "lasers knob left %d%%", player_lasers_percent());
+        goto out;
+    }
+    player_lasers_step(-1, 100);
+    if (player_lasers_percent() != 0) {
+        log_error("keys", "lasers did not stop at 0 (left %d%%)", player_lasers_percent());
+        goto out;
+    }
+    player_lasers_step(1, 200);
+    if (player_lasers_percent() != 100) {
+        log_error("keys", "lasers did not stop at 100 (left %d%%)", player_lasers_percent());
         goto out;
     }
     /* A volume key works whatever mode the dial is in, a keypad step is 1. */
@@ -1902,6 +1950,9 @@ static int debounce_self_test(void)
     cfg.key_rv_up = -1;
     cfg.key_rv_down = -1;
     cfg.key_underwater = -1;
+    cfg.key_lasers = -1;
+    cfg.key_lz_up = -1;
+    cfg.key_lz_down = -1;
     player_set_volume_percent(50);
     player_set_fx(NULL);
     g_press_seen = 0;

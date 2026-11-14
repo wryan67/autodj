@@ -25,9 +25,9 @@
 
 /*
  * Full-screen editor for master.cfg. The tabs are Main, Buttons, Knobs,
- * Reverb, Chipmunk, Autopan, Phaser, Chorus, Flanger, and Underwater. They stay on one
- * row when the window is wide enough, and the last ones wrap onto a second
- * row when it is not.
+ * Reverb, Chipmunk, Autopan, Phaser, Chorus, Flanger, Underwater, and
+ * Lasers. Lasers wraps onto a second row even in a wide window, and more
+ * tabs wrap when the window is narrower.
  * Tab and the arrow keys move between the fields on the current tab. Up from
  * the first field reaches the tabs, and left and right there switch tabs.
  * Left and right move the cursor in a text field, and step to the next field
@@ -53,6 +53,7 @@ enum {
     TAB_CHORUS,
     TAB_FLANGER,
     TAB_UNDERWATER,
+    TAB_LASERS,
     TAB_COUNT
 };
 
@@ -83,10 +84,11 @@ enum {
     FE_KEY_CHORUS,
     FE_KEY_FLANGER,
     FE_KEY_UNDERWATER,
+    FE_KEY_LASERS,
     FE_KEY_EFFECTS_OFF,
     FE_BUTTON_END,
 
-    /* Knobs rows: the dial, volume, and jog bindings, then the dial modes. */
+    /* Knobs rows: dial, volume, jog, reverb, and laser bindings, then the dial modes. */
     FE_KNOB_FIRST = FE_BUTTON_END,
     FE_KEY_DIAL_FWD = FE_KNOB_FIRST,
     FE_KEY_DIAL_BACK,
@@ -97,6 +99,8 @@ enum {
     FE_KEY_JOG_DOWN,
     FE_KEY_RV_UP,
     FE_KEY_RV_DOWN,
+    FE_KEY_LZ_UP,
+    FE_KEY_LZ_DOWN,
     FE_DIAL_MODE1,
     FE_DIAL_MODE2,
     FE_DIAL_MODE3,
@@ -149,6 +153,13 @@ enum {
     FE_UW_WOBBLE,
     FE_UW_MIX,
     FE_UW_BOOST,
+    FE_UW_END,
+
+    FE_LZ_RATE = FE_UW_END,
+    FE_LZ_LOW,
+    FE_LZ_HIGH,
+    FE_LZ_LENGTH,
+    FE_LZ_LEVEL,
     FE_FIELD_COUNT,
 
     FE_TABS = FE_FIELD_COUNT,
@@ -168,7 +179,7 @@ enum {
     BIND_COLS = 3,
     /* Brackets plus one character. Used only when a value cannot fit. */
     BOX_MIN_W = 4,
-    /* Tallest tab is Buttons, with 14 fields, under one row of tabs.
+    /* Tallest tab is Buttons, with 15 fields, under one row of tabs.
      * A wrapped tab row adds one line, checked in layout_ui. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_FIRST,
     /* Rows of the dial mode droplist: none, volume, jog, reverb. */
@@ -325,6 +336,7 @@ static const char *field_label(int id)
         "Chorus",
         "Flanger",
         "Underwater",
+        "Lasers",
         "All effects off",
         "Dial forward",
         "Dial back",
@@ -335,6 +347,8 @@ static const char *field_label(int id)
         "Jog down",
         "Reverb up",
         "Reverb down",
+        "Lasers up",
+        "Lasers down",
         "Dial mode 1",
         "Dial mode 2",
         "Dial mode 3",
@@ -372,7 +386,12 @@ static const char *field_label(int id)
         "Period",
         "Wobble ms",
         "Mix %",
-        "Boost %"
+        "Boost %",
+        "Rate",
+        "Low Hz",
+        "High Hz",
+        "Length ms",
+        "Level %"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -411,6 +430,8 @@ static int fe_keyid(int id)
         return KEYID_FLANGER;
     case FE_KEY_UNDERWATER:
         return KEYID_UNDERWATER;
+    case FE_KEY_LASERS:
+        return KEYID_LASERS;
     case FE_KEY_EFFECTS_OFF:
         return KEYID_EFFECTS_OFF;
     case FE_KEY_DIAL_FWD:
@@ -431,6 +452,10 @@ static int fe_keyid(int id)
         return KEYID_RV_UP;
     case FE_KEY_RV_DOWN:
         return KEYID_RV_DOWN;
+    case FE_KEY_LZ_UP:
+        return KEYID_LZ_UP;
+    case FE_KEY_LZ_DOWN:
+        return KEYID_LZ_DOWN;
     default:
         return -1;
     }
@@ -588,6 +613,21 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_UW_BOOST:
         *cap = sizeof edit->uw_boost;
         return edit->uw_boost;
+    case FE_LZ_RATE:
+        *cap = sizeof edit->lz_rate;
+        return edit->lz_rate;
+    case FE_LZ_LOW:
+        *cap = sizeof edit->lz_low;
+        return edit->lz_low;
+    case FE_LZ_HIGH:
+        *cap = sizeof edit->lz_high;
+        return edit->lz_high;
+    case FE_LZ_LENGTH:
+        *cap = sizeof edit->lz_length;
+        return edit->lz_length;
+    case FE_LZ_LEVEL:
+        *cap = sizeof edit->lz_level;
+        return edit->lz_level;
     default:
         *cap = 0;
         return NULL;
@@ -604,7 +644,8 @@ static int is_number_field(int id)
            (id >= FE_PH_PERIOD && id <= FE_PH_BOOST) ||
            (id >= FE_CH_PERIOD && id <= FE_CH_MIX) ||
            (id >= FE_FL_PERIOD && id <= FE_FL_MIX) ||
-           (id >= FE_UW_CUTOFF && id <= FE_UW_BOOST);
+           (id >= FE_UW_CUTOFF && id <= FE_UW_BOOST) ||
+           (id >= FE_LZ_RATE && id <= FE_LZ_LEVEL);
 }
 
 static int is_key_field(int id)
@@ -790,7 +831,8 @@ static int tab_first(int tab)
 {
     static const int first[] = {
         FE_FOLDER, FE_KEY_FIRST, FE_KNOB_FIRST, FE_RV_DECAY, FE_PS_SEMI,
-        FE_AP_PERIOD, FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD, FE_UW_CUTOFF
+        FE_AP_PERIOD, FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD, FE_UW_CUTOFF,
+        FE_LZ_RATE
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -804,7 +846,7 @@ static int tab_last(int tab)
     static const int last[] = {
         FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_KNOB_END - 1, FE_RV_END - 1,
         FE_PS_END - 1, FE_AP_END - 1, FE_PH_END - 1, FE_CH_END - 1, FE_FL_END - 1,
-        FE_FIELD_COUNT - 1
+        FE_UW_END - 1, FE_FIELD_COUNT - 1
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1434,7 +1476,7 @@ static const char *tab_title(int tab)
 {
     static const char *names[] = {
         "Main", "Buttons", "Knobs", "Reverb", "Chipmunk",
-        "Autopan", "Phaser", "Chorus", "Flanger", "Underwater"
+        "Autopan", "Phaser", "Chorus", "Flanger", "Underwater", "Lasers"
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1455,7 +1497,8 @@ static const char *tab_note(int tab)
         "Notches sweep from Low to High. Period is in measures.",
         "Several slightly late copies, drifting in pitch.",
         "A very short delay. The sweep makes a jet-like whoosh.",
-        "Muffled and boomy, with a slow wobble, like under water."
+        "Muffled and boomy, with a slow wobble, like under water.",
+        "Falling laser zaps, added on top of the song."
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -4099,10 +4142,13 @@ static int screen_self_test(void)
         ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_MAIN] ||
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_MAIN] ||
         ed.ui.tab_y[TAB_UNDERWATER] != ed.ui.tab_y[TAB_MAIN] ||
-        ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_UNDERWATER] ||
+        ed.ui.tab_y[TAB_LASERS] != ed.ui.tab_y[TAB_MAIN] + 1 ||
+        ed.ui.field_r[FE_KEY_LASERS] <= ed.ui.field_r[FE_KEY_UNDERWATER] ||
+        ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_LASERS] ||
         !buf || strstr(buf, "[ Chorus ]") == NULL || strstr(buf, "[ Flanger ]") == NULL ||
-        strstr(buf, "[ Underwater ]") == NULL ||
+        strstr(buf, "[ Underwater ]") == NULL || strstr(buf, "[ Lasers ]") == NULL ||
         strstr(buf, "Chorus") == NULL || strstr(buf, "Flanger") == NULL ||
+        strstr(buf, "Lasers") == NULL ||
         strstr(buf, "All effects off") == NULL) {
         log_error("cfgedit", "wide Buttons screen is missing chorus and flanger");
         free(buf);
@@ -4126,6 +4172,7 @@ static int screen_self_test(void)
         ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_PHASER] ||
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_CHORUS] ||
         ed.ui.tab_y[TAB_UNDERWATER] != ed.ui.tab_y[TAB_CHORUS] ||
+        ed.ui.tab_y[TAB_LASERS] != ed.ui.tab_y[TAB_UNDERWATER] ||
         !buf || strstr(buf, "Keypad") == NULL || strstr(buf, "Keyboard") == NULL ||
         strstr(buf, "MIDI") == NULL || strstr(buf, "Keys and pads.") == NULL ||
         strstr(buf, "Dial forward") != NULL) {
@@ -4158,6 +4205,20 @@ static int screen_self_test(void)
         ed.ui.field_r[FE_FL_MIX] >= 0 || !buf || strstr(buf, "Cutoff Hz") == NULL ||
         strstr(buf, "Wobble ms") == NULL || strstr(buf, "under water") == NULL) {
         log_error("cfgedit", "Underwater screen is missing its settings");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    buf = NULL;
+    n = 0;
+
+    if (render_tab(&ed, 24, 100, TAB_LASERS, &buf, &n) != 0) {
+        return -1;
+    }
+    if (ed.ui.field_r[FE_LZ_RATE] < 0 || ed.ui.field_r[FE_LZ_LEVEL] < 0 ||
+        ed.ui.field_r[FE_UW_CUTOFF] >= 0 || !buf || strstr(buf, "Length ms") == NULL ||
+        strstr(buf, "Level %") == NULL || strstr(buf, "added on top") == NULL) {
+        log_error("cfgedit", "Lasers screen is missing its settings");
         free(buf);
         return -1;
     }
@@ -4442,8 +4503,11 @@ static int knobs_tab_self_test(void)
     }
     if (!buf || strstr(buf, "Dial and knobs.") == NULL || strstr(buf, "Next dial mode") == NULL ||
         strstr(buf, "Volume down") == NULL || strstr(buf, "Jog up") == NULL ||
+        strstr(buf, "Lasers up") == NULL || strstr(buf, "Lasers down") == NULL ||
         strstr(buf, "Dial mode 3") == NULL || strstr(buf, "MIDI") == NULL ||
         strstr(buf, "Pause/resume") != NULL || ed.ui.field_r[FE_KEY_DIAL_FWD] < 0 ||
+        ed.ui.field_r[FE_KEY_LZ_UP] <= ed.ui.field_r[FE_KEY_RV_DOWN] ||
+        ed.ui.field_r[FE_DIAL_MODE1] <= ed.ui.field_r[FE_KEY_LZ_DOWN] ||
         ed.ui.field_r[FE_DIAL_MODE3] <= ed.ui.field_r[FE_KEY_JOG_DOWN] ||
         ed.ui.field_r[FE_KEY_PAUSE] >= 0 || ed.ui.col_w[2] != MIDI_HDR_W ||
         ed.ui.box_w[FE_DIAL_MODE1] != NUM_W) {

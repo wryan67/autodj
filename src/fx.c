@@ -20,12 +20,31 @@
  * comb that sweeps and whooshes.
  * Underwater is a steep low-pass with a resonant bump, which leaves only a
  * muffled, boomy body, plus a slow pitch wobble from a moving delay.
+ * Lasers adds falling zaps on top of the song. Each one is a low tone that
+ * falls the whole time it is loud. They often come as a pair, then a gap.
+ * The song itself is left as it is.
  */
 
 #define AP_DELAY 512
 #define PH_STAGES 12
 #define PV_OSAMP 8
 #define PV_PI 3.14159265358979323846f
+#define LZ_VOICES 16
+
+/* One zap. Dead when amp has fallen away.
+ * freq eases toward target across the whole note. */
+typedef struct Laser {
+    float phase;
+    float freq;
+    float target;
+    float settle;
+    float amp;
+    float decay;
+    float attack;
+    float attack_step;
+    float gain_l;
+    float gain_r;
+} Laser;
 
 typedef struct Ring {
     float *buf;
@@ -132,6 +151,13 @@ struct FxState {
     float uw_coef[2][5];  /* [stage] b0 b1 b2 a1 a2 */
     float uw_fc;          /* cutoff and resonance the coefficients are for */
     float uw_q;
+    Laser lz[LZ_VOICES];
+    float lz_wait; /* samples until the next zap */
+    int lz_pair;   /* the next zap is the second of a pair */
+    float lz_mix;
+    int lz_on;
+    int lz_live;
+    unsigned lz_rng;
 };
 
 /* Plate reverb lengths in samples at 29761 Hz. */
@@ -191,6 +217,11 @@ void fx_defaults(FxParams *p)
     p->uw_wobble = 1.5f;
     p->uw_mix = 100.0f;
     p->uw_boost = 20.0f;
+    p->lz_rate = 4.0f;
+    p->lz_low = 280.0f;
+    p->lz_high = 700.0f;
+    p->lz_length = 260.0f;
+    p->lz_level = 30.0f;
 }
 
 static int scaled(unsigned rate, int n)
@@ -315,6 +346,10 @@ FxState *fx_new(unsigned rate)
     st->ap_rng = (unsigned)time(NULL) ^ (unsigned)(clock() << 8) ^ 0x9e3779b9u;
     if (!st->ap_rng) {
         st->ap_rng = 1;
+    }
+    st->lz_rng = (unsigned)time(NULL) ^ (unsigned)(clock() << 16) ^ 0xA5A5A5A5u;
+    if (!st->lz_rng) {
+        st->lz_rng = 0x6d2b79f5u;
     }
 
     rv_layout(st, NULL, &total);
@@ -507,6 +542,13 @@ static void fl_clear(FxState *st)
     st->fl_phase = 0;
 }
 
+static void lz_clear(FxState *st)
+{
+    memset(st->lz, 0, sizeof st->lz);
+    st->lz_wait = 0;
+    st->lz_pair = 0;
+}
+
 void fx_setup(FxState *st, const FxParams *p)
 {
     if (!st) {
@@ -524,6 +566,7 @@ void fx_setup(FxState *st, const FxParams *p)
     ch_clear(st);
     fl_clear(st);
     uw_clear(st);
+    lz_clear(st);
     st->rv_send = 0;
     st->rv_live = 0;
     st->rv_lfo[0] = 0;
@@ -539,6 +582,8 @@ void fx_setup(FxState *st, const FxParams *p)
     st->fl_live = 0;
     st->uw_mix = 0;
     st->uw_live = 0;
+    st->lz_mix = 0;
+    st->lz_live = 0;
     st->rv_on = st->p.reverb_on ? 1 : 0;
     st->ps_on = st->p.pitch_on ? 1 : 0;
     st->ap_on = st->p.autopan_on ? 1 : 0;
@@ -546,6 +591,7 @@ void fx_setup(FxState *st, const FxParams *p)
     st->ch_on = st->p.chorus_on ? 1 : 0;
     st->fl_on = st->p.flanger_on ? 1 : 0;
     st->uw_on = st->p.underwater_on ? 1 : 0;
+    st->lz_on = st->p.lasers_on ? 1 : 0;
 }
 
 void fx_set_send(FxState *st, float send)
@@ -555,8 +601,15 @@ void fx_set_send(FxState *st, float send)
     }
 }
 
+void fx_set_lasers(FxState *st, float level)
+{
+    if (st) {
+        st->p.lz_level = level;
+    }
+}
+
 void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
-               int chorus, int flanger, int underwater)
+               int chorus, int flanger, int underwater, int lasers)
 {
     if (!st) {
         return;
@@ -568,6 +621,7 @@ void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
     st->ch_on = chorus ? 1 : 0;
     st->fl_on = flanger ? 1 : 0;
     st->uw_on = underwater ? 1 : 0;
+    st->lz_on = lasers ? 1 : 0;
 }
 
 void fx_set_beat(FxState *st, float beat_seconds)
@@ -1585,6 +1639,234 @@ static void process_underwater(FxState *st, float *left, float *right)
     }
 }
 
+static unsigned lz_rand(FxState *st)
+{
+    unsigned x = st->lz_rng;
+
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    if (!x) {
+        x = 1;
+    }
+    st->lz_rng = x;
+    return x;
+}
+
+/* (0, 1). Never quite 0, so logf of it is safe. */
+static float lz_unit(FxState *st)
+{
+    float u = (lz_rand(st) >> 8) * (1.0f / 16777216.0f);
+
+    return u < 1.0e-4f ? 1.0e-4f : u;
+}
+
+static int lz_alloc(FxState *st)
+{
+    int i;
+    int quiet = 0;
+
+    for (i = 0; i < LZ_VOICES; i++) {
+        if (st->lz[i].amp < 1.0e-5f) {
+            return i;
+        }
+        if (st->lz[i].amp < st->lz[quiet].amp) {
+            quiet = i;
+        }
+    }
+    return quiet;
+}
+
+/* A new zap. Most start near the middle of the range; fewer at either
+ * end. Lower ones are a little longer, louder, and fall further.
+ * One tone only. A noise burst here is what turns the bed into rain. */
+static Laser *lz_spawn(FxState *st, float low, float high, float length_ms)
+{
+    Laser *v = &st->lz[lz_alloc(st)];
+    float span = 0.5f * (lz_unit(st) + lz_unit(st));
+    float hz;
+    float place;
+    float size;
+    float ratio;
+    float ms;
+    float nsmpl;
+    float drop;
+    float nattack;
+    float pan;
+
+    if (!(high > low)) {
+        hz = low;
+        place = 0;
+    } else {
+        hz = low * powf(high / low, span);
+        place = (hz - low) / (high - low);
+    }
+    size = 1.0f - place;
+    /* A low zap falls about an octave. A high one falls about a fifth.
+     * The fall lasts as long as the note is loud. */
+    ratio = 0.42f + 0.28f * place;
+    ms = length_ms * (0.85f + 0.3f * size) * (0.85f + 0.3f * lz_unit(st));
+    nsmpl = ms * 0.001f * (float)st->rate;
+    if (nsmpl < 8.0f) {
+        nsmpl = 8.0f;
+    }
+    if (hz < 40.0f) {
+        hz = 40.0f;
+    }
+    if (hz > 0.45f * (float)st->rate) {
+        hz = 0.45f * (float)st->rate;
+    }
+    memset(v, 0, sizeof *v);
+    v->freq = 2.0f * PV_PI * hz / (float)st->rate;
+    v->target = v->freq * ratio;
+    if (v->target < 2.0f * PV_PI * 40.0f / (float)st->rate) {
+        v->target = 2.0f * PV_PI * 40.0f / (float)st->rate;
+    }
+    drop = nsmpl * 0.80f;
+    if (drop < 8.0f) {
+        drop = 8.0f;
+    }
+    v->settle = 1.0f - powf(0.08f, 1.0f / drop);
+    v->amp = (0.20f + 0.12f * size) * (0.85f + 0.3f * lz_unit(st));
+    /* Stay loud long enough to hear the fall, then get out of the way. */
+    v->decay = powf(0.04f, 1.0f / nsmpl);
+    nattack = 0.016f * (float)st->rate;
+    if (nattack < 1.0f) {
+        nattack = 1.0f;
+    }
+    v->attack_step = 1.0f / nattack;
+    v->phase = lz_unit(st) * 2.0f * PV_PI;
+    pan = 0.42f + 0.16f * lz_unit(st);
+    v->gain_l = sqrtf(1.0f - pan);
+    v->gain_r = sqrtf(pan);
+    return v;
+}
+
+static float lz_gap(FxState *st, float per_sec)
+{
+    float gap = -logf(lz_unit(st)) / per_sec * (float)st->rate;
+
+    return gap < 1.0f ? 1.0f : gap;
+}
+
+/* Adds the zaps. A level of 0, or the effect settled in the off state,
+ * leaves the song sample untouched. */
+static void process_lasers(FxState *st, float *left, float *right)
+{
+    float per_sec;
+    float low;
+    float high;
+    float length;
+    float level;
+    float gain;
+    float sum_l = 0;
+    float sum_r = 0;
+    int i;
+
+    mod_ramp(&st->lz_mix, st->lz_on);
+    if (!st->lz_on && st->lz_mix == 0) {
+        if (st->lz_live) {
+            lz_clear(st);
+            st->lz_live = 0;
+        }
+        return;
+    }
+    if (st->lz_on && !st->lz_live) {
+        lz_clear(st);
+        st->lz_live = 1;
+    }
+    per_sec = st->p.lz_rate;
+    if (per_sec < 0.2f) {
+        per_sec = 0.2f;
+    }
+    if (per_sec > 20.0f) {
+        per_sec = 20.0f;
+    }
+    low = st->p.lz_low;
+    high = st->p.lz_high;
+    if (low < 80.0f) {
+        low = 80.0f;
+    }
+    if (high < 80.0f) {
+        high = 80.0f;
+    }
+    if (low > high) {
+        float swap = low;
+
+        low = high;
+        high = swap;
+    }
+    if (high > 0.45f * (float)st->rate) {
+        high = 0.45f * (float)st->rate;
+    }
+    if (low > high) {
+        low = high;
+    }
+    length = st->p.lz_length;
+    if (length < 30.0f) {
+        length = 30.0f;
+    }
+    if (length > 400.0f) {
+        length = 400.0f;
+    }
+    level = st->p.lz_level * 0.01f;
+    if (level < 0) {
+        level = 0;
+    }
+    if (level > 1.0f) {
+        level = 1.0f;
+    }
+    if (st->lz_on) {
+        st->lz_wait -= 1.0f;
+        if (st->lz_wait <= 0) {
+            lz_spawn(st, low, high, length);
+            if (st->lz_pair) {
+                st->lz_pair = 0;
+                /* The second of the pair. Far enough out that a pitch
+                 * check of the first zap does not hear it. */
+                st->lz_wait = (0.09f + 0.08f * lz_unit(st)) * (float)st->rate;
+            } else {
+                if (lz_unit(st) < 0.5f) {
+                    st->lz_pair = 1;
+                }
+                st->lz_wait = lz_gap(st, per_sec);
+            }
+        }
+    }
+    for (i = 0; i < LZ_VOICES; i++) {
+        Laser *v = &st->lz[i];
+        float env;
+        float s;
+
+        if (v->amp < 1.0e-5f) {
+            v->amp = 0;
+            continue;
+        }
+        if (v->attack < 1.0f) {
+            v->attack += v->attack_step;
+            if (v->attack > 1.0f) {
+                v->attack = 1.0f;
+            }
+        }
+        /* A rounded onset. A sharp tick is a raindrop. */
+        env = v->amp * sinf(v->attack * 0.5f * PV_PI);
+        s = sinf(v->phase) * env;
+        sum_l += s * v->gain_l;
+        sum_r += s * v->gain_r;
+        v->phase += v->freq;
+        if (v->phase >= 2.0f * PV_PI) {
+            v->phase -= 2.0f * PV_PI;
+        }
+        v->freq += (v->target - v->freq) * v->settle;
+        v->amp *= v->decay;
+    }
+    gain = level * st->lz_mix;
+    if (gain != 0) {
+        *left = fin(*left + sum_l * gain);
+        *right = fin(*right + sum_r * gain);
+    }
+}
+
 void fx_process(FxState *st, float *left, float *right)
 {
     if (!st || !left || !right) {
@@ -1597,6 +1879,7 @@ void fx_process(FxState *st, float *left, float *right)
     process_underwater(st, left, right);
     process_phaser(st, left, right);
     process_autopan(st, left, right);
+    process_lasers(st, left, right);
 }
 
 static int near_same(const float *a, const float *b, int n, float tol)
@@ -1624,6 +1907,50 @@ static int crossings(const float *x, int n)
     return c;
 }
 
+/* Lag, in samples, of the strongest repeating tone in x[0..n).
+ * A smooth noise correlates most at the shortest lag, so only a local
+ * peak counts, and it has to be a real share of the window's energy. */
+static int main_period(const float *x, int n, int min_lag, int max_lag)
+{
+    int lag;
+    int best = 0;
+    double best_c = 0;
+    double r0 = 0;
+    double prev = 0;
+    double older = 0;
+    int i;
+
+    if (n < 8) {
+        return 0;
+    }
+    if (max_lag > n / 2) {
+        max_lag = n / 2;
+    }
+    for (i = 0; i < n; i++) {
+        r0 += (double)x[i] * x[i];
+    }
+    if (r0 < 1.0e-8) {
+        return 0;
+    }
+    for (lag = min_lag; lag <= max_lag; lag++) {
+        double c = 0;
+        int m = n - lag;
+
+        for (i = 0; i < m; i++) {
+            c += (double)x[i] * x[i + lag];
+        }
+        c /= (double)m;
+        if (lag > min_lag + 1 && prev >= older && prev >= c && prev > best_c &&
+            prev > 0.15 * r0 / (double)n) {
+            best_c = prev;
+            best = lag - 1;
+        }
+        older = prev;
+        prev = c;
+    }
+    return best;
+}
+
 /* RMS of the last half second of a tone through underwater, fully on. */
 static float underwater_rms(FxState *st, const FxParams *p, float hz)
 {
@@ -1631,7 +1958,7 @@ static float underwater_rms(FxState *st, const FxParams *p, float hz)
     int i;
 
     fx_setup(st, p);
-    fx_set_on(st, 0, 0, 0, 0, 0, 0, 1);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 1, 0);
     st->uw_mix = 1;
     for (i = 0; i < 44100; i++) {
         float l = 0.5f * sinf(2.0f * PV_PI * hz * (float)i / 44100.0f);
@@ -1689,7 +2016,7 @@ static int underwater_self_test(void)
         goto done;
     }
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 1000; i++) {
         float x = 0.5f * sinf(2.0f * PV_PI * 5000.0f * (float)i / 44100.0f);
         float l = x;
@@ -1703,6 +2030,213 @@ static int underwater_self_test(void)
     }
     rc = 0;
 done:
+    fx_free(st);
+    return rc;
+}
+
+/* Lasers are added on top. Off, or level 0, leaves the song alone. On,
+ * silence becomes a bed of short zaps, a louder level is louder, the bed
+ * stays under 2500 Hz, and one zap falls in pitch.
+ */
+static int lasers_self_test(void)
+{
+    FxState *st = fx_new(44100);
+    FxParams p;
+    float *buf = NULL;
+    float loud;
+    float quiet;
+    double sum;
+    double mean;
+    int i;
+    int rc = -1;
+
+    if (!st) {
+        log_error("fx", "out of memory");
+        return -1;
+    }
+    fx_defaults(&p);
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
+    for (i = 0; i < 1000; i++) {
+        float x = 0.25f;
+        float l = x;
+        float r = x;
+
+        fx_process(st, &l, &r);
+        if (l != x || r != x) {
+            log_error("fx", "lasers off changed the song");
+            goto done;
+        }
+    }
+    p.lz_level = 0;
+    fx_setup(st, &p);
+    st->lz_rng = 1;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    for (i = 0; i < 4000; i++) {
+        float x = 0.25f;
+        float l = x;
+        float r = x;
+
+        fx_process(st, &l, &r);
+        if (l != x || r != x) {
+            log_error("fx", "lasers at level 0 changed the song");
+            goto done;
+        }
+    }
+
+    fx_defaults(&p);
+    p.lz_rate = 8;
+    p.lz_level = 100;
+    fx_setup(st, &p);
+    st->lz_rng = 0x12345678u;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    sum = 0;
+    for (i = 0; i < 44100; i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+        if (l != l || r != r || l > 2.0f || l < -2.0f || r > 2.0f || r < -2.0f) {
+            log_error("fx", "lasers ran away to %.3f", (double)l);
+            goto done;
+        }
+        sum += (double)l * l + (double)r * r;
+    }
+    loud = (float)sqrt(sum / (44100.0 * 2.0));
+    if (loud < 0.02f) {
+        log_error("fx", "lasers on silence were only %.4f rms", (double)loud);
+        goto done;
+    }
+
+    p.lz_level = 25;
+    fx_setup(st, &p);
+    st->lz_rng = 0x12345678u;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    sum = 0;
+    for (i = 0; i < 44100; i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+        sum += (double)l * l + (double)r * r;
+    }
+    quiet = (float)sqrt(sum / (44100.0 * 2.0));
+    if (loud < quiet * 2.5f) {
+        log_error("fx", "lasers level 100 was %.4f rms and level 25 was %.4f", (double)loud,
+                  (double)quiet);
+        goto done;
+    }
+
+    fx_defaults(&p);
+    p.lz_rate = 8;
+    p.lz_level = 80;
+    fx_setup(st, &p);
+    st->lz_rng = 0x89abcdefu;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    sum = 0;
+    mean = 0;
+    for (i = 0; i < 44100; i++) {
+        float l = 0.2f;
+        float r = 0.2f;
+
+        fx_process(st, &l, &r);
+        mean += l;
+        sum += (double)(l - 0.2f) * (l - 0.2f);
+    }
+    mean /= 44100.0;
+    if (mean < 0.17 || mean > 0.23 || sum / 44100.0 < 1.0e-4) {
+        log_error("fx", "lasers overlay mean %.4f energy %.6f", mean, sum / 44100.0);
+        goto done;
+    }
+
+    p.lz_rate = 0.2f;
+    p.lz_low = 800;
+    p.lz_high = 800;
+    p.lz_length = 180;
+    p.lz_level = 100;
+    fx_setup(st, &p);
+    st->lz_rng = 0x12345678u;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    buf = calloc(20000, sizeof(float));
+    if (!buf) {
+        log_error("fx", "out of memory");
+        goto done;
+    }
+    for (i = 0; i < 20000; i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+        buf[i] = l;
+    }
+    {
+        /* After the rounded onset, then further down the same fall. */
+        int early = main_period(buf + 800, 700, 16, 700);
+        int late = main_period(buf + 2600, 1000, 16, 700);
+
+        if (early < 16 || late < early + early / 5) {
+            log_error("fx", "laser pitch did not fall (period %d then %d)", early, late);
+            goto done;
+        }
+    }
+    fx_defaults(&p);
+    fx_setup(st, &p);
+    st->lz_rng = 0x12345678u;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    {
+        /* Almost all of the energy stays under 2500 Hz. */
+        double low_e = 0;
+        double high_e = 0;
+        float z = 0;
+        float a = 1.0f - expf(-2.0f * PV_PI * 2500.0f / 44100.0f);
+
+        for (i = 0; i < 44100; i++) {
+            float l = 0;
+            float r = 0;
+            float hi;
+
+            fx_process(st, &l, &r);
+            z += (l - z) * a;
+            low_e += (double)z * z;
+            hi = l - z;
+            high_e += (double)hi * hi;
+        }
+        if (high_e <= 0 || low_e < high_e * 2.0) {
+            log_error("fx", "lasers were too bright (low %.3f high %.3f)", low_e, high_e);
+            goto done;
+        }
+    }
+
+    fx_defaults(&p);
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    for (i = 0; i < 200; i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+    }
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
+    for (i = 0; i < 8000; i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+    }
+    for (i = 0; i < 200; i++) {
+        float x = 0.3f * sinf(2.0f * PV_PI * 440.0f * (float)i / 44100.0f);
+        float l = x;
+        float r = x;
+
+        fx_process(st, &l, &r);
+        if (l != x || r != x) {
+            log_error("fx", "lasers stayed on after it was turned off");
+            goto done;
+        }
+    }
+    rc = 0;
+done:
+    free(buf);
     fx_free(st);
     return rc;
 }
@@ -1739,7 +2273,7 @@ int fx_self_test(void)
 
     fx_defaults(&p);
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i] * 0.5f;
@@ -1754,7 +2288,7 @@ int fx_self_test(void)
     p.reverb_on = 1;
     p.rv_send = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -1769,7 +2303,7 @@ int fx_self_test(void)
     p.rv_send = 1;
     p.rv_decay = 0.8f;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0, 0, 0, 0, 0);
     left = 1;
     right = 1;
     fx_process(st, &left, &right);
@@ -1795,7 +2329,7 @@ int fx_self_test(void)
     p.pitch_on = 1;
     p.ps_pitch = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 1, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 300; i++) {
         left = dry[i];
         right = dry[i];
@@ -1812,7 +2346,7 @@ int fx_self_test(void)
     p.ps_semi = 0;
     p.ps_formant = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 1, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < N; i++) {
         left = dry[i];
         right = dry[i];
@@ -1840,7 +2374,7 @@ int fx_self_test(void)
     p.ap_period = 0.25f;
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0, 0);
     fx_set_beat(st, 0.5f);
     {
         float at_left[2] = {0, 0};
@@ -1876,13 +2410,13 @@ int fx_self_test(void)
      */
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0, 0);
     for (i = 0; i < 5512; i++) {
         left = 0.5f;
         right = 0.5f;
         fx_process(st, &left, &right);
     }
-    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 6000; i++) {
         left = 0.5f;
         right = 0.5f;
@@ -1904,13 +2438,13 @@ int fx_self_test(void)
      */
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0, 0);
     for (i = 0; i < 2205; i++) {
         left = 0.5f;
         right = 0.5f;
         fx_process(st, &left, &right);
     }
-    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
     {
         float low_r = 1;
 
@@ -1938,7 +2472,7 @@ int fx_self_test(void)
 
         st->ap_rng = 12345;
         for (run = 0; run < 16; run++) {
-            fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
+            fx_set_on(st, 0, 0, 1, 0, 0, 0, 0, 0);
             for (i = 0; i < 2000; i++) {
                 left = 0.5f;
                 right = 0.5f;
@@ -1946,7 +2480,7 @@ int fx_self_test(void)
             }
             went_left += left > right;
             went_right += right > left;
-            fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
+            fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 0);
             for (i = 0; i < 30000; i++) {
                 left = 0.5f;
                 right = 0.5f;
@@ -1964,7 +2498,7 @@ int fx_self_test(void)
     /* The boost is there from the first sample. */
     fx_defaults(&p);
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 1, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 1, 0, 0, 0, 0);
     left = 0.5f;
     right = 0.5f;
     fx_process(st, &left, &right);
@@ -1977,7 +2511,7 @@ int fx_self_test(void)
     fx_defaults(&p);
     p.phaser_on = 1;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 1, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 1, 0, 0, 0, 0);
     fx_set_beat(st, 0.5f);
     {
         float lo = 9;
@@ -2012,7 +2546,7 @@ int fx_self_test(void)
     p.chorus_on = 1;
     p.ch_mix = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 1, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -2027,7 +2561,7 @@ int fx_self_test(void)
     p.flanger_on = 1;
     p.fl_mix = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 1, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -2063,7 +2597,7 @@ int fx_self_test(void)
         p.ch_voices = 1;
         p.ch_mix = 100;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -2095,7 +2629,7 @@ int fx_self_test(void)
 
         p.ch_voices = 2;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -2121,7 +2655,7 @@ int fx_self_test(void)
         p.ch_voices = 1;
         p.ch_depth = 8;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -2178,7 +2712,7 @@ int fx_self_test(void)
         p.fl_feedback = 0;
         p.fl_mix = 100;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -2212,7 +2746,7 @@ int fx_self_test(void)
         p.fl_feedback = 0;
         p.fl_mix = 50;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0, 0);
         {
             double sum = 0;
 
@@ -2233,7 +2767,7 @@ int fx_self_test(void)
 
         p.fl_delay = 1;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0, 0);
         {
             double plain = 0;
             double fed = 0;
@@ -2252,7 +2786,7 @@ int fx_self_test(void)
             }
             p.fl_feedback = 0.6f;
             fx_setup(st, &p);
-            fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
+            fx_set_on(st, 0, 0, 0, 0, 0, 1, 0, 0);
             for (i = 0; i < 8000; i++) {
                 left = 0.25f * sinf(2.0f * PV_PI * 1000.0f * (float)i / 44100.0f);
                 right = left;
@@ -2280,7 +2814,7 @@ int fx_self_test(void)
         p.fl_feedback = 0;
         p.fl_mix = 50;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0, 0);
         fx_set_beat(st, 0.5f);
         {
             float lo = 9;
@@ -2317,7 +2851,7 @@ int fx_self_test(void)
         fx_set_beat(st, 0);
     }
 
-    if (underwater_self_test() != 0) {
+    if (underwater_self_test() != 0 || lasers_self_test() != 0) {
         goto done;
     }
     rc = 0;
