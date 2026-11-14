@@ -10,6 +10,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 struct Playlist {
     char **paths;
@@ -18,6 +19,10 @@ struct Playlist {
     size_t cursor;
     size_t last;
     int shuffle;
+    size_t *queue;        /* songs asked for on the command line, in order */
+    size_t queued;
+    size_t queue_pos;
+    unsigned char *skip;  /* queued, so left out of this pass of order */
     pthread_mutex_t mu;
 };
 
@@ -40,6 +45,9 @@ static void shuffle_order(Playlist *pl)
 
     for (i = 0; i < pl->count; i++) {
         pl->order[i] = i;
+        if (pl->skip) {
+            pl->skip[i] = 0;
+        }
     }
     if (pl->shuffle && pl->count > 1) {
         for (i = pl->count - 1; i > 0; i--) {
@@ -129,7 +137,9 @@ Playlist *playlist_load(const char *folder, int shuffle)
 
     qsort(pl->paths, pl->count, sizeof pl->paths[0], cmp_path);
     pl->order = calloc(pl->count, sizeof *pl->order);
-    if (!pl->order) {
+    pl->queue = calloc(pl->count, sizeof *pl->queue);
+    pl->skip = calloc(pl->count, 1);
+    if (!pl->order || !pl->queue || !pl->skip) {
         playlist_free(pl);
         return NULL;
     }
@@ -150,6 +160,8 @@ void playlist_free(Playlist *pl)
     }
     free(pl->paths);
     free(pl->order);
+    free(pl->queue);
+    free(pl->skip);
     pthread_mutex_destroy(&pl->mu);
     free(pl);
 }
@@ -157,6 +169,92 @@ void playlist_free(Playlist *pl)
 size_t playlist_count(const Playlist *pl)
 {
     return pl ? pl->count : 0;
+}
+
+static const char *base_name(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+
+    return slash ? slash + 1 : path;
+}
+
+/* qsort has no context argument. Set under the playlist lock. */
+static char **g_sort_paths;
+
+static int cmp_queued(const void *a, const void *b)
+{
+    const size_t *ia = a;
+    const size_t *ib = b;
+    int c = strcasecmp(base_name(g_sort_paths[*ia]), base_name(g_sort_paths[*ib]));
+
+    return c ? c : strcmp(g_sort_paths[*ia], g_sort_paths[*ib]);
+}
+
+/* The name after a leading track number, such as "001-" or "01 . ", or
+ * the whole name when it has none. */
+static const char *after_track_number(const char *name)
+{
+    const char *p = name;
+
+    while (*p >= '0' && *p <= '9') {
+        p++;
+    }
+    if (p == name) {
+        return name;
+    }
+    while (*p == '-' || *p == '_' || *p == '.' || *p == ' ') {
+        p++;
+    }
+    return *p ? p : name;
+}
+
+int playlist_queue_prefix(Playlist *pl, const char *prefix)
+{
+    size_t len;
+    size_t start;
+    size_t i;
+    int matched = 0;
+
+    if (!pl || !prefix) {
+        return 0;
+    }
+    prefix = base_name(prefix);
+    len = strlen(prefix);
+    if (len == 0) {
+        return 0;
+    }
+    pthread_mutex_lock(&pl->mu);
+    start = pl->queued;
+    for (i = 0; i < pl->count; i++) {
+        size_t k;
+        int dup = 0;
+        const char *name = base_name(pl->paths[i]);
+
+        if (strncasecmp(name, prefix, len) != 0 &&
+            strncasecmp(after_track_number(name), prefix, len) != 0) {
+            continue;
+        }
+        matched++;
+        for (k = pl->queue_pos; k < pl->queued; k++) {
+            if (pl->queue[k] == i) {
+                dup = 1;
+            }
+        }
+        if (!dup && pl->queue_pos > 0 && pl->queue_pos == pl->queued) {
+            /* Everything queued has played. Reuse the space. */
+            pl->queue_pos = 0;
+            pl->queued = 0;
+            start = 0;
+        }
+        if (!dup && pl->queued < pl->count) {
+            pl->queue[pl->queued++] = i;
+            pl->skip[i] = 1;
+        }
+    }
+    g_sort_paths = pl->paths;
+    qsort(pl->queue + start, pl->queued - start, sizeof pl->queue[0], cmp_queued);
+    pthread_mutex_unlock(&pl->mu);
+    return matched;
 }
 
 int playlist_next(Playlist *pl, char *dest, size_t destlen)
@@ -167,12 +265,112 @@ int playlist_next(Playlist *pl, char *dest, size_t destlen)
         return -1;
     }
     pthread_mutex_lock(&pl->mu);
-    if (pl->cursor >= pl->count) {
-        shuffle_order(pl);
+    if (pl->queue_pos < pl->queued) {
+        idx = pl->queue[pl->queue_pos++];
+        pl->last = idx;
+        snprintf(dest, destlen, "%s", pl->paths[idx]);
+        pthread_mutex_unlock(&pl->mu);
+        return 0;
     }
-    idx = pl->order[pl->cursor++];
+    do {
+        if (pl->cursor >= pl->count) {
+            shuffle_order(pl);
+        }
+        idx = pl->order[pl->cursor++];
+    } while (pl->skip[idx] && pl->cursor < pl->count);
+    if (pl->skip[idx]) {
+        /* Every song was queued. Start a fresh pass. */
+        shuffle_order(pl);
+        idx = pl->order[pl->cursor++];
+    }
     pl->last = idx;
     snprintf(dest, destlen, "%s", pl->paths[idx]);
     pthread_mutex_unlock(&pl->mu);
     return 0;
+}
+
+static int next_is(Playlist *pl, const char *want)
+{
+    char got[4096];
+
+    return playlist_next(pl, got, sizeof got) == 0 && strcmp(base_name(got), want) == 0;
+}
+
+int playlist_self_test(void)
+{
+    static const char *names[] = {
+        "Baby Shark.mp3", "baby beluga.mp3", "Bananas.MP3", "Wheels.mp3", "notes.txt",
+        "007-wheels-again.mp3"
+    };
+    char dir[] = "/tmp/autodj-songs-XXXXXX";
+    char path[256];
+    char got[4096];
+    Playlist *pl = NULL;
+    size_t i;
+    int rc = -1;
+
+    if (!mkdtemp(dir)) {
+        log_error("playlist", "cannot create a temp folder");
+        return -1;
+    }
+    for (i = 0; i < sizeof names / sizeof names[0]; i++) {
+        FILE *fp;
+
+        snprintf(path, sizeof path, "%s/%s", dir, names[i]);
+        fp = fopen(path, "w");
+        if (fp) {
+            fclose(fp);
+        }
+    }
+    pl = playlist_load(dir, 1);
+    if (!pl || playlist_count(pl) != 5) {
+        log_error("playlist", "test folder did not load 5 songs");
+        goto out;
+    }
+    /* Letter case does not matter, and every match plays, in name order. */
+    if (playlist_queue_prefix(pl, "BABY") != 2 || playlist_queue_prefix(pl, "ban") != 1 ||
+        playlist_queue_prefix(pl, "baby s") != 1 || playlist_queue_prefix(pl, "x") != 0 ||
+        playlist_queue_prefix(pl, "notes") != 0) {
+        log_error("playlist", "song names did not match");
+        goto out;
+    }
+    if (!next_is(pl, "baby beluga.mp3") || !next_is(pl, "Baby Shark.mp3") ||
+        !next_is(pl, "Bananas.MP3")) {
+        log_error("playlist", "the songs asked for did not play first, in order");
+        goto out;
+    }
+    /* The rest of the first pass leaves out the songs that already played. */
+    for (i = 0; i < 2; i++) {
+        if (playlist_next(pl, got, sizeof got) != 0 ||
+            (strcmp(base_name(got), "Wheels.mp3") != 0 &&
+             strcmp(base_name(got), "007-wheels-again.mp3") != 0)) {
+            log_error("playlist", "a song asked for played again in the first pass");
+            goto out;
+        }
+    }
+    for (i = 0; i < 8; i++) {
+        if (playlist_next(pl, got, sizeof got) != 0) {
+            log_error("playlist", "the normal order did not continue");
+            goto out;
+        }
+    }
+    playlist_free(pl);
+    /* A folder in front of the name is ignored, and so is a track number. */
+    pl = playlist_load(dir, 0);
+    if (!pl || playlist_queue_prefix(pl, "/some/where/whe") != 2 ||
+        !next_is(pl, "007-wheels-again.mp3") || !next_is(pl, "Wheels.mp3") ||
+        playlist_queue_prefix(pl, "007") != 1 || !next_is(pl, "007-wheels-again.mp3") ||
+        playlist_queue_prefix(pl, "WHEELS-A") != 1) {
+        log_error("playlist", "a song name with a folder or track number did not match");
+        goto out;
+    }
+    rc = 0;
+out:
+    playlist_free(pl);
+    for (i = 0; i < sizeof names / sizeof names[0]; i++) {
+        snprintf(path, sizeof path, "%s/%s", dir, names[i]);
+        remove(path);
+    }
+    rmdir(dir);
+    return rc;
 }

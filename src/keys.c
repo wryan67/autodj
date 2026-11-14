@@ -898,6 +898,9 @@ static void press_action(int id)
     case KEYID_FLANGER:
         player_fx_toggle(PLAYER_FX_FLANGER);
         break;
+    case KEYID_UNDERWATER:
+        player_fx_toggle(PLAYER_FX_UNDERWATER);
+        break;
     case KEYID_EFFECTS_OFF:
         player_fx_all_off();
         break;
@@ -920,7 +923,7 @@ static int pad_action(const struct Config *cfg, int key)
         cfg->key_reverb, cfg->key_pitch, cfg->key_autopan, cfg->key_phaser,
         cfg->key_chorus, cfg->key_flanger, cfg->key_effects_off, cfg->key_vol_up,
         cfg->key_vol_down, cfg->key_jog_up, cfg->key_jog_down, cfg->key_rv_up,
-        cfg->key_rv_down
+        cfg->key_rv_down, cfg->key_underwater
     };
     int id;
 
@@ -1128,7 +1131,7 @@ static int kbd_action(const struct Config *cfg, const char *name)
         cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan, cfg->kbd_phaser,
         cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off, cfg->kbd_vol_up,
         cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down, cfg->kbd_rv_up,
-        cfg->kbd_rv_down
+        cfg->kbd_rv_down, cfg->kbd_underwater
     };
     int id;
 
@@ -1640,6 +1643,7 @@ static int kbd_self_test(void)
     cfg.key_jog_down = -1;
     cfg.key_rv_up = -1;
     cfg.key_rv_down = -1;
+    cfg.key_underwater = -1;
     snprintf(cfg.kbd_reverb, sizeof cfg.kbd_reverb, "r");
     player_set_fx(NULL);
     player_set_volume_percent(50);
@@ -1773,7 +1777,7 @@ static int midi_dispatch_self_test(void)
     cfg.key_phaser = cfg.key_chorus = cfg.key_flanger = cfg.key_effects_off = -1;
     cfg.key_vol_up = KEY_U;
     cfg.key_vol_down = cfg.key_jog_up = cfg.key_jog_down = -1;
-    cfg.key_rv_up = cfg.key_rv_down = -1;
+    cfg.key_rv_up = cfg.key_rv_down = cfg.key_underwater = -1;
     for (id = 0; id < KEYID_COUNT; id++) {
         cfg.midi_code[id] = -1;
     }
@@ -1897,6 +1901,7 @@ static int debounce_self_test(void)
     cfg.key_jog_down = -1;
     cfg.key_rv_up = -1;
     cfg.key_rv_down = -1;
+    cfg.key_underwater = -1;
     player_set_volume_percent(50);
     player_set_fx(NULL);
     g_press_seen = 0;

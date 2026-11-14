@@ -54,7 +54,9 @@ enum {
     PLAYER_FX_AUTOPAN = 2,
     PLAYER_FX_PHASER = 3,
     PLAYER_FX_CHORUS = 4,
-    PLAYER_FX_FLANGER = 5
+    PLAYER_FX_FLANGER = 5,
+    PLAYER_FX_UNDERWATER = 6,
+    PLAYER_FX_COUNT
 };
 
 /* Copy the effect settings. Call this before player_start. The power

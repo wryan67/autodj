@@ -1,7 +1,8 @@
 #ifndef AUTODJ_FX_H
 #define AUTODJ_FX_H
 
-/* Reverb, chipmunk (a pitch shifter), autopan, phaser, chorus, and flanger.
+/* Reverb, chipmunk (a pitch shifter), autopan, phaser, chorus, flanger, and
+ * underwater.
  *
  * The knob names and the default numbers are the ones Mixxx shows for its
  * built-in Reverb, Pitch Shift, and Autopan. The processing here is separate.
@@ -64,6 +65,18 @@ typedef struct FxParams {
                         * itself. Higher is the jet-plane ring. */
     float fl_mix;      /* 0..100, default 50. Percent of delayed sound.
                         * 50 gives the deepest notches. 0 is dry. */
+    int underwater_on;
+    float uw_cutoff;   /* 100..4000 Hz, default 500. Steep low-pass: lower
+                        * sounds deeper and more muffled. */
+    float uw_res;      /* 0..1, default 0.4. A hollow, boomy bump at the
+                        * cutoff. */
+    float uw_period;   /* 0.25..16, default 0.5. Measures for one slow
+                        * wobble of the pitch. 120 BPM when unknown. */
+    float uw_wobble;   /* 0..5 ms, default 1.5. Delay swing behind the
+                        * wobble. 0 holds the pitch steady. */
+    float uw_mix;      /* 0..100, default 100. Percent underwater sound. */
+    float uw_boost;    /* 0..100, default 20. Percent louder, to make up
+                        * for the highs the filter takes out. */
 } FxParams;
 
 typedef struct FxState FxState;
@@ -79,7 +92,7 @@ void fx_setup(FxState *st, const FxParams *p);
  * while a song plays. */
 void fx_set_send(FxState *st, float send);
 void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
-               int chorus, int flanger);
+               int chorus, int flanger, int underwater);
 /* Length of one beat in seconds at the current playback speed, or 0 when
  * the tempo is unknown. The autopan period counts beats when this is set.
  */

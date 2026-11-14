@@ -36,6 +36,7 @@ enum {
     KEYID_JOG_DOWN,
     KEYID_RV_UP,
     KEYID_RV_DOWN,
+    KEYID_UNDERWATER,
     KEYID_COUNT
 };
 
@@ -86,6 +87,7 @@ typedef struct Config {
     int key_jog_down;
     int key_rv_up;
     int key_rv_down;
+    int key_underwater;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -108,6 +110,7 @@ typedef struct Config {
     char key_jog_down_name[64];
     char key_rv_up_name[64];
     char key_rv_down_name[64];
+    char key_underwater_name[64];
     /* Terminal key for the same action. Empty means unbound. */
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
@@ -131,6 +134,7 @@ typedef struct Config {
     char kbd_jog_down[AUTODJ_KBD_LEN];
     char kbd_rv_up[AUTODJ_KBD_LEN];
     char kbd_rv_down[AUTODJ_KBD_LEN];
+    char kbd_underwater[AUTODJ_KBD_LEN];
     /* Bit i is set when the file named that keyboard action, even if blank. */
     unsigned kbd_line;
     /* MIDI control for each action, by KEYID. Empty and -1 mean unbound. */
@@ -205,6 +209,7 @@ typedef struct ConfigEdit {
     char key_jog_down[64];
     char key_rv_up[64];
     char key_rv_down[64];
+    char key_underwater[64];
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
     char kbd_prev[AUTODJ_KBD_LEN];
@@ -227,6 +232,7 @@ typedef struct ConfigEdit {
     char kbd_jog_down[AUTODJ_KBD_LEN];
     char kbd_rv_up[AUTODJ_KBD_LEN];
     char kbd_rv_down[AUTODJ_KBD_LEN];
+    char kbd_underwater[AUTODJ_KBD_LEN];
     char midi[KEYID_COUNT][AUTODJ_MIDI_LEN];
     char rv_decay[32];
     char rv_bw[32];
@@ -257,6 +263,12 @@ typedef struct ConfigEdit {
     char fl_depth[32];
     char fl_feedback[32];
     char fl_mix[32];
+    char uw_cutoff[32];
+    char uw_res[32];
+    char uw_period[32];
+    char uw_wobble[32];
+    char uw_mix[32];
+    char uw_boost[32];
 } ConfigEdit;
 
 /* Returns 0 and sets *out when s is true/false, yes/no, on/off, or 1/0. */

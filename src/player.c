@@ -46,7 +46,7 @@ static atomic_int g_skip_gen;
 static atomic_int g_back_gen;
 static atomic_int g_rewind_ms;
 static atomic_int g_volume = 1000;
-static atomic_int g_fx_on[6];
+static atomic_int g_fx_on[PLAYER_FX_COUNT];
 /* Reverb knob position, 0 to 1000 from rv_send_min to rv_send_max. */
 static atomic_int g_rv_level = 500;
 static FxState *g_fx;
@@ -955,7 +955,8 @@ static void render_frame(int16_t *dst)
                   atomic_load(&g_fx_on[PLAYER_FX_AUTOPAN]),
                   atomic_load(&g_fx_on[PLAYER_FX_PHASER]),
                   atomic_load(&g_fx_on[PLAYER_FX_CHORUS]),
-                  atomic_load(&g_fx_on[PLAYER_FX_FLANGER]));
+                  atomic_load(&g_fx_on[PLAYER_FX_FLANGER]),
+                  atomic_load(&g_fx_on[PLAYER_FX_UNDERWATER]));
         fx_process(g_fx, &left, &right);
     }
     if (left > 1) {
@@ -1311,6 +1312,7 @@ void player_set_fx(const FxParams *fx)
     g_fx_params.phaser_on = 0;
     g_fx_params.chorus_on = 0;
     g_fx_params.flanger_on = 0;
+    g_fx_params.underwater_on = 0;
     atomic_store(&g_rv_level, 500);
     g_fx_params.rv_send = 0.5f * (g_fx_params.rv_send_min + g_fx_params.rv_send_max);
     atomic_store(&g_fx_on[PLAYER_FX_REVERB], 0);
@@ -1319,11 +1321,12 @@ void player_set_fx(const FxParams *fx)
     atomic_store(&g_fx_on[PLAYER_FX_PHASER], 0);
     atomic_store(&g_fx_on[PLAYER_FX_CHORUS], 0);
     atomic_store(&g_fx_on[PLAYER_FX_FLANGER], 0);
+    atomic_store(&g_fx_on[PLAYER_FX_UNDERWATER], 0);
 }
 
 int player_fx_enabled(int which)
 {
-    if (which < 0 || which > PLAYER_FX_FLANGER) {
+    if (which < 0 || which >= PLAYER_FX_COUNT) {
         return 0;
     }
     return atomic_load(&g_fx_on[which]) ? 1 : 0;
@@ -1332,10 +1335,10 @@ int player_fx_enabled(int which)
 int player_fx_toggle(int which)
 {
     static const char *names[] = {"reverb", "chipmunk", "autopan",
-                                   "phaser", "chorus", "flanger"};
+                                   "phaser", "chorus", "flanger", "underwater"};
     int next;
 
-    if (which < 0 || which > PLAYER_FX_FLANGER) {
+    if (which < 0 || which >= PLAYER_FX_COUNT) {
         return 0;
     }
     next = !atomic_load(&g_fx_on[which]);
@@ -1348,7 +1351,7 @@ void player_fx_all_off(void)
 {
     int i;
 
-    for (i = 0; i <= PLAYER_FX_FLANGER; i++) {
+    for (i = 0; i < PLAYER_FX_COUNT; i++) {
         atomic_store(&g_fx_on[i], 0);
     }
     log_info("keys", "effects off");

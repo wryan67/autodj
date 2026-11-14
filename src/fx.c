@@ -18,6 +18,8 @@
  * in pitch, so one part sounds like several. Flanger does the same kind of
  * mix with a much shorter delay, so the copy cancels the original in a
  * comb that sweeps and whooshes.
+ * Underwater is a steep low-pass with a resonant bump, which leaves only a
+ * muffled, boomy body, plus a slow pitch wobble from a moving delay.
  */
 
 #define AP_DELAY 512
@@ -119,6 +121,17 @@ struct FxState {
     float fl_mix;
     int fl_on;
     int fl_live;
+    float *uw_buf[2];
+    int uw_len;
+    int uw_w;
+    double uw_phase;
+    float uw_mix;
+    int uw_on;
+    int uw_live;
+    float uw_z[2][2][2];  /* [channel][stage] state of the two low-passes */
+    float uw_coef[2][5];  /* [stage] b0 b1 b2 a1 a2 */
+    float uw_fc;          /* cutoff and resonance the coefficients are for */
+    float uw_q;
 };
 
 /* Plate reverb lengths in samples at 29761 Hz. */
@@ -172,6 +185,12 @@ void fx_defaults(FxParams *p)
     p->fl_depth = 0.5f;
     p->fl_feedback = 0.5f;
     p->fl_mix = 50.0f;
+    p->uw_cutoff = 500.0f;
+    p->uw_res = 0.4f;
+    p->uw_period = 0.5f;
+    p->uw_wobble = 1.5f;
+    p->uw_mix = 100.0f;
+    p->uw_boost = 20.0f;
 }
 
 static int scaled(unsigned rate, int n)
@@ -368,11 +387,14 @@ FxState *fx_new(unsigned rate)
      */
     st->ch_len = (int)((double)rate * 0.070) + 8;
     st->fl_len = (int)((double)rate * 0.020) + 8;
+    st->uw_len = (int)((double)rate * 0.020) + 8;
     st->ch_buf[0] = calloc((size_t)st->ch_len * 2, sizeof(float));
     st->fl_buf[0] = calloc((size_t)st->fl_len * 2, sizeof(float));
-    if (!st->ch_buf[0] || !st->fl_buf[0]) {
+    st->uw_buf[0] = calloc((size_t)st->uw_len * 2, sizeof(float));
+    if (!st->ch_buf[0] || !st->fl_buf[0] || !st->uw_buf[0]) {
         free(st->ch_buf[0]);
         free(st->fl_buf[0]);
+        free(st->uw_buf[0]);
         free(st->pv_block);
         free(st->pv_rev);
         free(st->rv_block);
@@ -381,6 +403,7 @@ FxState *fx_new(unsigned rate)
     }
     st->ch_buf[1] = st->ch_buf[0] + st->ch_len;
     st->fl_buf[1] = st->fl_buf[0] + st->fl_len;
+    st->uw_buf[1] = st->uw_buf[0] + st->uw_len;
     fx_defaults(&st->p);
     return st;
 }
@@ -395,6 +418,7 @@ void fx_free(FxState *st)
     free(st->pv_rev);
     free(st->ch_buf[0]);
     free(st->fl_buf[0]);
+    free(st->uw_buf[0]);
     free(st);
 }
 
@@ -463,6 +487,17 @@ static void ch_clear(FxState *st)
     st->ch_phase = 0;
 }
 
+static void uw_clear(FxState *st)
+{
+    if (st->uw_buf[0] && st->uw_len > 0) {
+        memset(st->uw_buf[0], 0, (size_t)st->uw_len * 2 * sizeof(float));
+    }
+    memset(st->uw_z, 0, sizeof st->uw_z);
+    st->uw_w = 0;
+    st->uw_phase = 0;
+    st->uw_fc = -1;
+}
+
 static void fl_clear(FxState *st)
 {
     if (st->fl_buf[0] && st->fl_len > 0) {
@@ -488,6 +523,7 @@ void fx_setup(FxState *st, const FxParams *p)
     ph_clear(st);
     ch_clear(st);
     fl_clear(st);
+    uw_clear(st);
     st->rv_send = 0;
     st->rv_live = 0;
     st->rv_lfo[0] = 0;
@@ -501,12 +537,15 @@ void fx_setup(FxState *st, const FxParams *p)
     st->ch_live = 0;
     st->fl_mix = 0;
     st->fl_live = 0;
+    st->uw_mix = 0;
+    st->uw_live = 0;
     st->rv_on = st->p.reverb_on ? 1 : 0;
     st->ps_on = st->p.pitch_on ? 1 : 0;
     st->ap_on = st->p.autopan_on ? 1 : 0;
     st->ph_on = st->p.phaser_on ? 1 : 0;
     st->ch_on = st->p.chorus_on ? 1 : 0;
     st->fl_on = st->p.flanger_on ? 1 : 0;
+    st->uw_on = st->p.underwater_on ? 1 : 0;
 }
 
 void fx_set_send(FxState *st, float send)
@@ -517,7 +556,7 @@ void fx_set_send(FxState *st, float send)
 }
 
 void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
-               int chorus, int flanger)
+               int chorus, int flanger, int underwater)
 {
     if (!st) {
         return;
@@ -528,6 +567,7 @@ void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
     st->ph_on = phaser ? 1 : 0;
     st->ch_on = chorus ? 1 : 0;
     st->fl_on = flanger ? 1 : 0;
+    st->uw_on = underwater ? 1 : 0;
 }
 
 void fx_set_beat(FxState *st, float beat_seconds)
@@ -1448,6 +1488,103 @@ static void process_flanger(FxState *st, float *left, float *right)
     }
 }
 
+/* RBJ low-pass biquad for cutoff fc and quality q. */
+static void lowpass_coef(float *c, float fc, float q, unsigned rate)
+{
+    float w0 = 2.0f * PV_PI * fc / (float)rate;
+    float cw = cosf(w0);
+    float alpha = sinf(w0) / (2.0f * q);
+    float a0 = 1.0f + alpha;
+
+    c[0] = 0.5f * (1.0f - cw) / a0;
+    c[1] = (1.0f - cw) / a0;
+    c[2] = c[0];
+    c[3] = -2.0f * cw / a0;
+    c[4] = (1.0f - alpha) / a0;
+}
+
+static float biquad(const float *c, float *z, float x)
+{
+    float y = c[0] * x + z[0];
+
+    z[0] = c[1] * x - c[3] * y + z[1];
+    z[1] = c[2] * x - c[4] * y;
+    return y;
+}
+
+/* A slowly moving delay bends the pitch a few cents up and down. Two
+ * low-passes in a row take the highs out steeply (24 dB per octave); the
+ * first has a resonant peak that gives the hollow, boomy tone. The right
+ * speaker's wobble runs a little behind the left, which widens it.
+ */
+static void process_underwater(FxState *st, float *left, float *right)
+{
+    float amount;
+    float fc;
+    float q;
+    float wobble;
+    float gain;
+    float *io[2];
+    int c;
+
+    mod_ramp(&st->uw_mix, st->uw_on);
+    if (!st->uw_on && st->uw_mix == 0) {
+        if (st->uw_live) {
+            uw_clear(st);
+            st->uw_live = 0;
+        }
+        return;
+    }
+    if (st->uw_on && !st->uw_live) {
+        uw_clear(st);
+        st->uw_live = 1;
+    }
+    fc = st->p.uw_cutoff;
+    if (fc < 100.0f) {
+        fc = 100.0f;
+    }
+    if (fc > 0.45f * (float)st->rate) {
+        fc = 0.45f * (float)st->rate;
+    }
+    q = 0.707f + 4.0f * clamp_unit(st->p.uw_res);
+    if (fc != st->uw_fc || q != st->uw_q) {
+        lowpass_coef(st->uw_coef[0], fc, q, st->rate);
+        lowpass_coef(st->uw_coef[1], fc, 0.707f, st->rate);
+        st->uw_fc = fc;
+        st->uw_q = q;
+    }
+    wobble = st->p.uw_wobble;
+    if (wobble < 0) {
+        wobble = 0;
+    }
+    if (wobble > 5.0f) {
+        wobble = 5.0f;
+    }
+    gain = 1.0f + (st->p.uw_boost > 0 ? st->p.uw_boost * 0.01f : 0);
+    amount = clamp_unit(st->p.uw_mix * 0.01f) * st->uw_mix;
+    io[0] = left;
+    io[1] = right;
+    for (c = 0; c < 2; c++) {
+        float dry = *io[c];
+        float lfo = mod_lfo(st->uw_phase, c ? 0.15f : 0);
+        float ms = 1.0f + wobble * (1.0f + lfo);
+        float wet;
+
+        line_store(st->uw_buf[c], st->uw_w, dry);
+        wet = line_read(st->uw_buf[c], st->uw_len, st->uw_w, ms * 0.001f * (float)st->rate);
+        wet = biquad(st->uw_coef[0], st->uw_z[c][0], wet);
+        wet = biquad(st->uw_coef[1], st->uw_z[c][1], wet);
+        if (amount != 0) {
+            *io[c] = fin(dry * (1.0f - amount) + soft_clip(wet * gain) * amount);
+        }
+    }
+    line_advance(&st->uw_w, st->uw_len);
+    st->uw_phase += mod_step(st, st->p.uw_period);
+    if (st->uw_phase >= 1.0) {
+        st->uw_phase -= floor(st->uw_phase);
+    }
+}
+
 void fx_process(FxState *st, float *left, float *right)
 {
     if (!st || !left || !right) {
@@ -1457,6 +1594,7 @@ void fx_process(FxState *st, float *left, float *right)
     process_pitch(st, left, right);
     process_chorus(st, left, right);
     process_flanger(st, left, right);
+    process_underwater(st, left, right);
     process_phaser(st, left, right);
     process_autopan(st, left, right);
 }
@@ -1484,6 +1622,89 @@ static int crossings(const float *x, int n)
         }
     }
     return c;
+}
+
+/* RMS of the last half second of a tone through underwater, fully on. */
+static float underwater_rms(FxState *st, const FxParams *p, float hz)
+{
+    double sum = 0;
+    int i;
+
+    fx_setup(st, p);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 1);
+    st->uw_mix = 1;
+    for (i = 0; i < 44100; i++) {
+        float l = 0.5f * sinf(2.0f * PV_PI * hz * (float)i / 44100.0f);
+        float r = l;
+
+        fx_process(st, &l, &r);
+        if (l != l || l > 2.0f || l < -2.0f) {
+            return -1;
+        }
+        if (i >= 22050) {
+            sum += (double)l * l;
+        }
+    }
+    return (float)sqrt(sum / 22050.0);
+}
+
+/* Underwater keeps the low end, takes the highs out steeply, and leaves the
+ * song alone when it is off. */
+static int underwater_self_test(void)
+{
+    FxState *st = fx_new(44100);
+    FxParams p;
+    float low;
+    float high;
+    int rc = -1;
+    int i;
+
+    if (!st) {
+        log_error("fx", "out of memory");
+        return -1;
+    }
+    fx_defaults(&p);
+    p.uw_wobble = 0;
+    p.uw_res = 0;
+    p.uw_boost = 0;
+    low = underwater_rms(st, &p, 100.0f);
+    high = underwater_rms(st, &p, 5000.0f);
+    /* A 0.5 sine has an RMS of 0.354. Two octaves and more above 500 Hz,
+     * 24 dB per octave leaves well under 1%. */
+    if (low < 0.3f || low > 0.4f || high < 0 || high > 0.004f) {
+        log_error("fx", "underwater passed %.4f at 100 Hz and %.4f at 5 kHz", (double)low,
+                  (double)high);
+        goto done;
+    }
+    /* Boost 20 makes it exactly 1.2 times as loud. */
+    p.uw_boost = 20;
+    high = underwater_rms(st, &p, 100.0f);
+    if (high < low * 1.19f || high > low * 1.21f) {
+        log_error("fx", "underwater boost 20 changed the level %.3f times", (double)(high / low));
+        goto done;
+    }
+    fx_defaults(&p);
+    if (underwater_rms(st, &p, 300.0f) < 0) {
+        log_error("fx", "underwater with its defaults ran away");
+        goto done;
+    }
+    fx_setup(st, &p);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
+    for (i = 0; i < 1000; i++) {
+        float x = 0.5f * sinf(2.0f * PV_PI * 5000.0f * (float)i / 44100.0f);
+        float l = x;
+        float r = x;
+
+        fx_process(st, &l, &r);
+        if (l != x || r != x) {
+            log_error("fx", "underwater off changed the song");
+            goto done;
+        }
+    }
+    rc = 0;
+done:
+    fx_free(st);
+    return rc;
 }
 
 int fx_self_test(void)
@@ -1518,7 +1739,7 @@ int fx_self_test(void)
 
     fx_defaults(&p);
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i] * 0.5f;
@@ -1533,7 +1754,7 @@ int fx_self_test(void)
     p.reverb_on = 1;
     p.rv_send = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0, 0, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -1548,7 +1769,7 @@ int fx_self_test(void)
     p.rv_send = 1;
     p.rv_decay = 0.8f;
     fx_setup(st, &p);
-    fx_set_on(st, 1, 0, 0, 0, 0, 0);
+    fx_set_on(st, 1, 0, 0, 0, 0, 0, 0);
     left = 1;
     right = 1;
     fx_process(st, &left, &right);
@@ -1574,7 +1795,7 @@ int fx_self_test(void)
     p.pitch_on = 1;
     p.ps_pitch = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0, 0, 0, 0);
+    fx_set_on(st, 0, 1, 0, 0, 0, 0, 0);
     for (i = 0; i < 300; i++) {
         left = dry[i];
         right = dry[i];
@@ -1591,7 +1812,7 @@ int fx_self_test(void)
     p.ps_semi = 0;
     p.ps_formant = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 1, 0, 0, 0, 0);
+    fx_set_on(st, 0, 1, 0, 0, 0, 0, 0);
     for (i = 0; i < N; i++) {
         left = dry[i];
         right = dry[i];
@@ -1619,7 +1840,7 @@ int fx_self_test(void)
     p.ap_period = 0.25f;
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0, 0, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
     fx_set_beat(st, 0.5f);
     {
         float at_left[2] = {0, 0};
@@ -1655,13 +1876,13 @@ int fx_self_test(void)
      */
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0, 0, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
     for (i = 0; i < 5512; i++) {
         left = 0.5f;
         right = 0.5f;
         fx_process(st, &left, &right);
     }
-    fx_set_on(st, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
     for (i = 0; i < 6000; i++) {
         left = 0.5f;
         right = 0.5f;
@@ -1683,13 +1904,13 @@ int fx_self_test(void)
      */
     fx_setup(st, &p);
     st->ap_rng = 0;
-    fx_set_on(st, 0, 0, 1, 0, 0, 0);
+    fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
     for (i = 0; i < 2205; i++) {
         left = 0.5f;
         right = 0.5f;
         fx_process(st, &left, &right);
     }
-    fx_set_on(st, 0, 0, 0, 0, 0, 0);
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
     {
         float low_r = 1;
 
@@ -1717,7 +1938,7 @@ int fx_self_test(void)
 
         st->ap_rng = 12345;
         for (run = 0; run < 16; run++) {
-            fx_set_on(st, 0, 0, 1, 0, 0, 0);
+            fx_set_on(st, 0, 0, 1, 0, 0, 0, 0);
             for (i = 0; i < 2000; i++) {
                 left = 0.5f;
                 right = 0.5f;
@@ -1725,7 +1946,7 @@ int fx_self_test(void)
             }
             went_left += left > right;
             went_right += right > left;
-            fx_set_on(st, 0, 0, 0, 0, 0, 0);
+            fx_set_on(st, 0, 0, 0, 0, 0, 0, 0);
             for (i = 0; i < 30000; i++) {
                 left = 0.5f;
                 right = 0.5f;
@@ -1743,7 +1964,7 @@ int fx_self_test(void)
     /* The boost is there from the first sample. */
     fx_defaults(&p);
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 1, 0, 0);
+    fx_set_on(st, 0, 0, 0, 1, 0, 0, 0);
     left = 0.5f;
     right = 0.5f;
     fx_process(st, &left, &right);
@@ -1756,7 +1977,7 @@ int fx_self_test(void)
     fx_defaults(&p);
     p.phaser_on = 1;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 1, 0, 0);
+    fx_set_on(st, 0, 0, 0, 1, 0, 0, 0);
     fx_set_beat(st, 0.5f);
     {
         float lo = 9;
@@ -1791,7 +2012,7 @@ int fx_self_test(void)
     p.chorus_on = 1;
     p.ch_mix = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0, 1, 0);
+    fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -1806,7 +2027,7 @@ int fx_self_test(void)
     p.flanger_on = 1;
     p.fl_mix = 0;
     fx_setup(st, &p);
-    fx_set_on(st, 0, 0, 0, 0, 0, 1);
+    fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
     for (i = 0; i < 200; i++) {
         left = dry[i];
         right = dry[i];
@@ -1842,7 +2063,7 @@ int fx_self_test(void)
         p.ch_voices = 1;
         p.ch_mix = 100;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 1, 0);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -1874,7 +2095,7 @@ int fx_self_test(void)
 
         p.ch_voices = 2;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 1, 0);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -1900,7 +2121,7 @@ int fx_self_test(void)
         p.ch_voices = 1;
         p.ch_depth = 8;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 1, 0);
+        fx_set_on(st, 0, 0, 0, 0, 1, 0, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -1957,7 +2178,7 @@ int fx_self_test(void)
         p.fl_feedback = 0;
         p.fl_mix = 100;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
         left = 0;
         right = 0;
         fx_process(st, &left, &right);
@@ -1991,7 +2212,7 @@ int fx_self_test(void)
         p.fl_feedback = 0;
         p.fl_mix = 50;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
         {
             double sum = 0;
 
@@ -2012,7 +2233,7 @@ int fx_self_test(void)
 
         p.fl_delay = 1;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
         {
             double plain = 0;
             double fed = 0;
@@ -2031,7 +2252,7 @@ int fx_self_test(void)
             }
             p.fl_feedback = 0.6f;
             fx_setup(st, &p);
-            fx_set_on(st, 0, 0, 0, 0, 0, 1);
+            fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
             for (i = 0; i < 8000; i++) {
                 left = 0.25f * sinf(2.0f * PV_PI * 1000.0f * (float)i / 44100.0f);
                 right = left;
@@ -2059,7 +2280,7 @@ int fx_self_test(void)
         p.fl_feedback = 0;
         p.fl_mix = 50;
         fx_setup(st, &p);
-        fx_set_on(st, 0, 0, 0, 0, 0, 1);
+        fx_set_on(st, 0, 0, 0, 0, 0, 1, 0);
         fx_set_beat(st, 0.5f);
         {
             float lo = 9;
@@ -2096,6 +2317,9 @@ int fx_self_test(void)
         fx_set_beat(st, 0);
     }
 
+    if (underwater_self_test() != 0) {
+        goto done;
+    }
     rc = 0;
 done:
     free(dry);

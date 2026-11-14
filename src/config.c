@@ -238,6 +238,8 @@ static char *kbd_cfg(Config *cfg, int id)
         return cfg->kbd_rv_up;
     case KEYID_RV_DOWN:
         return cfg->kbd_rv_down;
+    case KEYID_UNDERWATER:
+        return cfg->kbd_underwater;
     default:
         return NULL;
     }
@@ -290,6 +292,8 @@ static char *kbd_edit(ConfigEdit *edit, int id)
         return edit->kbd_rv_up;
     case KEYID_RV_DOWN:
         return edit->kbd_rv_down;
+    case KEYID_UNDERWATER:
+        return edit->kbd_underwater;
     default:
         return NULL;
     }
@@ -342,6 +346,8 @@ static char *key_edit(ConfigEdit *edit, int id)
         return edit->key_rv_up;
     case KEYID_RV_DOWN:
         return edit->key_rv_down;
+    case KEYID_UNDERWATER:
+        return edit->key_underwater;
     default:
         return NULL;
     }
@@ -376,7 +382,7 @@ static const char *kbd_default(int id)
     static const char *vals[KEYID_COUNT] = {
         "Space", "Right", "Left", "1", "2", "3",
         "Up", "Down", "Enter", "q", "w", "e", "r", "t", "y", "Tab",
-        "=", "-", ".", ",", "]", "["
+        "=", "-", ".", ",", "]", "[", "u"
     };
 
     if (id < 0 || id >= KEYID_COUNT) {
@@ -554,6 +560,10 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         slot = &cfg->key_rv_down;
         name = cfg->key_rv_down_name;
         name_n = sizeof cfg->key_rv_down_name;
+    } else if (eq_ci(action, "underwater")) {
+        slot = &cfg->key_underwater;
+        name = cfg->key_underwater_name;
+        name_n = sizeof cfg->key_underwater_name;
     } else {
         log_warn("autodj", "unknown key action %s", action);
         return;
@@ -581,7 +591,7 @@ static void bind_kbd_defaults(Config *cfg)
         "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
         "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
-        "reverb_up_kbd", "reverb_down_kbd"
+        "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd"
     };
     int id;
 
@@ -594,6 +604,8 @@ static void bind_kbd_defaults(Config *cfg)
         set_key(cfg, names[id], kbd_default(id));
     }
 }
+
+enum { FX_SECTIONS = 7 };
 
 static int fx_section(const char *section)
 {
@@ -617,16 +629,19 @@ static int fx_section(const char *section)
     if (eq_ci(section, "Flanger")) {
         return 5;
     }
+    if (eq_ci(section, "Underwater")) {
+        return 6;
+    }
     return -1;
 }
 
 static const char *fx_what(int section)
 {
     static const char *names[] = {
-        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger"
+        "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger", "underwater"
     };
 
-    if (section < 0 || section > 5) {
+    if (section < 0 || section > 6) {
         return "effect";
     }
     return names[section];
@@ -825,6 +840,42 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
         } else {
             cfg->fx.fl_mix = (float)v;
         }
+    } else if (section == 6 && eq_ci(key, "cutoff")) {
+        if (parse_real(val, 100, 4000, &v) != 0) {
+            log_warn("autodj", "underwater cutoff must be from 100 to 4000 Hz, got %s", val);
+        } else {
+            cfg->fx.uw_cutoff = (float)v;
+        }
+    } else if (section == 6 && eq_ci(key, "resonance")) {
+        if (parse_real(val, 0, 1, &v) != 0) {
+            log_warn("autodj", "underwater resonance must be from 0 to 1, got %s", val);
+        } else {
+            cfg->fx.uw_res = (float)v;
+        }
+    } else if (section == 6 && eq_ci(key, "period")) {
+        if (parse_real(val, 0.25, 16, &v) != 0) {
+            log_warn("autodj", "underwater period must be from 0.25 to 16, got %s", val);
+        } else {
+            cfg->fx.uw_period = (float)v;
+        }
+    } else if (section == 6 && eq_ci(key, "wobble")) {
+        if (parse_real(val, 0, 5, &v) != 0) {
+            log_warn("autodj", "underwater wobble must be from 0 to 5 ms, got %s", val);
+        } else {
+            cfg->fx.uw_wobble = (float)v;
+        }
+    } else if (section == 6 && eq_ci(key, "mix")) {
+        if (parse_real(val, 0, 100, &v) != 0) {
+            log_warn("autodj", "underwater mix must be from 0 to 100, got %s", val);
+        } else {
+            cfg->fx.uw_mix = (float)v;
+        }
+    } else if (section == 6 && eq_ci(key, "boost")) {
+        if (parse_real(val, 0, 100, &v) != 0) {
+            log_warn("autodj", "underwater boost must be from 0 to 100, got %s", val);
+        } else {
+            cfg->fx.uw_boost = (float)v;
+        }
     } else {
         log_warn("autodj", "unknown %s setting %s", what, key);
     }
@@ -962,6 +1013,7 @@ int config_load(const char *path, Config *cfg)
     cfg->key_jog_down = -1;
     cfg->key_rv_up = -1;
     cfg->key_rv_down = -1;
+    cfg->key_underwater = -1;
     {
         int id;
 
@@ -1036,7 +1088,7 @@ int config_load(const char *path, Config *cfg)
             &cfg->key_pitch, &cfg->key_autopan, &cfg->key_phaser,
             &cfg->key_chorus, &cfg->key_flanger, &cfg->key_effects_off,
             &cfg->key_vol_up, &cfg->key_vol_down, &cfg->key_jog_up, &cfg->key_jog_down,
-            &cfg->key_rv_up, &cfg->key_rv_down
+            &cfg->key_rv_up, &cfg->key_rv_down, &cfg->key_underwater
         };
         int i;
 
@@ -1052,6 +1104,7 @@ int config_load(const char *path, Config *cfg)
     cfg->fx.phaser_on = 0;
     cfg->fx.chorus_on = 0;
     cfg->fx.flanger_on = 0;
+    cfg->fx.underwater_on = 0;
     if (cfg->fx.rv_send_min >= cfg->fx.rv_send_max) {
         FxParams def;
 
@@ -1436,6 +1489,12 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->fl_depth, sizeof edit->fl_depth, "0.5");
     snprintf(edit->fl_feedback, sizeof edit->fl_feedback, "0.5");
     snprintf(edit->fl_mix, sizeof edit->fl_mix, "50");
+    snprintf(edit->uw_cutoff, sizeof edit->uw_cutoff, "500");
+    snprintf(edit->uw_res, sizeof edit->uw_res, "0.4");
+    snprintf(edit->uw_period, sizeof edit->uw_period, "0.5");
+    snprintf(edit->uw_wobble, sizeof edit->uw_wobble, "1.5");
+    snprintf(edit->uw_mix, sizeof edit->uw_mix, "100");
+    snprintf(edit->uw_boost, sizeof edit->uw_boost, "20");
 }
 
 static void copy_raw(char *dest, size_t n, const char *val)
@@ -1546,6 +1605,8 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_rv_up, sizeof edit->key_rv_up, val);
         } else if (eq_ci(key, "reverb_down")) {
             copy_raw(edit->key_rv_down, sizeof edit->key_rv_down, val);
+        } else if (eq_ci(key, "underwater")) {
+            copy_raw(edit->key_underwater, sizeof edit->key_underwater, val);
         }
         return;
     }
@@ -1621,6 +1682,20 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
                 copy_raw(edit->fl_feedback, sizeof edit->fl_feedback, val);
             } else if (eq_ci(key, "mix")) {
                 copy_raw(edit->fl_mix, sizeof edit->fl_mix, val);
+            }
+        } else if (fx == 6) {
+            if (eq_ci(key, "cutoff")) {
+                copy_raw(edit->uw_cutoff, sizeof edit->uw_cutoff, val);
+            } else if (eq_ci(key, "resonance")) {
+                copy_raw(edit->uw_res, sizeof edit->uw_res, val);
+            } else if (eq_ci(key, "period")) {
+                copy_raw(edit->uw_period, sizeof edit->uw_period, val);
+            } else if (eq_ci(key, "wobble")) {
+                copy_raw(edit->uw_wobble, sizeof edit->uw_wobble, val);
+            } else if (eq_ci(key, "mix")) {
+                copy_raw(edit->uw_mix, sizeof edit->uw_mix, val);
+            } else if (eq_ci(key, "boost")) {
+                copy_raw(edit->uw_boost, sizeof edit->uw_boost, val);
             }
         }
     }
@@ -1936,6 +2011,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_jog_down);
     trim(in.key_rv_up);
     trim(in.key_rv_down);
+    trim(in.key_underwater);
     for (i = 0; i < DIAL_SLOTS; i++) {
         trim(in.dial_mode[i]);
     }
@@ -1976,6 +2052,12 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.fl_depth);
     trim(in.fl_feedback);
     trim(in.fl_mix);
+    trim(in.uw_cutoff);
+    trim(in.uw_res);
+    trim(in.uw_period);
+    trim(in.uw_wobble);
+    trim(in.uw_mix);
+    trim(in.uw_boost);
 
     memset(&out, 0, sizeof out);
     out.key_pause = -1;
@@ -2000,6 +2082,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_jog_down = -1;
     out.key_rv_up = -1;
     out.key_rv_down = -1;
+    out.key_underwater = -1;
     out.dial_default = -1;
     fx_defaults(&out.fx);
     out.volume_set = 1;
@@ -2130,6 +2213,9 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_RV_DOWN] = take_key(err, err_n, in.key_rv_down, "Reverb down",
                                      &out.key_rv_down, out.key_rv_down_name,
                                      sizeof out.key_rv_down_name) == 0;
+    key_ok[KEYID_UNDERWATER] = take_key(err, err_n, in.key_underwater, "Underwater",
+                                        &out.key_underwater, out.key_underwater_name,
+                                        sizeof out.key_underwater_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
@@ -2152,6 +2238,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     keys[KEYID_JOG_DOWN] = in.key_jog_down;
     keys[KEYID_RV_UP] = in.key_rv_up;
     keys[KEYID_RV_DOWN] = in.key_rv_down;
+    keys[KEYID_UNDERWATER] = in.key_underwater;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
@@ -2174,6 +2261,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_JOG_DOWN] = "jog down";
     labels[KEYID_RV_UP] = "reverb up";
     labels[KEYID_RV_DOWN] = "reverb down";
+    labels[KEYID_UNDERWATER] = "underwater";
     kbd_ok[KEYID_PAUSE] = take_kbd(err, err_n, in.kbd_pause, "Pause/resume",
                                    out.kbd_pause, sizeof out.kbd_pause) == 0;
     kbd_ok[KEYID_SKIP] = take_kbd(err, err_n, in.kbd_skip, "Skip",
@@ -2218,6 +2306,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
                                    out.kbd_rv_up, sizeof out.kbd_rv_up) == 0;
     kbd_ok[KEYID_RV_DOWN] = take_kbd(err, err_n, in.kbd_rv_down, "Reverb down",
                                      out.kbd_rv_down, sizeof out.kbd_rv_down) == 0;
+    kbd_ok[KEYID_UNDERWATER] = take_kbd(err, err_n, in.kbd_underwater, "Underwater",
+                                        out.kbd_underwater, sizeof out.kbd_underwater) == 0;
     for (i = 0; i < KEYID_COUNT; i++) {
         char what[32];
 
@@ -2364,6 +2454,30 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
             take_real(err, err_n, in.fl_mix, 0, 100, "Flanger mix", &out.fx.fl_mix) != 0) {
             failed = 1;
         }
+    }
+    if (in.uw_cutoff[0] && take_real(err, err_n, in.uw_cutoff, 100, 4000, "Underwater cutoff",
+                                     &out.fx.uw_cutoff) != 0) {
+        failed = 1;
+    }
+    if (in.uw_res[0] && take_real(err, err_n, in.uw_res, 0, 1, "Underwater resonance",
+                                  &out.fx.uw_res) != 0) {
+        failed = 1;
+    }
+    if (in.uw_period[0] && take_real(err, err_n, in.uw_period, 0.25, 16, "Underwater period",
+                                     &out.fx.uw_period) != 0) {
+        failed = 1;
+    }
+    if (in.uw_wobble[0] && take_real(err, err_n, in.uw_wobble, 0, 5, "Underwater wobble",
+                                     &out.fx.uw_wobble) != 0) {
+        failed = 1;
+    }
+    if (in.uw_mix[0] && take_real(err, err_n, in.uw_mix, 0, 100, "Underwater mix",
+                                  &out.fx.uw_mix) != 0) {
+        failed = 1;
+    }
+    if (in.uw_boost[0] && take_real(err, err_n, in.uw_boost, 0, 100, "Underwater boost",
+                                    &out.fx.uw_boost) != 0) {
+        failed = 1;
     }
     for (i = 0; i < KEYID_COUNT; i++) {
         if (!key_ok[i]) {
@@ -2571,6 +2685,9 @@ static int keys_id(const char *key)
     if (eq_ci(key, "reverb_down")) {
         return KEYID_RV_DOWN;
     }
+    if (eq_ci(key, "underwater")) {
+        return KEYID_UNDERWATER;
+    }
     return -1;
 }
 
@@ -2605,22 +2722,23 @@ static void fmt_float(char *dest, size_t n, float v)
     snprintf(dest, n, "%g", (double)v);
 }
 
-static const char *const g_fx_keys[6][7] = {
+static const char *const g_fx_keys[FX_SECTIONS][7] = {
     {"decay", "bw", "damping", "send_min", "send_max"},
     {"pitch", "range", "semitones", "formant"},
     {"period", "smoothing", "distance"},
     {"period", "low", "high", "stages", "feedback", "mix", "boost"},
     {"period", "delay", "depth", "voices", "mix"},
-    {"period", "delay", "depth", "feedback", "mix"}
+    {"period", "delay", "depth", "feedback", "mix"},
+    {"cutoff", "resonance", "period", "wobble", "mix", "boost"}
 };
 
-static const int g_fx_key_count[6] = {5, 4, 3, 7, 5, 5};
+static const int g_fx_key_count[FX_SECTIONS] = {5, 4, 3, 7, 5, 5, 6};
 
 static int fx_key_id(int section, const char *key)
 {
     int i;
 
-    if (section < 0 || section > 5) {
+    if (section < 0 || section >= FX_SECTIONS) {
         return -1;
     }
     for (i = 0; i < g_fx_key_count[section]; i++) {
@@ -2634,7 +2752,7 @@ static int fx_key_id(int section, const char *key)
 
 static const char *fx_key_name(int section, int id)
 {
-    if (section < 0 || section > 5 || id < 0 || id >= g_fx_key_count[section]) {
+    if (section < 0 || section >= FX_SECTIONS || id < 0 || id >= g_fx_key_count[section]) {
         return "";
     }
     return g_fx_keys[section][id];
@@ -2722,6 +2840,13 @@ static void fx_value(const Config *cfg, int section, int id, char *dest, size_t 
             fmt_float(dest, n, fx->ch_mix);
             return;
         }
+    }
+    if (section == 6) {
+        const float vals[6] = {fx->uw_cutoff, fx->uw_res, fx->uw_period,
+                               fx->uw_wobble, fx->uw_mix, fx->uw_boost};
+
+        fmt_float(dest, n, vals[id >= 0 && id < 6 ? id : 0]);
+        return;
     }
     if (section == 5) {
         switch (id) {
@@ -2897,6 +3022,9 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
         break;
     case KEYID_RV_DOWN:
         s = cfg->key_rv_down_name;
+        break;
+    case KEYID_UNDERWATER:
+        s = cfg->key_underwater_name;
         break;
     default:
         break;
@@ -3115,7 +3243,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "rewind_1_5", "dial_forward", "dial_back", "dial_mode",
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
         "effects_off", "volume_up", "volume_down", "jog_up", "jog_down",
-        "reverb_up", "reverb_down"
+        "reverb_up", "reverb_down", "underwater"
     };
     static const char *kbd_names[KEYID_COUNT] = {
         "pause_resume_kbd", "skip_kbd", "previous_kbd", "rewind_0_5_kbd",
@@ -3123,7 +3251,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
         "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
-        "reverb_up_kbd", "reverb_down_kbd"
+        "reverb_up_kbd", "reverb_down_kbd", "underwater_kbd"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -3154,7 +3282,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     int keys_seen[KEYID_COUNT] = {0};
     int kbd_seen[KEYID_COUNT] = {0};
     int midi_seen[KEYID_COUNT] = {0};
-    int fx_seen[6][7] = {{0}};
+    int fx_seen[FX_SECTIONS][7] = {{0}};
     int id;
     int rc = -1;
 
@@ -3435,11 +3563,11 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
 
     if (!jog) {
         static const char *fx_names[] = {
-            "Reverb", "Chipmunk", "Autopan", "Phaser", "Chorus", "Flanger"
+            "Reverb", "Chipmunk", "Autopan", "Phaser", "Chorus", "Flanger", "Underwater"
         };
         int fx;
 
-        for (fx = 0; fx < 6; fx++) {
+        for (fx = 0; fx < FX_SECTIONS; fx++) {
             struct CfgLine *fx_header = NULL;
             struct CfgLine *fx_last = NULL;
 
@@ -3659,6 +3787,7 @@ static int edit_self_test(void)
         "jog_down_kbd=\n"
         "reverb_up_kbd=\n"
         "reverb_down_kbd=\n"
+        "underwater_kbd=\n"
         "volume_up_midi=CC_3_UP\n"
         "volume_down_midi=CC_3_DOWN\n"
         "[Reverb]\n"
@@ -3695,7 +3824,14 @@ static int edit_self_test(void)
         "delay=1\n"
         "depth=0.5\n"
         "feedback=0.5\n"
-        "mix=50\n";
+        "mix=50\n"
+        "[Underwater]\n"
+        "cutoff=500\n"
+        "resonance=0.4\n"
+        "period=0.5\n"
+        "wobble=1.5\n"
+        "mix=100\n"
+        "boost=20\n";
     Config cfg;
     ConfigEdit edit;
     char err[512];

@@ -65,6 +65,9 @@ static int run_checks(const Config *cfg, Playlist *pl)
     if (midi_self_test() != 0) {
         failed = 1;
     }
+    if (playlist_self_test() != 0) {
+        failed = 1;
+    }
     if (playlist_next(pl, first, sizeof first) != 0 || decode_self_test(first) != 0) {
         failed = 1;
     }
@@ -94,7 +97,7 @@ static void log_keyboard_bindings(const Config *cfg)
         "rewind 1.5s", "dial forward", "dial back", "dial mode",
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
         "effects off", "volume up", "volume down", "jog up", "jog down",
-        "reverb up", "reverb down"
+        "reverb up", "reverb down", "underwater"
     };
     const char *vals[] = {
         cfg->kbd_pause, cfg->kbd_skip, cfg->kbd_prev, cfg->kbd_rew05,
@@ -102,7 +105,7 @@ static void log_keyboard_bindings(const Config *cfg)
         cfg->kbd_dial_mode, cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan,
         cfg->kbd_phaser, cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off,
         cfg->kbd_vol_up, cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down,
-        cfg->kbd_rv_up, cfg->kbd_rv_down
+        cfg->kbd_rv_up, cfg->kbd_rv_down, cfg->kbd_underwater
     };
     char buf[768];
     size_t used = 0;
@@ -204,9 +207,13 @@ static void remember_volume(const char *path, Config *cfg)
 static void usage(void)
 {
     fprintf(stderr,
-            "usage: autodj [--check] [config]\n"
+            "usage: autodj [song ...]\n"
+            "       autodj --check\n"
             "       autodj --config [config]\n"
-            "       autodj --calibrate [config]\n"
+            "       autodj --calibrate\n"
+            "  song is the start of a file name in Folder, in any letter case.\n"
+            "  Every match plays first, in order, then the usual order follows.\n"
+            "  Put -- before a song name that starts with a dash.\n"
             "  config defaults to ~/.config/autodj/master.cfg\n");
 }
 
@@ -214,6 +221,9 @@ int main(int argc, char **argv)
 {
     char path_buf[4096];
     const char *path = NULL;
+    const char **songs;
+    int nsongs = 0;
+    int options = 1;
     int check = 0;
     int edit = 0;
     int calibrate = 0;
@@ -224,7 +234,19 @@ int main(int argc, char **argv)
     struct sigaction sa;
     unsigned rate;
 
+    songs = calloc((size_t)argc, sizeof *songs);
+    if (!songs) {
+        return 1;
+    }
     for (i = 1; i < argc; i++) {
+        if (!options || argv[i][0] != '-' || argv[i][1] == '\0') {
+            songs[nsongs++] = argv[i];
+            continue;
+        }
+        if (strcmp(argv[i], "--") == 0) {
+            options = 0;
+            continue;
+        }
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage();
             return 0;
@@ -241,15 +263,19 @@ int main(int argc, char **argv)
             calibrate = 1;
             continue;
         }
-        if (path) {
-            usage();
-            return 2;
-        }
-        path = argv[i];
-    }
-    if (edit + check + calibrate > 1) {
+        fprintf(stderr, "autodj: unknown option %s\n", argv[i]);
         usage();
         return 2;
+    }
+    /* Only --config takes a config path. Playback takes song names. */
+    if (edit + check + calibrate > 1 || (edit && nsongs > 1) ||
+        ((check || calibrate) && nsongs > 0)) {
+        usage();
+        return 2;
+    }
+    if (edit && nsongs == 1) {
+        path = songs[0];
+        nsongs = 0;
     }
     if (!path) {
         default_config_path(path_buf, sizeof path_buf);
@@ -295,9 +321,10 @@ int main(int argc, char **argv)
              cfg.key_pitch_name[0] ? cfg.key_pitch_name : "(none)",
              cfg.key_autopan_name[0] ? cfg.key_autopan_name : "(none)",
              cfg.key_phaser_name[0] ? cfg.key_phaser_name : "(none)");
-    log_info("autodj", "keys chorus %s, flanger %s, effects off %s",
+    log_info("autodj", "keys chorus %s, flanger %s, underwater %s, effects off %s",
              cfg.key_chorus_name[0] ? cfg.key_chorus_name : "(none)",
              cfg.key_flanger_name[0] ? cfg.key_flanger_name : "(none)",
+             cfg.key_underwater_name[0] ? cfg.key_underwater_name : "(none)",
              cfg.key_effects_off_name[0] ? cfg.key_effects_off_name : "(none)");
     log_info("autodj", "effects off");
     log_info("autodj", "keys rewind 0.5s %s, rewind 1s %s, rewind 1.5s %s",
@@ -339,6 +366,17 @@ int main(int argc, char **argv)
     if (!pl) {
         return 1;
     }
+    for (i = 0; i < nsongs; i++) {
+        int n = playlist_queue_prefix(pl, songs[i]);
+
+        if (n == 0) {
+            log_warn("autodj", "no song in %s starts with \"%s\"", cfg.folder, songs[i]);
+        } else {
+            log_info("autodj", "%d song%s start%s with \"%s\", playing first", n,
+                     n == 1 ? "" : "s", n == 1 ? "s" : "", songs[i]);
+        }
+    }
+    free(songs);
     if (decode_init() != 0) {
         playlist_free(pl);
         return 1;

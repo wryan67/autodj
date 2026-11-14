@@ -25,7 +25,7 @@
 
 /*
  * Full-screen editor for master.cfg. The tabs are Main, Buttons, Knobs,
- * Reverb, Chipmunk, Autopan, Phaser, Chorus, and Flanger. They stay on one
+ * Reverb, Chipmunk, Autopan, Phaser, Chorus, Flanger, and Underwater. They stay on one
  * row when the window is wide enough, and the last ones wrap onto a second
  * row when it is not.
  * Tab and the arrow keys move between the fields on the current tab. Up from
@@ -52,6 +52,7 @@ enum {
     TAB_PHASER,
     TAB_CHORUS,
     TAB_FLANGER,
+    TAB_UNDERWATER,
     TAB_COUNT
 };
 
@@ -81,6 +82,7 @@ enum {
     FE_KEY_PHASER,
     FE_KEY_CHORUS,
     FE_KEY_FLANGER,
+    FE_KEY_UNDERWATER,
     FE_KEY_EFFECTS_OFF,
     FE_BUTTON_END,
 
@@ -139,6 +141,14 @@ enum {
     FE_FL_DEPTH,
     FE_FL_FEEDBACK,
     FE_FL_MIX,
+    FE_FL_END,
+
+    FE_UW_CUTOFF = FE_FL_END,
+    FE_UW_RES,
+    FE_UW_PERIOD,
+    FE_UW_WOBBLE,
+    FE_UW_MIX,
+    FE_UW_BOOST,
     FE_FIELD_COUNT,
 
     FE_TABS = FE_FIELD_COUNT,
@@ -158,7 +168,7 @@ enum {
     BIND_COLS = 3,
     /* Brackets plus one character. Used only when a value cannot fit. */
     BOX_MIN_W = 4,
-    /* Tallest tab is Buttons, with 13 fields, under one row of tabs.
+    /* Tallest tab is Buttons, with 14 fields, under one row of tabs.
      * A wrapped tab row adds one line, checked in layout_ui. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_FIRST,
     /* Rows of the dial mode droplist: none, volume, jog, reverb. */
@@ -314,6 +324,7 @@ static const char *field_label(int id)
         "Phaser",
         "Chorus",
         "Flanger",
+        "Underwater",
         "All effects off",
         "Dial forward",
         "Dial back",
@@ -355,7 +366,13 @@ static const char *field_label(int id)
         "Delay ms",
         "Depth ms",
         "Feedback",
-        "Mix %"
+        "Mix %",
+        "Cutoff Hz",
+        "Resonance",
+        "Period",
+        "Wobble ms",
+        "Mix %",
+        "Boost %"
     };
 
     if (id < 0 || id >= FE_FIELD_COUNT) {
@@ -392,6 +409,8 @@ static int fe_keyid(int id)
         return KEYID_CHORUS;
     case FE_KEY_FLANGER:
         return KEYID_FLANGER;
+    case FE_KEY_UNDERWATER:
+        return KEYID_UNDERWATER;
     case FE_KEY_EFFECTS_OFF:
         return KEYID_EFFECTS_OFF;
     case FE_KEY_DIAL_FWD:
@@ -551,6 +570,24 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_FL_MIX:
         *cap = sizeof edit->fl_mix;
         return edit->fl_mix;
+    case FE_UW_CUTOFF:
+        *cap = sizeof edit->uw_cutoff;
+        return edit->uw_cutoff;
+    case FE_UW_RES:
+        *cap = sizeof edit->uw_res;
+        return edit->uw_res;
+    case FE_UW_PERIOD:
+        *cap = sizeof edit->uw_period;
+        return edit->uw_period;
+    case FE_UW_WOBBLE:
+        *cap = sizeof edit->uw_wobble;
+        return edit->uw_wobble;
+    case FE_UW_MIX:
+        *cap = sizeof edit->uw_mix;
+        return edit->uw_mix;
+    case FE_UW_BOOST:
+        *cap = sizeof edit->uw_boost;
+        return edit->uw_boost;
     default:
         *cap = 0;
         return NULL;
@@ -566,7 +603,8 @@ static int is_number_field(int id)
            id == FE_AP_SMOOTH || id == FE_AP_DISTANCE ||
            (id >= FE_PH_PERIOD && id <= FE_PH_BOOST) ||
            (id >= FE_CH_PERIOD && id <= FE_CH_MIX) ||
-           (id >= FE_FL_PERIOD && id <= FE_FL_MIX);
+           (id >= FE_FL_PERIOD && id <= FE_FL_MIX) ||
+           (id >= FE_UW_CUTOFF && id <= FE_UW_BOOST);
 }
 
 static int is_key_field(int id)
@@ -752,7 +790,7 @@ static int tab_first(int tab)
 {
     static const int first[] = {
         FE_FOLDER, FE_KEY_FIRST, FE_KNOB_FIRST, FE_RV_DECAY, FE_PS_SEMI,
-        FE_AP_PERIOD, FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD
+        FE_AP_PERIOD, FE_PH_PERIOD, FE_CH_PERIOD, FE_FL_PERIOD, FE_UW_CUTOFF
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -765,7 +803,8 @@ static int tab_last(int tab)
 {
     static const int last[] = {
         FE_MAIN_END - 1, FE_BUTTON_END - 1, FE_KNOB_END - 1, FE_RV_END - 1,
-        FE_PS_END - 1, FE_AP_END - 1, FE_PH_END - 1, FE_CH_END - 1, FE_FIELD_COUNT - 1
+        FE_PS_END - 1, FE_AP_END - 1, FE_PH_END - 1, FE_CH_END - 1, FE_FL_END - 1,
+        FE_FIELD_COUNT - 1
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1008,8 +1047,8 @@ static void layout_ui(struct Ui *ui, const ConfigEdit *edit, int rows, int cols,
         return;
     }
     ui->frame_w = cols - 2;
-    if (ui->frame_w > 108) {
-        ui->frame_w = 108;
+    if (ui->frame_w > 120) {
+        ui->frame_w = 120;
     }
     extra = tab_row_count(ui->frame_w) - 1;
     ui->frame_h = FRAME_H + extra;
@@ -1395,7 +1434,7 @@ static const char *tab_title(int tab)
 {
     static const char *names[] = {
         "Main", "Buttons", "Knobs", "Reverb", "Chipmunk",
-        "Autopan", "Phaser", "Chorus", "Flanger"
+        "Autopan", "Phaser", "Chorus", "Flanger", "Underwater"
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -1415,7 +1454,8 @@ static const char *tab_note(int tab)
         "Left to right and back. Period counts beats.",
         "Notches sweep from Low to High. Period is in measures.",
         "Several slightly late copies, drifting in pitch.",
-        "A very short delay. The sweep makes a jet-like whoosh."
+        "A very short delay. The sweep makes a jet-like whoosh.",
+        "Muffled and boomy, with a slow wobble, like under water."
     };
 
     if (tab < 0 || tab >= TAB_COUNT) {
@@ -4050,7 +4090,7 @@ static int screen_self_test(void)
     char *buf = NULL;
     size_t n = 0;
 
-    if (render_tab(&ed, 24, 110, TAB_BUTTONS, &buf, &n) != 0) {
+    if (render_tab(&ed, 24, 122, TAB_BUTTONS, &buf, &n) != 0) {
         return -1;
     }
     if (ed.ui.field_r[FE_KEY_CHORUS] < 0 ||
@@ -4058,7 +4098,10 @@ static int screen_self_test(void)
         ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_FLANGER] ||
         ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_MAIN] ||
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_MAIN] ||
+        ed.ui.tab_y[TAB_UNDERWATER] != ed.ui.tab_y[TAB_MAIN] ||
+        ed.ui.field_r[FE_KEY_EFFECTS_OFF] <= ed.ui.field_r[FE_KEY_UNDERWATER] ||
         !buf || strstr(buf, "[ Chorus ]") == NULL || strstr(buf, "[ Flanger ]") == NULL ||
+        strstr(buf, "[ Underwater ]") == NULL ||
         strstr(buf, "Chorus") == NULL || strstr(buf, "Flanger") == NULL ||
         strstr(buf, "All effects off") == NULL) {
         log_error("cfgedit", "wide Buttons screen is missing chorus and flanger");
@@ -4082,6 +4125,7 @@ static int screen_self_test(void)
         ed.ui.tab_y[TAB_PHASER] != ed.ui.tab_y[TAB_MAIN] + 1 ||
         ed.ui.tab_y[TAB_CHORUS] != ed.ui.tab_y[TAB_PHASER] ||
         ed.ui.tab_y[TAB_FLANGER] != ed.ui.tab_y[TAB_CHORUS] ||
+        ed.ui.tab_y[TAB_UNDERWATER] != ed.ui.tab_y[TAB_CHORUS] ||
         !buf || strstr(buf, "Keypad") == NULL || strstr(buf, "Keyboard") == NULL ||
         strstr(buf, "MIDI") == NULL || strstr(buf, "Keys and pads.") == NULL ||
         strstr(buf, "Dial forward") != NULL) {
@@ -4100,6 +4144,20 @@ static int screen_self_test(void)
         !buf || strstr(buf, "Delay ms") == NULL || strstr(buf, "Voices") == NULL ||
         strstr(buf, "drifting in pitch") == NULL) {
         log_error("cfgedit", "Chorus screen is missing its settings");
+        free(buf);
+        return -1;
+    }
+    free(buf);
+    buf = NULL;
+    n = 0;
+
+    if (render_tab(&ed, 24, 100, TAB_UNDERWATER, &buf, &n) != 0) {
+        return -1;
+    }
+    if (ed.ui.field_r[FE_UW_CUTOFF] < 0 || ed.ui.field_r[FE_UW_BOOST] < 0 ||
+        ed.ui.field_r[FE_FL_MIX] >= 0 || !buf || strstr(buf, "Cutoff Hz") == NULL ||
+        strstr(buf, "Wobble ms") == NULL || strstr(buf, "under water") == NULL) {
+        log_error("cfgedit", "Underwater screen is missing its settings");
         free(buf);
         return -1;
     }

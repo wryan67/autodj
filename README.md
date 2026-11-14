@@ -1,6 +1,6 @@
 # autodj
 
-Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad, an XP-Pen ACK05 Shortcut Remote, or a MIDI controller such as the Akai MPD218 pauses, skips, replays an earlier song, rewinds a few seconds, and turns six effects on or off: reverb, chipmunk, autopan, phaser, chorus, and flanger. One more button turns all of them off. The shortcut remote's dial sets the volume, or jogs the song, and separate keys or knobs can do either one on their own. The volume is stored in the config file and restored on the next start. Every effect is off when autodj starts.
+Console player for a folder of MP3 files. Songs crossfade into each other. A USB keypad, an XP-Pen ACK05 Shortcut Remote, or a MIDI controller such as the Akai MPD218 pauses, skips, replays an earlier song, rewinds a few seconds, and turns seven effects on or off: reverb, chipmunk, autopan, phaser, chorus, flanger, and underwater. One more button turns all of them off. The shortcut remote's dial sets the volume, or jogs the song, and separate keys or knobs can do either one on their own. The volume is stored in the config file and restored on the next start. Every effect is off when autodj starts.
 
 ## Compile
 
@@ -44,17 +44,20 @@ This does the same build and install. Before that, it installs `udev/70-autodj-r
 
 ```
 autodj
+autodj smooth bad
 autodj --check
 autodj --config
+autodj --config /path/to/master.cfg
 autodj --calibrate
-autodj /path/to/master.cfg
 ```
 
-With no config path, autodj reads `~/.config/autodj/master.cfg`.
+autodj always reads `~/.config/autodj/master.cfg`. Only `--config` takes another path, to edit that file instead.
+
+Names after `autodj` are songs to play first. Each one is the start of a file name in `Folder`, and letter case does not matter, so `smooth` and `SMOO` both match `Smooth Criminal.mp3`. A track number at the start of a file name, such as `001-` in `001-smooth-criminal.mp3`, can be left out, so `smooth` matches that file too. A name can match several songs, and they all play, in alphabetical order. The songs play in the order the names are given, and a song is not repeated when two names match it. A folder in front of a name is ignored, so a tab-completed path works. After the last of them, playback goes on in the usual order from `Folder`, shuffled when `shuffle` is on, and the songs that already played are left out of that first pass. A name that matches nothing is logged and skipped. A name in quotes can contain spaces, such as `autodj "baby sh"`. Put `--` before a name that starts with a dash. `--check` and `--calibrate` take no names.
 
 `--check` loads the playlist and runs the built-in tests, including a grab of the keypad. It does not start playback.
 
-`--config` opens a full-screen editor for that file. The editor has nine tabs: Main, Buttons, Knobs, Reverb, Chipmunk, Autopan, Phaser, Chorus, and Flanger. They stay on one row when the window is wide enough, and the last ones wrap onto a second row when it is not. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, and loudness. Buttons holds the key bindings for previous, pause/resume, skip, the three rewinds, one button each for effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), effect 4 (phaser), effect 5 (chorus), and effect 6 (flanger), plus All effects off. Knobs holds Dial forward, Dial back, Next dial mode, Volume up, Volume down, Jog up, Jog down, Reverb up, and Reverb down, then Dial mode 1, Dial mode 2, and Dial mode 3. Each binding row on Buttons and Knobs has three boxes: Keyboard, Keypad, then MIDI. Each box is only as wide as its title or the longest value in that column on that tab. The other six tabs hold the settings of those effects. Bool settings are checkboxes. Each dial mode is a droplist of `none`, `volume`, `jog`, and `reverb`, shown with a `v` at the right: Enter, Space, or a click opens it, Up and Down move, Enter, Space, or a click picks, and Esc closes it unchanged. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a Keypad box asks for the USB keypad or the shortcut remote. The same on a MIDI box asks for a pad press or a knob turn on any MIDI controller, and the prompt names the controllers it is listening to. A knob turned clockwise is stored as `CC_<n>_UP` and counterclockwise as `CC_<n>_DOWN`, so turn it the way that row should go. The same on a Keyboard box asks for the next key typed on this terminal: a character such as `p`, or Space, Enter, Tab, Backspace, Delete, an arrow, Home, or End. `p` and `P` are different keys. The Keyboard column starts with Space, Right, Left, 1, 2, 3, q, w, e, r, t, y, and Tab on Buttons, and Up, Down, Enter, `=`, `-`, `.`, `,`, `]`, and `[` on Knobs. The Keypad and MIDI columns start blank. On a binding row, Left and Right move between the three boxes and stop at the edge. Up and Down stay in the same column. Tab moves from the keyboard box to the keypad box to the MIDI box, then to the next row. A key held with Ctrl, Shift, Alt, or Meta on the keypad or remote is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves either binding unchanged. Delete on the keypad or MIDI prompt removes that binding. Left and Right there move between Delete and Cancel, and Enter or Space presses the highlighted button. On the keyboard prompt those keys are bindings, so click Delete to clear it. A key already used in the same column, on either tab, opens an error and keeps the old binding. The same action can have a keyboard key, a keypad key, and a MIDI control at once. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad, remote, and MIDI controllers open, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
+`--config` opens a full-screen editor for that file. The editor has ten tabs: Main, Buttons, Knobs, Reverb, Chipmunk, Autopan, Phaser, Chorus, Flanger, and Underwater. They stay on one row when the window is wide enough, and the last ones wrap onto a second row when it is not. Click a tab, or move up to the tab row and press Left or Right. Main holds the folder, the crossfade, and loudness. Buttons holds the key bindings for previous, pause/resume, skip, the three rewinds, one button each for effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), effect 4 (phaser), effect 5 (chorus), effect 6 (flanger), and effect 7 (underwater), plus All effects off. Knobs holds Dial forward, Dial back, Next dial mode, Volume up, Volume down, Jog up, Jog down, Reverb up, and Reverb down, then Dial mode 1, Dial mode 2, and Dial mode 3. Each binding row on Buttons and Knobs has three boxes: Keyboard, Keypad, then MIDI. Each box is only as wide as its title or the longest value in that column on that tab. The other seven tabs hold the settings of those effects. Bool settings are checkboxes. Each dial mode is a droplist of `none`, `volume`, `jog`, and `reverb`, shown with a `v` at the right: Enter, Space, or a click opens it, Up and Down move, Enter, Space, or a click picks, and Esc closes it unchanged. Key bindings show the current key name. The other settings are text fields. Tab, Shift-Tab, and the arrow keys move between fields on the current tab. Left and right move the cursor inside a text field, and leave the field at either end. Enter, Space, or a click on a Keypad box asks for the USB keypad or the shortcut remote. The same on a MIDI box asks for a pad press or a knob turn on any MIDI controller, and the prompt names the controllers it is listening to. A knob turned clockwise is stored as `CC_<n>_UP` and counterclockwise as `CC_<n>_DOWN`, so turn it the way that row should go. The same on a Keyboard box asks for the next key typed on this terminal: a character such as `p`, or Space, Enter, Tab, Backspace, Delete, an arrow, Home, or End. `p` and `P` are different keys. The Keyboard column starts with Space, Right, Left, 1, 2, 3, q, w, e, r, t, y, u, and Tab on Buttons, and Up, Down, Enter, `=`, `-`, `.`, `,`, `]`, and `[` on Knobs. The Keypad and MIDI columns start blank. On a binding row, Left and Right move between the three boxes and stop at the edge. Up and Down stay in the same column. Tab moves from the keyboard box to the keypad box to the MIDI box, then to the next row. A key held with Ctrl, Shift, Alt, or Meta on the keypad or remote is captured as a combination such as `CTRL+KEY_Z`. Esc or Cancel leaves either binding unchanged. Delete on the keypad or MIDI prompt removes that binding. Left and Right there move between Delete and Cancel, and Enter or Space presses the highlighted button. On the keyboard prompt those keys are bindings, so click Delete to clear it. A key already used in the same column, on either tab, opens an error and keeps the old binding. The same action can have a keyboard key, a keypad key, and a MIDI control at once. The mouse selects a field, a tab, or a button. Save checks the values and writes the file. A problem opens a message with an OK button and leaves the file unchanged. Cancel and Esc close the editor without writing. A player that is already running keeps its current settings until the next start, and it keeps the keypad, remote, and MIDI controllers open, so the editor reads them after playback stops. The effect buttons are the exception: they take effect while a song is playing.
 
 `--calibrate` opens a full-screen view of the `[Jog]` dial settings, with a short note beside each one about what it changes in the sound. Calibrate measures the dial in two steps. First, turn the dial exactly one full turn and press Enter; the click count becomes `clicks_per_turn`. Then spin the dial as fast as you can; timing starts at the first click and runs for 3 seconds. `max_speed` becomes the fastest measured speed plus 25%. Test plays a random song from `Folder`, so you can turn the dial and hear the result. A change to a setting takes effect in the test at once. Stop test ends playback. Save writes only the `[Jog]` section. Close or Esc leaves without writing; with unsaved changes, it asks you to press Close again. The view needs the remote, so stop a running autodj first.
 
@@ -107,6 +110,7 @@ autopan_kbd=e
 phaser_kbd=r
 chorus_kbd=t
 flanger_kbd=y
+underwater_kbd=u
 effects_off_kbd=Tab
 volume_up_kbd==
 volume_down_kbd=-
@@ -163,6 +167,14 @@ delay=1
 depth=0.5
 feedback=0.5
 mix=50
+
+[Underwater]
+cutoff=500
+resonance=0.4
+period=0.5
+wobble=1.5
+mix=100
+boost=20
 
 [Jog]
 seconds_per_turn=1.8
@@ -226,11 +238,11 @@ Each value is a `KEY_*` name from `linux/input-event-codes.h`, for example `KEY_
 
  A modifier key on its own, such as `KEY_LEFTCTRL`, fires when it is released, but only if no other key was pressed while it was held. A missing keypad line is unbound. A blank value, such as `pause_resume=`, stays unbound. Pressing a key that is not bound logs the key name and does nothing. `KEY_NUMLOCK` from the keypad is ignored. A press within 30 ms of the previous press is ignored, except for dial, volume, and jog keys. Holding a button does not repeat it, except a dial, volume, or jog key, which repeats while it is held. Old `volume_dn` lines are ignored, and `autodj --config` removes them. `volume_up` and `volume_down` are bindings again, see below.
 
-Each action can also have a keyboard binding. Add `_kbd` to the name, for example `pause_resume_kbd=p` or `skip_kbd=Space`. These are keys typed on the terminal while autodj is running, not `KEY_*` names. A single character is stored as typed, so `p` and `P` are different. The other names are `Space`, `Enter`, `Tab`, `Backspace`, `Delete`, `Up`, `Down`, `Left`, `Right`, `Home`, and `End`. A missing line uses the default: pause/resume `Space`, skip `Right`, previous `Left`, rewind 0.5s `1`, rewind 1s `2`, rewind 1.5s `3`, dial forward `Up`, dial back `Down`, dial mode `Enter`, reverb `q`, chipmunk `w`, autopan `e`, phaser `r`, chorus `t`, flanger `y`, all effects off `Tab`, volume up `=`, volume down `-`, jog up `.`, jog down `,`, reverb up `]`, and reverb down `[`. A blank line, such as `pause_resume_kbd=`, stays unbound. A keyboard key can be used for an action that already has a keypad key. Two actions cannot share one keyboard key. autodj reads the keyboard only when it is running in a terminal, and Ctrl-C still stops it. The same 30 ms gap applies, except a keyboard key bound to the dial, volume, or jog, which repeats so it can jog or step the volume. One keyboard press changes the volume by 5. The shortcut remote's dial and a keypad key still change it by 1.
+Each action can also have a keyboard binding. Add `_kbd` to the name, for example `pause_resume_kbd=p` or `skip_kbd=Space`. These are keys typed on the terminal while autodj is running, not `KEY_*` names. A single character is stored as typed, so `p` and `P` are different. The other names are `Space`, `Enter`, `Tab`, `Backspace`, `Delete`, `Up`, `Down`, `Left`, `Right`, `Home`, and `End`. A missing line uses the default: pause/resume `Space`, skip `Right`, previous `Left`, rewind 0.5s `1`, rewind 1s `2`, rewind 1.5s `3`, dial forward `Up`, dial back `Down`, dial mode `Enter`, reverb `q`, chipmunk `w`, autopan `e`, phaser `r`, chorus `t`, flanger `y`, underwater `u`, all effects off `Tab`, volume up `=`, volume down `-`, jog up `.`, jog down `,`, reverb up `]`, and reverb down `[`. A blank line, such as `pause_resume_kbd=`, stays unbound. A keyboard key can be used for an action that already has a keypad key. Two actions cannot share one keyboard key. autodj reads the keyboard only when it is running in a terminal, and Ctrl-C still stops it. The same 30 ms gap applies, except a keyboard key bound to the dial, volume, or jog, which repeats so it can jog or step the volume. One keyboard press changes the volume by 5. The shortcut remote's dial and a keypad key still change it by 1.
 
 Each action can also have a MIDI binding. Add `_midi` to the name, for example `skip_midi=NOTE_37`. `NOTE_<n>` is a pad or key that sends note `n` (0 to 127). `CC_<n>_UP` is a knob that sends control change `n` turned clockwise, and `CC_<n>_DOWN` the same knob turned counterclockwise. Names are not case sensitive, and `autodj --config` writes them in capitals. A missing or blank line is unbound. Two actions cannot share one MIDI control, but a knob can have its `_UP` on one action and its `_DOWN` on another. A pad changes the volume by 5 and moves the jog one click. Each step of a knob changes the volume by 1 and moves the jog one click. A pad or knob bound to another action runs it once per press or step, with the same 30 ms gap. A MIDI control that is not bound is logged once.
 
-A pad bound to reverb, chipmunk, autopan, phaser, chorus, or flanger shows that effect's state: lit while it is on and dark while it is off. autodj sends the pad a Note On to light it and a Note Off to darken it, on the channel the pad sends on (channel 10, the MPD218's factory pad channel, until the pad is first pressed). The MPD218 lights a pad while it is held and darkens it when it is let go, so autodj lights it again after the release when the effect is on. An effect turned on or off by another key or by All effects off updates its pad too. When autodj stops, it darkens the pads it lit. Leave the pads in Momentary mode, the factory setting. Other pads light only while they are held.
+A pad bound to reverb, chipmunk, autopan, phaser, chorus, flanger, or underwater shows that effect's state: lit while it is on and dark while it is off. autodj sends the pad a Note On to light it and a Note Off to darken it, on the channel the pad sends on (channel 10, the MPD218's factory pad channel, until the pad is first pressed). The MPD218 lights a pad while it is held and darkens it when it is let go, so autodj lights it again after the release when the effect is on. An effect turned on or off by another key or by All effects off updates its pad too. When autodj stops, it darkens the pads it lit. Leave the pads in Momentary mode, the factory setting. Other pads light only while they are held.
 
 With the MPD218's factory presets, the 16 pads of bank A send notes 36 to 51 (bottom left is 36, top right is 51), bank B 52 to 67, and bank C 68 to 83. The six knobs send CC 3, 9, 12, 13, 14, and 15 in knob bank A, CC 16 to 21 in bank B, and CC 22 to 27 in bank C. In those presets the knobs work like faders with ends: each one counts from 0 to 127 and sends nothing more past either end, so turn it back to keep going. For an endless knob, set it to "Inc/Dec 2" in Akai's MPD218 Editor. autodj tells the two apart by itself: a knob that sends the same value twice in a row is counted as Inc/Dec 2 from then on. The first message from a knob in the factory mode only sets its position. "Inc/Dec 1" mode is not supported.
 
@@ -252,8 +264,8 @@ Press to jump back 1 second. The position stops at the start of the song.
 `rewind_1_5`  
 Press to jump back 1.5 seconds. The position stops at the start of the song.
 
-`reverb`, `chipmunk`, `autopan`, `phaser`, `chorus`, `flanger`  
-Press to turn effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), effect 4 (phaser), effect 5 (chorus), or effect 6 (flanger) on or off. Chorus and flanger are unbound until a key is set. All effects are always off when autodj starts; the buttons turn them on for the current run only, and nothing is saved. Old `on=` lines in the effect sections are ignored, and `autodj --config` removes them when it saves.
+`reverb`, `chipmunk`, `autopan`, `phaser`, `chorus`, `flanger`, `underwater`  
+Press to turn effect 1 (reverb), effect 2 (chipmunk), effect 3 (autopan), effect 4 (phaser), effect 5 (chorus), effect 6 (flanger), or effect 7 (underwater) on or off. Chorus, flanger, and underwater are unbound on the keypad until a key is set. All effects are always off when autodj starts; the buttons turn them on for the current run only, and nothing is saved. Old `on=` lines in the effect sections are ignored, and `autodj --config` removes them when it saves.
 
 `effects_off`  
 Press to turn every effect off. It does not turn them back on. Unbound until a key is set.
@@ -389,6 +401,28 @@ The same idea as chorus, with a much shorter delay. The delayed sound mixes with
 
 `mix`  
 `0` to `100`. Default `50`. Percent of delayed sound in the mix. `50` gives the deepest notches. `0` leaves the song unchanged.
+
+### [Underwater]
+
+Makes the song sound as if it is heard under water. A steep low-pass filter (24 dB per octave) takes out the highs, so only a muffled, boomy body is left, and a resonant bump at the cutoff makes it sound hollow. A slowly moving delay bends the pitch a few cents up and down, like sound passing through moving water; the right speaker's wobble runs a little behind the left. autodj cannot pick the singer out of a finished song, so the whole song goes under water, singer included. The wobble follows the beat the same way as chorus. It fades in and out over a few milliseconds when it is turned on or off. The processing is autodj's own. A value out of range is logged and the default is used.
+
+`cutoff`  
+`100` to `4000`. Default `500`. Frequency in Hz above which the sound is taken out. Lower sounds deeper. Around `300` the words are hard to make out, and around `1500` it sounds more like a wall than water.
+
+`resonance`  
+`0` to `1`. Default `0.4`. A peak at the cutoff that makes the sound hollow and boomy. `0` is a plain, smooth muffle.
+
+`period`  
+`0.25` to `16`. Default `0.5`. Measures for one wobble up and back, which is one second at 120 BPM.
+
+`wobble`  
+`0` to `5`. Default `1.5`. How far the delay swings, in milliseconds. At the default period that bends the pitch about 15 cents each way. `0` holds the pitch steady.
+
+`mix`  
+`0` to `100`. Default `100`. Percent of underwater sound in the mix. Lower values leave some of the clear song on top.
+
+`boost`  
+`0` to `100`. Default `20`. Percent louder while underwater is on, to make up for the highs the filter takes out. `20` makes the underwater sound 1.2 times as loud as the filtered song.
 
 ### [Jog]
 
