@@ -36,6 +36,16 @@ static void default_config_path(char *dest, size_t n)
     snprintf(dest, n, "%s/.config/autodj/master.cfg", home);
 }
 
+static void songs_cache_path(char *dest, size_t n)
+{
+    const char *home = getenv("HOME");
+
+    if (!home || !home[0]) {
+        home = "/home/pi";
+    }
+    snprintf(dest, n, "%s/.local/state/autodj/songs.cache", home);
+}
+
 static int run_checks(const Config *cfg, Playlist *pl)
 {
     char first[4096];
@@ -482,7 +492,14 @@ int main(int argc, char **argv)
         player_set_jog(&jog);
     }
 
-    pl = playlist_load(cfg.folder, cfg.shuffle);
+    if (check) {
+        pl = playlist_load(cfg.folder, cfg.shuffle);
+    } else {
+        char cache[4096];
+
+        songs_cache_path(cache, sizeof cache);
+        pl = playlist_open(cfg.folder, cfg.shuffle, cache);
+    }
     if (!pl) {
         return 1;
     }
@@ -554,6 +571,7 @@ int main(int argc, char **argv)
         playlist_free(pl);
         return 1;
     }
+    playlist_flush(pl);
 
     while (!g_sig && player_alive()) {
         struct pollfd pfd[17];
@@ -598,6 +616,7 @@ int main(int argc, char **argv)
         remember_lasers(path, &cfg);
         remember_bubbles(path, &cfg);
         remember_chorus(path, &cfg);
+        playlist_flush(pl);
     }
 
     remember_volume(path, &cfg);

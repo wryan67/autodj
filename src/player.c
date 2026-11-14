@@ -246,6 +246,10 @@ static void hist_note(const char *path)
     if (!path || !path[0]) {
         return;
     }
+    if (!(g_hist_at >= 0 && g_hist_at < g_hist_len && strcmp(g_hist[g_hist_at], path) == 0) &&
+        g_pl) {
+        playlist_started(g_pl, path);
+    }
     if (g_hist_pin >= 0 && g_hist_pin < g_hist_len) {
         g_hist_at = g_hist_pin;
         g_hist_pin = -1;
@@ -350,7 +354,7 @@ static void ensure_prefetch(void)
         want = g_hist[g_hist_at + 1];
     } else if (g_have_queued) {
         want = g_queued;
-    } else if (g_pl && playlist_next(g_pl, path, sizeof path) == 0) {
+    } else if (g_pl && playlist_peek(g_pl, path, sizeof path) == 0) {
         snprintf(g_queued, sizeof g_queued, "%s", path);
         g_have_queued = 1;
         want = g_queued;
@@ -383,6 +387,20 @@ static void apply_rewind(int ms)
     } else {
         log_info("audio", "rewind %d.%ds", ms / 1000, (ms % 1000) / 100);
     }
+}
+
+static void note_silent(Track *next)
+{
+    log_warn("audio", "skipping silent %s", next->name);
+    if (g_have_queued && next->path[0] && strcmp(g_queued, next->path) == 0) {
+        g_have_queued = 0;
+        g_queued[0] = '\0';
+    }
+    if (g_pl && next->path[0]) {
+        playlist_started(g_pl, next->path);
+    }
+    track_free(next);
+    ensure_prefetch();
 }
 
 static int pending_ready(size_t *frames_out)
@@ -457,8 +475,7 @@ static void start_fade(size_t span)
         return;
     }
     if (audible(next) == 0) {
-        log_warn("audio", "skipping silent %s", next->name);
-        track_free(next);
+        note_silent(next);
         return;
     }
     g_b = next;
@@ -484,9 +501,8 @@ static void play_incoming(Track *next, const char *verb)
     }
     blen = audible(next);
     if (blen == 0) {
-        log_warn("audio", "skipping silent %s", next->name);
-        track_free(next);
         g_hist_pin = -1;
+        note_silent(next);
         return;
     }
     if (g_fading && g_b) {
@@ -557,7 +573,7 @@ static void do_skip(void)
         if (!g_have_queued && g_pl) {
             char path[4096];
 
-            if (playlist_next(g_pl, path, sizeof path) == 0) {
+            if (playlist_peek(g_pl, path, sizeof path) == 0) {
                 snprintf(g_queued, sizeof g_queued, "%s", path);
                 g_have_queued = 1;
             }
@@ -1215,7 +1231,7 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
     g_prefetch_path[0] = '\0';
     g_pending_path[0] = '\0';
 
-    if (playlist_next(g_pl, path, sizeof path) != 0) {
+    if (playlist_peek(g_pl, path, sizeof path) != 0) {
         fx_free(g_fx);
         g_fx = NULL;
         return -1;
