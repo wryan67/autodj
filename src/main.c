@@ -93,16 +93,18 @@ static void log_keyboard_bindings(const Config *cfg)
         "pause/resume", "skip", "previous", "rewind 0.5s", "rewind 1s",
         "rewind 1.5s", "dial forward", "dial back", "dial mode",
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
-        "effects off", "volume up", "volume down", "jog up", "jog down"
+        "effects off", "volume up", "volume down", "jog up", "jog down",
+        "reverb up", "reverb down"
     };
     const char *vals[] = {
         cfg->kbd_pause, cfg->kbd_skip, cfg->kbd_prev, cfg->kbd_rew05,
         cfg->kbd_rew10, cfg->kbd_rew15, cfg->kbd_dial_fwd, cfg->kbd_dial_back,
         cfg->kbd_dial_mode, cfg->kbd_reverb, cfg->kbd_pitch, cfg->kbd_autopan,
         cfg->kbd_phaser, cfg->kbd_chorus, cfg->kbd_flanger, cfg->kbd_effects_off,
-        cfg->kbd_vol_up, cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down
+        cfg->kbd_vol_up, cfg->kbd_vol_down, cfg->kbd_jog_up, cfg->kbd_jog_down,
+        cfg->kbd_rv_up, cfg->kbd_rv_down
     };
-    char buf[640];
+    char buf[768];
     size_t used = 0;
     int i;
 
@@ -311,6 +313,10 @@ int main(int argc, char **argv)
              cfg.key_vol_down_name[0] ? cfg.key_vol_down_name : "(none)",
              cfg.key_jog_up_name[0] ? cfg.key_jog_up_name : "(none)",
              cfg.key_jog_down_name[0] ? cfg.key_jog_down_name : "(none)");
+    log_info("autodj", "keys reverb up %s, reverb down %s, reverb send %g to %g",
+             cfg.key_rv_up_name[0] ? cfg.key_rv_up_name : "(none)",
+             cfg.key_rv_down_name[0] ? cfg.key_rv_down_name : "(none)",
+             (double)cfg.fx.rv_send_min, (double)cfg.fx.rv_send_max);
     log_info("autodj", "dial modes %s, %s, %s", config_dial_mode_name(cfg.dial_modes[0]),
              config_dial_mode_name(cfg.dial_modes[1]), config_dial_mode_name(cfg.dial_modes[2]));
     log_keyboard_bindings(&cfg);

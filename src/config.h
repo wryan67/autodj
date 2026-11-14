@@ -34,6 +34,8 @@ enum {
     KEYID_VOL_DOWN,
     KEYID_JOG_UP,
     KEYID_JOG_DOWN,
+    KEYID_RV_UP,
+    KEYID_RV_DOWN,
     KEYID_COUNT
 };
 
@@ -42,7 +44,9 @@ enum {
 enum {
     DIAL_NONE = 0,
     DIAL_VOLUME,
-    DIAL_JOG
+    DIAL_JOG,
+    DIAL_REVERB,
+    DIAL_MODE_COUNT
 };
 #define DIAL_SLOTS 3
 
@@ -80,6 +84,8 @@ typedef struct Config {
     int key_vol_down;
     int key_jog_up;
     int key_jog_down;
+    int key_rv_up;
+    int key_rv_down;
     char key_pause_name[64];
     char key_skip_name[64];
     char key_prev_name[64];
@@ -100,6 +106,8 @@ typedef struct Config {
     char key_vol_down_name[64];
     char key_jog_up_name[64];
     char key_jog_down_name[64];
+    char key_rv_up_name[64];
+    char key_rv_down_name[64];
     /* Terminal key for the same action. Empty means unbound. */
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
@@ -121,6 +129,8 @@ typedef struct Config {
     char kbd_vol_down[AUTODJ_KBD_LEN];
     char kbd_jog_up[AUTODJ_KBD_LEN];
     char kbd_jog_down[AUTODJ_KBD_LEN];
+    char kbd_rv_up[AUTODJ_KBD_LEN];
+    char kbd_rv_down[AUTODJ_KBD_LEN];
     /* Bit i is set when the file named that keyboard action, even if blank. */
     unsigned kbd_line;
     /* MIDI control for each action, by KEYID. Empty and -1 mean unbound. */
@@ -193,6 +203,8 @@ typedef struct ConfigEdit {
     char key_vol_down[64];
     char key_jog_up[64];
     char key_jog_down[64];
+    char key_rv_up[64];
+    char key_rv_down[64];
     char kbd_pause[AUTODJ_KBD_LEN];
     char kbd_skip[AUTODJ_KBD_LEN];
     char kbd_prev[AUTODJ_KBD_LEN];
@@ -213,11 +225,14 @@ typedef struct ConfigEdit {
     char kbd_vol_down[AUTODJ_KBD_LEN];
     char kbd_jog_up[AUTODJ_KBD_LEN];
     char kbd_jog_down[AUTODJ_KBD_LEN];
+    char kbd_rv_up[AUTODJ_KBD_LEN];
+    char kbd_rv_down[AUTODJ_KBD_LEN];
     char midi[KEYID_COUNT][AUTODJ_MIDI_LEN];
     char rv_decay[32];
     char rv_bw[32];
     char rv_damp[32];
-    char rv_send[32];
+    char rv_send_min[32];
+    char rv_send_max[32];
     char ps_pitch[32];
     char ps_range[32];
     char ps_semi[32];
@@ -249,9 +264,9 @@ int config_parse_bool(const char *s, int *out);
 
 /* Returns 0 and sets *volume when s is volume (1) or jog (0). */
 int config_parse_dial(const char *s, int *volume);
-/* Returns 0 and sets *mode when s is none, volume, or jog. */
+/* Returns 0 and sets *mode when s is none, volume, jog, or reverb. */
 int config_parse_dial_mode(const char *s, int *mode);
-/* "none", "volume", or "jog". */
+/* "none", "volume", "jog", or "reverb". */
 const char *config_dial_mode_name(int mode);
 
 /* Editor text of one binding of action id (KEYID_*). column is 0 for the

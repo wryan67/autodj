@@ -93,6 +93,8 @@ enum {
     FE_KEY_VOL_DOWN,
     FE_KEY_JOG_UP,
     FE_KEY_JOG_DOWN,
+    FE_KEY_RV_UP,
+    FE_KEY_RV_DOWN,
     FE_DIAL_MODE1,
     FE_DIAL_MODE2,
     FE_DIAL_MODE3,
@@ -101,7 +103,8 @@ enum {
     FE_RV_DECAY = FE_KNOB_END,
     FE_RV_BW,
     FE_RV_DAMP,
-    FE_RV_SEND,
+    FE_RV_SEND_MIN,
+    FE_RV_SEND_MAX,
     FE_RV_END,
 
     FE_PS_SEMI = FE_RV_END,
@@ -158,8 +161,8 @@ enum {
     /* Tallest tab is Buttons, with 13 fields, under one row of tabs.
      * A wrapped tab row adds one line, checked in layout_ui. */
     TAB_FIELDS = FE_BUTTON_END - FE_KEY_FIRST,
-    /* Rows of the dial mode droplist: none, volume, jog. */
-    DROP_ROWS = 3,
+    /* Rows of the dial mode droplist: none, volume, jog, reverb. */
+    DROP_ROWS = DIAL_MODE_COUNT,
     ROW_TABS = 1,
     ROW_NOTE = 2,
     ROW_FIELD0 = 3,
@@ -319,13 +322,16 @@ static const char *field_label(int id)
         "Volume down",
         "Jog up",
         "Jog down",
+        "Reverb up",
+        "Reverb down",
         "Dial mode 1",
         "Dial mode 2",
         "Dial mode 3",
         "Decay",
         "BW",
         "Damping",
-        "Send",
+        "Send min",
+        "Send max",
         "Semitones",
         "Formant",
         "Pitch",
@@ -402,6 +408,10 @@ static int fe_keyid(int id)
         return KEYID_JOG_UP;
     case FE_KEY_JOG_DOWN:
         return KEYID_JOG_DOWN;
+    case FE_KEY_RV_UP:
+        return KEYID_RV_UP;
+    case FE_KEY_RV_DOWN:
+        return KEYID_RV_DOWN;
     default:
         return -1;
     }
@@ -463,9 +473,12 @@ static char *field_text(ConfigEdit *edit, int id, size_t *cap)
     case FE_RV_DAMP:
         *cap = sizeof edit->rv_damp;
         return edit->rv_damp;
-    case FE_RV_SEND:
-        *cap = sizeof edit->rv_send;
-        return edit->rv_send;
+    case FE_RV_SEND_MIN:
+        *cap = sizeof edit->rv_send_min;
+        return edit->rv_send_min;
+    case FE_RV_SEND_MAX:
+        *cap = sizeof edit->rv_send_max;
+        return edit->rv_send_max;
     case FE_PS_SEMI:
         *cap = sizeof edit->ps_semi;
         return edit->ps_semi;
@@ -548,7 +561,7 @@ static int is_number_field(int id)
 {
     return id == FE_OVERLAP || id == FE_PAUSE || id == FE_RESUME ||
            id == FE_VOLUME || id == FE_LUFS || id == FE_RV_DECAY ||
-           id == FE_RV_BW || id == FE_RV_DAMP || id == FE_RV_SEND ||
+           id == FE_RV_BW || id == FE_RV_DAMP || id == FE_RV_SEND_MIN || id == FE_RV_SEND_MAX ||
            id == FE_PS_PITCH || id == FE_PS_RANGE || id == FE_AP_PERIOD ||
            id == FE_AP_SMOOTH || id == FE_AP_DISTANCE ||
            (id >= FE_PH_PERIOD && id <= FE_PH_BOOST) ||
@@ -580,8 +593,8 @@ static int is_check_field(const ConfigEdit *edit, int id)
     return text && config_parse_bool(text, &on) == 0;
 }
 
-/* A dial mode droplist. Enter or Space opens the list of none, volume, and
- * jog. A value that is none of them stays a text field so it can be
+/* A dial mode droplist. Enter or Space opens the list of none, volume,
+ * jog, and reverb. A value that is none of them stays a text field so it can be
  * corrected. */
 static int is_choice_field(const ConfigEdit *edit, int id)
 {
@@ -1397,7 +1410,7 @@ static const char *tab_note(int tab)
         "Folder, crossfade, and loudness.",
         "Keys and pads.",
         "Dial and knobs.",
-        "Room. Send is how much reverb is added.",
+        "Room. The reverb knob moves Send from min to max.",
         "Pitch 1 is an octave up. 0 is unchanged.",
         "Left to right and back. Period counts beats.",
         "Notches sweep from Low to High. Period is in measures.",
@@ -4449,10 +4462,11 @@ static int knobs_tab_self_test(void)
         draw_screen(&ed, fp);
         fclose(fp);
     }
+    /* Four rows do not fit between Dial mode 3 and Save, so the list opens above. */
     if (!buf || strstr(buf, " volume ") == NULL || strstr(buf, " jog ") == NULL ||
-        ed.ui.drop_w != NUM_W || ed.ui.drop_r + DROP_ROWS > ed.ui.save_r ||
-        ed.ui.drop_r <= ed.ui.field_r[FE_DIAL_MODE3]) {
-        log_error("cfgedit", "the dial mode list was not drawn below its field");
+        strstr(buf, " reverb ") == NULL || ed.ui.drop_w != NUM_W ||
+        ed.ui.drop_r + DROP_ROWS != ed.ui.field_r[FE_DIAL_MODE3]) {
+        log_error("cfgedit", "the dial mode list was not drawn above its field");
         free(buf);
         return -1;
     }
@@ -4461,13 +4475,15 @@ static int knobs_tab_self_test(void)
     handle_event(&ed, &ev);
     handle_event(&ed, &ev);
     handle_event(&ed, &ev);
-    if (ed.drop_sel != DIAL_JOG || strcmp(ed.edit.dial_mode[2], "none") != 0) {
+    handle_event(&ed, &ev);
+    if (ed.drop_sel != DIAL_REVERB || strcmp(ed.edit.dial_mode[2], "none") != 0) {
         log_error("cfgedit", "Down did not move through the dial mode list");
         return -1;
     }
     ev.kind = EV_ENTER;
-    if (handle_event(&ed, &ev) != 0 || ed.drop != 0 || strcmp(ed.edit.dial_mode[2], "jog") != 0) {
-        log_error("cfgedit", "Enter did not pick jog");
+    if (handle_event(&ed, &ev) != 0 || ed.drop != 0 ||
+        strcmp(ed.edit.dial_mode[2], "reverb") != 0) {
+        log_error("cfgedit", "Enter did not pick reverb");
         return -1;
     }
     ev.kind = EV_CHAR;

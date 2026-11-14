@@ -18,7 +18,9 @@ typedef struct FxParams {
     float rv_decay; /* 0..1, default 0.5. Higher lasts longer. */
     float rv_bw;    /* 0..1, default 1. Higher keeps more highs going in. */
     float rv_damp;  /* 0..1, default 0. Higher dulls the tail. */
-    float rv_send;  /* 0..1, default 0.5. How much reverb is added. */
+    float rv_send;  /* 0..1, default 0.5. How much reverb is added now. */
+    float rv_send_min; /* 0..1, default 0. Send with the reverb knob all the way down. */
+    float rv_send_max; /* 0..1, default 1. Send with the reverb knob all the way up. */
     int pitch_on;
     float ps_pitch; /* -1..1, default 1. One octave up. 0 leaves the pitch alone. */
     float ps_range; /* 0..2, default 1. Octaves from the middle to either end. */
@@ -73,6 +75,9 @@ FxState *fx_new(unsigned rate);
 void fx_free(FxState *st);
 void fx_setup(FxState *st, const FxParams *p);
 /* The power buttons. A change takes effect on the next sample. */
+/* How much reverb is added, 0..1. The change is smoothed, so it can move
+ * while a song plays. */
+void fx_set_send(FxState *st, float send);
 void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
                int chorus, int flanger);
 /* Length of one beat in seconds at the current playback speed, or 0 when

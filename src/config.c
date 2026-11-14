@@ -234,6 +234,10 @@ static char *kbd_cfg(Config *cfg, int id)
         return cfg->kbd_jog_up;
     case KEYID_JOG_DOWN:
         return cfg->kbd_jog_down;
+    case KEYID_RV_UP:
+        return cfg->kbd_rv_up;
+    case KEYID_RV_DOWN:
+        return cfg->kbd_rv_down;
     default:
         return NULL;
     }
@@ -282,6 +286,10 @@ static char *kbd_edit(ConfigEdit *edit, int id)
         return edit->kbd_jog_up;
     case KEYID_JOG_DOWN:
         return edit->kbd_jog_down;
+    case KEYID_RV_UP:
+        return edit->kbd_rv_up;
+    case KEYID_RV_DOWN:
+        return edit->kbd_rv_down;
     default:
         return NULL;
     }
@@ -330,6 +338,10 @@ static char *key_edit(ConfigEdit *edit, int id)
         return edit->key_jog_up;
     case KEYID_JOG_DOWN:
         return edit->key_jog_down;
+    case KEYID_RV_UP:
+        return edit->key_rv_up;
+    case KEYID_RV_DOWN:
+        return edit->key_rv_down;
     default:
         return NULL;
     }
@@ -364,7 +376,7 @@ static const char *kbd_default(int id)
     static const char *vals[KEYID_COUNT] = {
         "Space", "Right", "Left", "1", "2", "3",
         "Up", "Down", "Enter", "q", "w", "e", "r", "t", "y", "Tab",
-        "=", "-", ".", ","
+        "=", "-", ".", ",", "]", "["
     };
 
     if (id < 0 || id >= KEYID_COUNT) {
@@ -534,6 +546,14 @@ static void set_key(Config *cfg, const char *action, const char *keyname)
         slot = &cfg->key_jog_down;
         name = cfg->key_jog_down_name;
         name_n = sizeof cfg->key_jog_down_name;
+    } else if (eq_ci(action, "reverb_up")) {
+        slot = &cfg->key_rv_up;
+        name = cfg->key_rv_up_name;
+        name_n = sizeof cfg->key_rv_up_name;
+    } else if (eq_ci(action, "reverb_down")) {
+        slot = &cfg->key_rv_down;
+        name = cfg->key_rv_down_name;
+        name_n = sizeof cfg->key_rv_down_name;
     } else {
         log_warn("autodj", "unknown key action %s", action);
         return;
@@ -560,7 +580,8 @@ static void bind_kbd_defaults(Config *cfg)
         "rewind_1_kbd", "rewind_1_5_kbd", "dial_forward_kbd", "dial_back_kbd",
         "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
-        "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd"
+        "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
+        "reverb_up_kbd", "reverb_down_kbd"
     };
     int id;
 
@@ -663,10 +684,14 @@ static void apply_fx(Config *cfg, int section, const char *key, const char *val)
             cfg->fx.rv_damp = (float)v;
         }
     } else if (section == 0 && eq_ci(key, "send")) {
+        /* The old fixed send. The reverb knob moves it from send_min to send_max. */
+    } else if (section == 0 && (eq_ci(key, "send_min") || eq_ci(key, "send_max"))) {
         if (parse_real(val, 0, 1, &v) != 0) {
-            log_warn("autodj", "reverb send must be from 0 to 1, got %s", val);
+            log_warn("autodj", "reverb %s must be from 0 to 1, got %s", key, val);
+        } else if (eq_ci(key, "send_min")) {
+            cfg->fx.rv_send_min = (float)v;
         } else {
-            cfg->fx.rv_send = (float)v;
+            cfg->fx.rv_send_max = (float)v;
         }
     } else if (section == 1 && eq_ci(key, "pitch")) {
         if (parse_real(val, -1, 1, &v) != 0) {
@@ -856,7 +881,7 @@ static void apply(Config *cfg, const char *section, const char *key, const char 
             int mode = DIAL_NONE;
 
             if (config_parse_dial_mode(val, &mode) != 0) {
-                log_warn("autodj", "%s must be none, volume, or jog, got %s", key, val);
+                log_warn("autodj", "%s must be none, volume, jog, or reverb, got %s", key, val);
             } else {
                 cfg->dial_modes[slot] = mode;
                 cfg->dial_mode_line |= 1u << slot;
@@ -935,6 +960,8 @@ int config_load(const char *path, Config *cfg)
     cfg->key_vol_down = -1;
     cfg->key_jog_up = -1;
     cfg->key_jog_down = -1;
+    cfg->key_rv_up = -1;
+    cfg->key_rv_down = -1;
     {
         int id;
 
@@ -1008,7 +1035,8 @@ int config_load(const char *path, Config *cfg)
             &cfg->key_dial_back, &cfg->key_dial_mode, &cfg->key_reverb,
             &cfg->key_pitch, &cfg->key_autopan, &cfg->key_phaser,
             &cfg->key_chorus, &cfg->key_flanger, &cfg->key_effects_off,
-            &cfg->key_vol_up, &cfg->key_vol_down, &cfg->key_jog_up, &cfg->key_jog_down
+            &cfg->key_vol_up, &cfg->key_vol_down, &cfg->key_jog_up, &cfg->key_jog_down,
+            &cfg->key_rv_up, &cfg->key_rv_down
         };
         int i;
 
@@ -1024,6 +1052,16 @@ int config_load(const char *path, Config *cfg)
     cfg->fx.phaser_on = 0;
     cfg->fx.chorus_on = 0;
     cfg->fx.flanger_on = 0;
+    if (cfg->fx.rv_send_min >= cfg->fx.rv_send_max) {
+        FxParams def;
+
+        fx_defaults(&def);
+        log_warn("autodj", "reverb send_min (%g) must be below send_max (%g), using %g and %g",
+                 (double)cfg->fx.rv_send_min, (double)cfg->fx.rv_send_max,
+                 (double)def.rv_send_min, (double)def.rv_send_max);
+        cfg->fx.rv_send_min = def.rv_send_min;
+        cfg->fx.rv_send_max = def.rv_send_max;
+    }
     if (cfg->fx.ph_low >= cfg->fx.ph_high) {
         FxParams def;
 
@@ -1372,7 +1410,8 @@ static void edit_defaults(ConfigEdit *edit)
     snprintf(edit->rv_decay, sizeof edit->rv_decay, "0.5");
     snprintf(edit->rv_bw, sizeof edit->rv_bw, "1");
     snprintf(edit->rv_damp, sizeof edit->rv_damp, "0");
-    snprintf(edit->rv_send, sizeof edit->rv_send, "0.5");
+    snprintf(edit->rv_send_min, sizeof edit->rv_send_min, "0");
+    snprintf(edit->rv_send_max, sizeof edit->rv_send_max, "1");
     snprintf(edit->ps_pitch, sizeof edit->ps_pitch, "1");
     snprintf(edit->ps_range, sizeof edit->ps_range, "1");
     snprintf(edit->ps_semi, sizeof edit->ps_semi, "true");
@@ -1503,6 +1542,10 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
             copy_raw(edit->key_jog_up, sizeof edit->key_jog_up, val);
         } else if (eq_ci(key, "jog_down")) {
             copy_raw(edit->key_jog_down, sizeof edit->key_jog_down, val);
+        } else if (eq_ci(key, "reverb_up")) {
+            copy_raw(edit->key_rv_up, sizeof edit->key_rv_up, val);
+        } else if (eq_ci(key, "reverb_down")) {
+            copy_raw(edit->key_rv_down, sizeof edit->key_rv_down, val);
         }
         return;
     }
@@ -1516,8 +1559,10 @@ static void apply_edit(ConfigEdit *edit, const char *section, const char *key, c
                 copy_raw(edit->rv_bw, sizeof edit->rv_bw, val);
             } else if (eq_ci(key, "damping")) {
                 copy_raw(edit->rv_damp, sizeof edit->rv_damp, val);
-            } else if (eq_ci(key, "send")) {
-                copy_raw(edit->rv_send, sizeof edit->rv_send, val);
+            } else if (eq_ci(key, "send_min")) {
+                copy_raw(edit->rv_send_min, sizeof edit->rv_send_min, val);
+            } else if (eq_ci(key, "send_max")) {
+                copy_raw(edit->rv_send_max, sizeof edit->rv_send_max, val);
             }
         } else if (fx == 1) {
             if (eq_ci(key, "pitch")) {
@@ -1742,6 +1787,10 @@ int config_parse_dial_mode(const char *s, int *mode)
         *mode = DIAL_JOG;
         return 0;
     }
+    if (eq_ci(s, "reverb")) {
+        *mode = DIAL_REVERB;
+        return 0;
+    }
     return -1;
 }
 
@@ -1752,6 +1801,9 @@ const char *config_dial_mode_name(int mode)
     }
     if (mode == DIAL_JOG) {
         return "jog";
+    }
+    if (mode == DIAL_REVERB) {
+        return "reverb";
     }
     return "none";
 }
@@ -1882,6 +1934,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.key_vol_down);
     trim(in.key_jog_up);
     trim(in.key_jog_down);
+    trim(in.key_rv_up);
+    trim(in.key_rv_down);
     for (i = 0; i < DIAL_SLOTS; i++) {
         trim(in.dial_mode[i]);
     }
@@ -1896,7 +1950,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     trim(in.rv_decay);
     trim(in.rv_bw);
     trim(in.rv_damp);
-    trim(in.rv_send);
+    trim(in.rv_send_min);
+    trim(in.rv_send_max);
     trim(in.ps_pitch);
     trim(in.ps_range);
     trim(in.ps_semi);
@@ -1943,6 +1998,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     out.key_vol_down = -1;
     out.key_jog_up = -1;
     out.key_jog_down = -1;
+    out.key_rv_up = -1;
+    out.key_rv_down = -1;
     out.dial_default = -1;
     fx_defaults(&out.fx);
     out.volume_set = 1;
@@ -2002,7 +2059,7 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
         if (in.dial_mode[i][0] && config_parse_dial_mode(in.dial_mode[i], &out.dial_modes[i]) != 0) {
             char msg[96];
 
-            snprintf(msg, sizeof msg, "Dial mode %d must be none, volume, or jog.", i + 1);
+            snprintf(msg, sizeof msg, "Dial mode %d must be none, volume, jog, or reverb.", i + 1);
             add_err(err, err_n, msg);
             failed = 1;
         }
@@ -2067,6 +2124,12 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     key_ok[KEYID_JOG_DOWN] = take_key(err, err_n, in.key_jog_down, "Jog down",
                                       &out.key_jog_down, out.key_jog_down_name,
                                       sizeof out.key_jog_down_name) == 0;
+    key_ok[KEYID_RV_UP] = take_key(err, err_n, in.key_rv_up, "Reverb up",
+                                   &out.key_rv_up, out.key_rv_up_name,
+                                   sizeof out.key_rv_up_name) == 0;
+    key_ok[KEYID_RV_DOWN] = take_key(err, err_n, in.key_rv_down, "Reverb down",
+                                     &out.key_rv_down, out.key_rv_down_name,
+                                     sizeof out.key_rv_down_name) == 0;
     keys[KEYID_PAUSE] = in.key_pause;
     keys[KEYID_SKIP] = in.key_skip;
     keys[KEYID_PREV] = in.key_prev;
@@ -2087,6 +2150,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     keys[KEYID_VOL_DOWN] = in.key_vol_down;
     keys[KEYID_JOG_UP] = in.key_jog_up;
     keys[KEYID_JOG_DOWN] = in.key_jog_down;
+    keys[KEYID_RV_UP] = in.key_rv_up;
+    keys[KEYID_RV_DOWN] = in.key_rv_down;
     labels[KEYID_PAUSE] = "pause/resume";
     labels[KEYID_SKIP] = "skip";
     labels[KEYID_PREV] = "previous";
@@ -2107,6 +2172,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     labels[KEYID_VOL_DOWN] = "volume down";
     labels[KEYID_JOG_UP] = "jog up";
     labels[KEYID_JOG_DOWN] = "jog down";
+    labels[KEYID_RV_UP] = "reverb up";
+    labels[KEYID_RV_DOWN] = "reverb down";
     kbd_ok[KEYID_PAUSE] = take_kbd(err, err_n, in.kbd_pause, "Pause/resume",
                                    out.kbd_pause, sizeof out.kbd_pause) == 0;
     kbd_ok[KEYID_SKIP] = take_kbd(err, err_n, in.kbd_skip, "Skip",
@@ -2147,6 +2214,10 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
                                     out.kbd_jog_up, sizeof out.kbd_jog_up) == 0;
     kbd_ok[KEYID_JOG_DOWN] = take_kbd(err, err_n, in.kbd_jog_down, "Jog down",
                                       out.kbd_jog_down, sizeof out.kbd_jog_down) == 0;
+    kbd_ok[KEYID_RV_UP] = take_kbd(err, err_n, in.kbd_rv_up, "Reverb up",
+                                   out.kbd_rv_up, sizeof out.kbd_rv_up) == 0;
+    kbd_ok[KEYID_RV_DOWN] = take_kbd(err, err_n, in.kbd_rv_down, "Reverb down",
+                                     out.kbd_rv_down, sizeof out.kbd_rv_down) == 0;
     for (i = 0; i < KEYID_COUNT; i++) {
         char what[32];
 
@@ -2163,8 +2234,20 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
     if (in.rv_damp[0] && take_real(err, err_n, in.rv_damp, 0, 1, "Damping", &out.fx.rv_damp) != 0) {
         failed = 1;
     }
-    if (in.rv_send[0] && take_real(err, err_n, in.rv_send, 0, 1, "Send", &out.fx.rv_send) != 0) {
-        failed = 1;
+    {
+        int min_ok = !in.rv_send_min[0] ||
+                     take_real(err, err_n, in.rv_send_min, 0, 1, "Send min",
+                               &out.fx.rv_send_min) == 0;
+        int max_ok = !in.rv_send_max[0] ||
+                     take_real(err, err_n, in.rv_send_max, 0, 1, "Send max",
+                               &out.fx.rv_send_max) == 0;
+
+        if (!min_ok || !max_ok) {
+            failed = 1;
+        } else if (out.fx.rv_send_min >= out.fx.rv_send_max) {
+            add_err(err, err_n, "Send min must be below Send max.");
+            failed = 1;
+        }
     }
     if (in.ps_pitch[0] && take_real(err, err_n, in.ps_pitch, -1, 1, "Pitch", &out.fx.ps_pitch) != 0) {
         failed = 1;
@@ -2482,6 +2565,12 @@ static int keys_id(const char *key)
     if (eq_ci(key, "jog_down")) {
         return KEYID_JOG_DOWN;
     }
+    if (eq_ci(key, "reverb_up")) {
+        return KEYID_RV_UP;
+    }
+    if (eq_ci(key, "reverb_down")) {
+        return KEYID_RV_DOWN;
+    }
     return -1;
 }
 
@@ -2517,7 +2606,7 @@ static void fmt_float(char *dest, size_t n, float v)
 }
 
 static const char *const g_fx_keys[6][7] = {
-    {"decay", "bw", "damping", "send"},
+    {"decay", "bw", "damping", "send_min", "send_max"},
     {"pitch", "range", "semitones", "formant"},
     {"period", "smoothing", "distance"},
     {"period", "low", "high", "stages", "feedback", "mix", "boost"},
@@ -2525,7 +2614,7 @@ static const char *const g_fx_keys[6][7] = {
     {"period", "delay", "depth", "feedback", "mix"}
 };
 
-static const int g_fx_key_count[6] = {4, 4, 3, 7, 5, 5};
+static const int g_fx_key_count[6] = {5, 4, 3, 7, 5, 5};
 
 static int fx_key_id(int section, const char *key)
 {
@@ -2566,8 +2655,11 @@ static void fx_value(const Config *cfg, int section, int id, char *dest, size_t 
         case 2:
             fmt_float(dest, n, fx->rv_damp);
             return;
+        case 3:
+            fmt_float(dest, n, fx->rv_send_min);
+            return;
         default:
-            fmt_float(dest, n, fx->rv_send);
+            fmt_float(dest, n, fx->rv_send_max);
             return;
         }
     }
@@ -2800,6 +2892,12 @@ static void key_value(const Config *cfg, int id, char *dest, size_t n)
     case KEYID_JOG_DOWN:
         s = cfg->key_jog_down_name;
         break;
+    case KEYID_RV_UP:
+        s = cfg->key_rv_up_name;
+        break;
+    case KEYID_RV_DOWN:
+        s = cfg->key_rv_down_name;
+        break;
     default:
         break;
     }
@@ -3016,14 +3114,16 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         "pause_resume", "skip", "previous", "rewind_0_5", "rewind_1",
         "rewind_1_5", "dial_forward", "dial_back", "dial_mode",
         "reverb", "chipmunk", "autopan", "phaser", "chorus", "flanger",
-        "effects_off", "volume_up", "volume_down", "jog_up", "jog_down"
+        "effects_off", "volume_up", "volume_down", "jog_up", "jog_down",
+        "reverb_up", "reverb_down"
     };
     static const char *kbd_names[KEYID_COUNT] = {
         "pause_resume_kbd", "skip_kbd", "previous_kbd", "rewind_0_5_kbd",
         "rewind_1_kbd", "rewind_1_5_kbd", "dial_forward_kbd", "dial_back_kbd",
         "dial_mode_kbd", "reverb_kbd", "chipmunk_kbd", "autopan_kbd",
         "phaser_kbd", "chorus_kbd", "flanger_kbd", "effects_off_kbd",
-        "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd"
+        "volume_up_kbd", "volume_down_kbd", "jog_up_kbd", "jog_down_kbd",
+        "reverb_up_kbd", "reverb_down_kbd"
     };
     FILE *in = NULL;
     FILE *out = NULL;
@@ -3161,9 +3261,11 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             continue;
         }
         /* Effects always start off, so the old startup switch goes away, and so
-         * do the settings of the old Mixxx-style phaser. */
+         * do the settings of the old Mixxx-style phaser and the old fixed
+         * reverb send, which send_min and send_max replace. */
         if (!jog && in_fx >= 0 && line_setting_key(line->text, key, sizeof key) &&
-            (eq_ci(key, "on") || (in_fx == 3 && old_phaser_key(key)))) {
+            (eq_ci(key, "on") || (in_fx == 3 && old_phaser_key(key)) ||
+             (in_fx == 0 && eq_ci(key, "send")))) {
             unlink_line(&head, prev, line);
             line = next;
             continue;
@@ -3504,6 +3606,7 @@ static int edit_self_test(void)
         "pitch_shift=KEY_C\n"
         "[Reverb]\n"
         "on=true\n"
+        "send=0.7\n"
         "[Pitch Shift]\n"
         "pitch=0.5\n"
         "[Phaser]\n"
@@ -3554,13 +3657,16 @@ static int edit_self_test(void)
         "volume_down_kbd=\n"
         "jog_up_kbd=\n"
         "jog_down_kbd=\n"
+        "reverb_up_kbd=\n"
+        "reverb_down_kbd=\n"
         "volume_up_midi=CC_3_UP\n"
         "volume_down_midi=CC_3_DOWN\n"
         "[Reverb]\n"
         "decay=0.5\n"
         "bw=1\n"
         "damping=0\n"
-        "send=0.5\n"
+        "send_min=0\n"
+        "send_max=1\n"
         "[Chipmunk]\n"
         "pitch=1\n"
         "range=1\n"
@@ -3759,7 +3865,10 @@ static int edit_self_test(void)
     snprintf(edit.ch_voices, sizeof edit.ch_voices, "2.5");
     snprintf(edit.fl_delay, sizeof edit.fl_delay, "0.5");
     snprintf(edit.fl_depth, sizeof edit.fl_depth, "0.5");
+    snprintf(edit.rv_send_min, sizeof edit.rv_send_min, "0.6");
+    snprintf(edit.rv_send_max, sizeof edit.rv_send_max, "0.4");
     if (rc == 0 && (config_validate_edit(&edit, &cfg, err, sizeof err) == 0 ||
+                    strstr(err, "Send min must be below Send max.") == NULL ||
                     strstr(err, "Low Hz must be below High Hz.") == NULL ||
                     strstr(err, "Stages must be a whole number from 1 to 12.") == NULL ||
                     strstr(err, "Chorus depth must be less than delay.") == NULL ||
@@ -3776,6 +3885,8 @@ static int edit_self_test(void)
     edit.ch_voices[0] = '\0';
     edit.fl_delay[0] = '\0';
     edit.fl_depth[0] = '\0';
+    edit.rv_send_min[0] = '\0';
+    edit.rv_send_max[0] = '\0';
     snprintf(edit.volume, sizeof edit.volume, "150");
     snprintf(edit.folder, sizeof edit.folder, "/tmp/autodj-missing-folder");
     snprintf(edit.shuffle, sizeof edit.shuffle, "maybe");
@@ -3980,7 +4091,12 @@ static int midi_config_self_test(void)
           "volume_up_midi=CC_3_UP\n"
           "volume_down_midi=cc_3_down\n"
           "pause_resume_midi=KEY_A\n"
-          "jog_up=KEY_KP8\n",
+          "jog_up=KEY_KP8\n"
+          "reverb_up_midi=CC_12_UP\n"
+          "[Reverb]\n"
+          "send=0.9\n"
+          "send_min=0.2\n"
+          "send_max=0.8\n",
           fp);
     fclose(fp);
     if (config_load(path, &cfg) != 0 || strcmp(cfg.midi[KEYID_SKIP], "NOTE_36") != 0 ||
@@ -3989,7 +4105,9 @@ static int midi_config_self_test(void)
         cfg.midi[KEYID_PAUSE][0] != '\0' || cfg.midi_code[KEYID_PAUSE] != -1 ||
         cfg.midi_code[KEYID_JOG_UP] != -1 || cfg.key_jog_up != 72 ||
         cfg.dial_modes[0] != DIAL_JOG || cfg.dial_modes[1] != DIAL_NONE ||
-        cfg.dial_modes[2] != DIAL_NONE) {
+        cfg.dial_modes[2] != DIAL_NONE || cfg.midi_code[KEYID_RV_UP] != (MIDI_CC_UP | 12) ||
+        cfg.fx.rv_send_min != 0.2f || cfg.fx.rv_send_max != 0.8f ||
+        strcmp(cfg.kbd_rv_up, "]") != 0) {
         log_error("autodj", "MIDI config test did not load the bindings");
         goto out;
     }
@@ -4010,14 +4128,16 @@ static int midi_config_self_test(void)
     }
     edit.midi[KEYID_PAUSE][0] = '\0';
     edit.midi[KEYID_REVERB][0] = '\0';
-    snprintf(edit.dial_mode[2], sizeof edit.dial_mode[2], "volume");
+    snprintf(edit.dial_mode[2], sizeof edit.dial_mode[2], "reverb");
     if (config_validate_edit(&edit, &cfg, err, sizeof err) != 0 ||
-        cfg.midi_code[KEYID_VOL_UP] != (MIDI_CC_UP | 3) || cfg.dial_modes[2] != DIAL_VOLUME ||
+        cfg.midi_code[KEYID_VOL_UP] != (MIDI_CC_UP | 3) || cfg.dial_modes[2] != DIAL_REVERB ||
         config_save(path, &cfg, err, sizeof err) != 0 || read_text(path, got, sizeof got) != 0 ||
         strstr(got, "skip_midi=NOTE_36\n") == NULL ||
         strstr(got, "volume_down_midi=CC_3_DOWN\n") == NULL ||
         strstr(got, "pause_resume_midi=\n") == NULL || strstr(got, "dial_default") != NULL ||
-        strstr(got, "dial_mode_3=volume\n") == NULL || strstr(got, "reverb_midi") != NULL ||
+        strstr(got, "dial_mode_3=reverb\n") == NULL || strstr(got, "\nreverb_midi") != NULL ||
+        strstr(got, "send=") != NULL || strstr(got, "send_min=0.2\nsend_max=0.8\n") == NULL ||
+        strstr(got, "reverb_up_midi=CC_12_UP\n") == NULL ||
         strstr(got, "jog_up=KEY_KP8\n") == NULL) {
         log_error("autodj", "MIDI config test saved unexpected lines: %s\n%s", err, got);
         goto out;

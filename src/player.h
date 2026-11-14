@@ -65,6 +65,11 @@ int player_fx_enabled(int which);
 int player_fx_toggle(int which);
 /* Turn every effect off. A second press leaves them off. */
 void player_fx_all_off(void);
+/* The reverb knob: how far reverb send is from its minimum to its maximum
+ * (FxParams rv_send_min and rv_send_max), in percent. player_set_fx puts it
+ * at 50. direction is +1 or -1. A change is heard at once, smoothed. */
+void player_reverb_step(int direction, int percent);
+int player_reverb_percent(void);
 
 int player_self_test(void);
 

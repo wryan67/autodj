@@ -146,6 +146,8 @@ void fx_defaults(FxParams *p)
     p->rv_bw = 1.0f;
     p->rv_damp = 0.0f;
     p->rv_send = 0.5f;
+    p->rv_send_min = 0.0f;
+    p->rv_send_max = 1.0f;
     p->ps_pitch = 1.0f;
     p->ps_range = 1.0f;
     p->ps_semi = 1;
@@ -505,6 +507,13 @@ void fx_setup(FxState *st, const FxParams *p)
     st->ph_on = st->p.phaser_on ? 1 : 0;
     st->ch_on = st->p.chorus_on ? 1 : 0;
     st->fl_on = st->p.flanger_on ? 1 : 0;
+}
+
+void fx_set_send(FxState *st, float send)
+{
+    if (st) {
+        st->p.rv_send = send;
+    }
 }
 
 void fx_set_on(FxState *st, int reverb, int pitch, int autopan, int phaser,
