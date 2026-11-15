@@ -87,8 +87,10 @@ typedef struct FxParams {
                       * Highest zap. */
     float lz_length; /* 30..400 ms, default 260. How long one zap lasts. */
     float lz_level;  /* 0..100, default 30. How loud the zaps are. 100
-                      * mixes at 2. The song stays; 0 adds nothing. The
-                      * laser knob moves this while a song plays. */
+                      * mixes at 2 when the song volume is full. The song
+                      * stays; 0 adds nothing. Playback multiplies this by
+                      * the song volume. The laser knob moves this while a
+                      * song plays. */
     float bb_volume; /* 0..100, default 50. How loud the bubbles loop is.
                       * The song stays; 0 adds nothing. The bubbles knob
                       * moves this while a song plays. */
@@ -108,6 +110,9 @@ void fx_setup(FxState *st, const FxParams *p);
 void fx_set_send(FxState *st, float send);
 /* Laser volume, 0..100. Heard on the next sample. */
 void fx_set_lasers(FxState *st, float level);
+/* Song volume, 0..1. Lasers use it as a ceiling on their mix. 1 until set.
+ * 100 on the laser knob at song volume 1 still mixes at 2. */
+void fx_set_song_volume(FxState *st, float volume);
 /* Chorus depth in milliseconds, 0..10. Heard on the next samples. A jump
  * eases in over about 20 ms per millisecond so the delay tap does not click. */
 void fx_set_chorus(FxState *st, float depth_ms);

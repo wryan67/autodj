@@ -160,6 +160,7 @@ struct FxState {
     float lz_mix;
     int lz_on;
     int lz_live;
+    float lz_song; /* 0..1 song volume. The zap mix is multiplied by this. */
     unsigned lz_rng;
 };
 
@@ -355,6 +356,7 @@ FxState *fx_new(unsigned rate)
     if (!st->lz_rng) {
         st->lz_rng = 0x6d2b79f5u;
     }
+    st->lz_song = 1;
 
     rv_layout(st, NULL, &total);
     st->rv_block = calloc((size_t)total, sizeof(float));
@@ -606,6 +608,7 @@ void fx_setup(FxState *st, const FxParams *p)
     st->uw_live = 0;
     st->lz_mix = 0;
     st->lz_live = 0;
+    st->lz_song = 1;
     st->rv_on = st->p.reverb_on ? 1 : 0;
     st->ps_on = st->p.pitch_on ? 1 : 0;
     st->ap_on = st->p.autopan_on ? 1 : 0;
@@ -628,6 +631,20 @@ void fx_set_lasers(FxState *st, float level)
     if (st) {
         st->p.lz_level = level;
     }
+}
+
+void fx_set_song_volume(FxState *st, float volume)
+{
+    if (!st) {
+        return;
+    }
+    if (volume < 0) {
+        volume = 0;
+    }
+    if (volume > 1) {
+        volume = 1;
+    }
+    st->lz_song = volume;
 }
 
 void fx_set_chorus(FxState *st, float depth_ms)
@@ -1865,7 +1882,8 @@ static void process_lasers(FxState *st, float *left, float *right)
     if (length > 400.0f) {
         length = 400.0f;
     }
-    /* 100 on the knob mixes at 2, twice the earlier full setting. */
+    /* 100 on the knob mixes at 2 when the song is at full volume.
+     * The song volume is a ceiling, so 0 adds nothing. */
     level = st->p.lz_level * 0.02f;
     if (level < 0) {
         level = 0;
@@ -1873,6 +1891,7 @@ static void process_lasers(FxState *st, float *left, float *right)
     if (level > 2.0f) {
         level = 2.0f;
     }
+    level *= st->lz_song;
     if (st->lz_on || st->lz_follow) {
         st->lz_wait -= 1.0f;
         if (st->lz_wait <= 0) {
@@ -2109,6 +2128,7 @@ static int lasers_self_test(void)
     float *buf = NULL;
     float loud;
     float quiet;
+    float half;
     double sum;
     double mean;
     int i;
@@ -2190,6 +2210,41 @@ static int lasers_self_test(void)
                   (double)quiet);
         goto done;
     }
+
+    /* Song volume is a ceiling. Half song volume is half as loud. Zero
+     * leaves the song sample alone. */
+    p.lz_level = 100;
+    fx_setup(st, &p);
+    st->lz_rng = 0x12345678u;
+    fx_set_on(st, 0, 0, 0, 0, 0, 0, 0, 1);
+    fx_set_song_volume(st, 0.5f);
+    sum = 0;
+    for (i = 0; i < 44100; i++) {
+        float l = 0;
+        float r = 0;
+
+        fx_process(st, &l, &r);
+        sum += (double)l * l + (double)r * r;
+    }
+    half = (float)sqrt(sum / (44100.0 * 2.0));
+    if (half < loud * 0.47f || half > loud * 0.53f) {
+        log_error("fx", "lasers at half song volume were %.4f rms, full was %.4f", (double)half,
+                  (double)loud);
+        goto done;
+    }
+    fx_set_song_volume(st, 0);
+    for (i = 0; i < 4000; i++) {
+        float x = 0.25f;
+        float l = x;
+        float r = x;
+
+        fx_process(st, &l, &r);
+        if (l != x || r != x) {
+            log_error("fx", "lasers at song volume 0 changed the song");
+            goto done;
+        }
+    }
+    fx_set_song_volume(st, 1);
 
     fx_defaults(&p);
     p.lz_rate = 8;

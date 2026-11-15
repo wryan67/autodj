@@ -33,10 +33,13 @@
  * When it stops, the record spins back up to the pause/resume rate, so a
  * paused song stays paused.
  *
- * Lasers and bubbles are added on top of the song. A pause quiets each one
- * that is on. Pressing its button while the song is paused turns that one
- * back on, and it is heard while the song stays paused. Another press turns
- * it off. Resuming brings back the ones left on.
+ * Lasers and bubbles are added on top of the song. Each one's loudness is
+ * its own level times the song volume, so song volume 0 adds nothing. At
+ * full song volume, laser level 100 mixes at 2 and bubbles volume 100 mixes
+ * the loop at 1. A pause quiets each one that is on. Pressing its button
+ * while the song is paused turns that one back on, and it is heard while the
+ * song stays paused. Another press turns it off. Resuming brings back the
+ * ones left on.
  */
 
 #define HIST_MAX 21 /* the song playing, plus 20 before it */
@@ -1136,6 +1139,9 @@ static void render_frame(int16_t *dst)
                               (g_fx_params.rv_send_max - g_fx_params.rv_send_min) *
                                   (float)atomic_load(&g_rv_level) / 1000.0f);
         fx_set_lasers(g_fx, (float)atomic_load(&g_lz_level) / 10.0f);
+        /* Same ceiling as the bubbles loop: song volume 0 adds nothing,
+         * and full song volume leaves the laser level as it is. */
+        fx_set_song_volume(g_fx, g_vol);
         fx_set_chorus(g_fx, (float)atomic_load(&g_ch_depth) / 100.0f);
         fx_set_on(g_fx, atomic_load(&g_fx_on[PLAYER_FX_REVERB]),
                   atomic_load(&g_fx_on[PLAYER_FX_PITCH]),
@@ -1998,6 +2004,18 @@ static int lasers_pause_self_test(void)
         fail = 1;
         goto done;
     }
+    g_vol = 0;
+    if (!silent_overlay(4000)) {
+        log_error("audio", "lasers stayed audible at song volume 0");
+        fail = 1;
+        goto done;
+    }
+    g_vol = 1.0f;
+    if (!heard_overlay(44100, 200)) {
+        log_error("audio", "lasers stayed silent after the song volume returned");
+        fail = 1;
+        goto done;
+    }
     begin_ramp(1);
     render_frames(88200);
     if (!silent_overlay(2000) || player_fx_enabled(PLAYER_FX_LASERS) ||
@@ -2407,6 +2425,27 @@ int player_self_test(void)
             fail = 1;
             goto bubbles_done;
         }
+        g_vol = 0.5f;
+        g_bb_pos = 0;
+        g_bb_gain = 0.5f;
+        atomic_store(&g_bb_level, 1000);
+        render_frame(out);
+        if (out[0] < 8191 || out[0] > 8192 || out[1] < -4096 || out[1] > -4095) {
+            log_error("audio", "bubbles song-volume scale failed (%d, %d)", out[0], out[1]);
+            fail = 1;
+            goto bubbles_done;
+        }
+        g_vol = 0;
+        render_frames(2000);
+        g_bb_pos = 0;
+        render_frame(out);
+        if (out[0] != 0 || out[1] != 0 || g_bb_gain > 0.001f) {
+            log_error("audio", "bubbles stayed audible at song volume 0");
+            fail = 1;
+            goto bubbles_done;
+        }
+        g_vol = 1.0f;
+        atomic_store(&g_bb_level, 500);
         /* A stopped rate while playback is running still mixes the loop. */
         g_rate = 0;
         g_paused = 0;
