@@ -38,8 +38,8 @@
  * full song volume, laser level 100 mixes at 2 and bubbles volume 100 mixes
  * the loop at 1. A pause quiets each one that is on. Pressing its button
  * while the song is paused turns that one back on, and it is heard while the
- * song stays paused. Another press turns it off. Resuming brings back the
- * ones left on.
+ * song stays paused. Another press turns it off. Resuming leaves them off.
+ * A press during the pause leaves that one on.
  */
 
 #define HIST_MAX 21 /* the song playing, plus 20 before it */
@@ -734,8 +734,9 @@ static int fx_sounding(int which)
     return atomic_load(&g_fx_on[which]) ? 1 : 0;
 }
 
-/* Remember overlays that are on, so the pause can quiet them and resume
- * can bring those same ones back. */
+/* Remember overlays that are on, so the pause can quiet them. Resume leaves
+ * a held one off. A button press during the pause clears the hold and that
+ * one stays on. */
 static void hold_additive(void)
 {
     int i;
@@ -758,6 +759,20 @@ static void release_additive(void)
     }
 }
 
+/* The pause is over. An overlay still held was not turned back on, so it
+ * stays off. */
+static void settle_additive(void)
+{
+    int i;
+
+    for (i = 0; i < PLAYER_FX_COUNT; i++) {
+        if (atomic_load(&g_fx_hold[i])) {
+            atomic_store(&g_fx_on[i], 0);
+        }
+        atomic_store(&g_fx_hold[i], 0);
+    }
+}
+
 static void begin_ramp(int pausing)
 {
     int was = g_paused;
@@ -775,7 +790,7 @@ static void begin_ramp(int pausing)
         }
         log_info("audio", "pausing over %ds", g_set.pause_sec);
     } else {
-        release_additive();
+        settle_additive();
         log_info("audio", "resuming over %ds", g_set.resume_sec);
     }
     if (g_ramp_span == 0) {
@@ -1951,8 +1966,8 @@ static int silent_overlay(int frames)
     return 1;
 }
 
-/* Lasers go quiet on pause, the button brings them back, and resume
- * brings back the ones left on. */
+/* Lasers go quiet on pause. The button brings them back, and that press
+ * leaves them on after resume. With no press, resume leaves them off. */
 static int lasers_pause_self_test(void)
 {
     FxParams p;
@@ -2035,6 +2050,11 @@ static int lasers_pause_self_test(void)
         goto done;
     }
     begin_ramp(0);
+    if (!heard_overlay(44100, 200) || g_paused || !player_fx_enabled(PLAYER_FX_LASERS)) {
+        log_error("audio", "lasers turned on during the pause did not stay on");
+        fail = 1;
+        goto done;
+    }
     begin_ramp(1);
     render_frames(88200);
     if (player_fx_enabled(PLAYER_FX_LASERS) || !atomic_load(&g_fx_on[PLAYER_FX_LASERS])) {
@@ -2043,8 +2063,10 @@ static int lasers_pause_self_test(void)
         goto done;
     }
     begin_ramp(0);
-    if (!heard_overlay(44100, 200) || g_paused || !player_fx_enabled(PLAYER_FX_LASERS)) {
-        log_error("audio", "lasers did not return when the song resumed");
+    render_frames(44100);
+    if (player_fx_enabled(PLAYER_FX_LASERS) || atomic_load(&g_fx_on[PLAYER_FX_LASERS]) ||
+        !silent_overlay(2000) || g_paused) {
+        log_error("audio", "lasers came back when the song resumed");
         fail = 1;
         goto done;
     }
@@ -2532,10 +2554,9 @@ int player_self_test(void)
         render_frames(2000);
         g_bb_pos = 0;
         render_frame(out);
-        if (!player_fx_enabled(PLAYER_FX_BUBBLES) || g_paused || g_bb_gain < 0.999f ||
-            out[0] < 16383 || out[0] > 16384 || out[1] < -8192 || out[1] > -8191) {
-            log_error("audio", "bubbles did not return when the song resumed (%d, %d)", out[0],
-                      out[1]);
+        if (player_fx_enabled(PLAYER_FX_BUBBLES) || atomic_load(&g_fx_on[PLAYER_FX_BUBBLES]) ||
+            g_paused || g_bb_gain > 0.001f || out[0] != 0 || out[1] != 0) {
+            log_error("audio", "bubbles came back when the song resumed (%d, %d)", out[0], out[1]);
             fail = 1;
             goto bubbles_done;
         }
@@ -2568,6 +2589,16 @@ int player_self_test(void)
             goto bubbles_done;
         }
         begin_ramp(0);
+        render_frames(200);
+        g_bb_pos = 0;
+        render_frame(out);
+        if (!player_fx_enabled(PLAYER_FX_BUBBLES) || g_paused || g_bb_gain < 0.999f ||
+            out[0] < 16383 || out[0] > 16384 || out[1] < -8192 || out[1] > -8191) {
+            log_error("audio", "bubbles turned on during the pause did not stay on (%d, %d)",
+                      out[0], out[1]);
+            fail = 1;
+            goto bubbles_done;
+        }
         atomic_store(&g_fx_on[PLAYER_FX_BUBBLES], 0);
         g_bb_gain = 0.5f;
         g_rate = 1.0;
