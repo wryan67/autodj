@@ -302,7 +302,7 @@ The dial. It is a volume knob or a jog wheel, depending on the dial mode (see `d
 The old names `jog_forward` and `jog_back` are still read. `autodj --config` writes them back under the new names.
 
 `dial_mode`  
-Press to move the dial to its next mode, as set by `dial_mode_1` to `dial_mode_3` in `[Main]`. The editor calls it Next dial mode. The log shows the mode after each switch.
+Press to move the dial to its next mode, as set by `dial_mode_1` to `dial_mode_3` in `[Main]`. The editor calls it Next dial mode. The log shows the mode after each switch. Ten presses of the keypad or shortcut-remote mode button in a row, each within 2 seconds of the last and with no other keypad or remote key between them, set the modes to volume, jog, and none for this run and start on volume. That is not written into the file. The next start uses the saved modes. The keyboard and MIDI mode bindings still only move to the next mode.
 
 `volume_up`, `volume_down`  
 Raise or lower the volume, whatever mode the dial is in. A keypad or remote key, or a knob step, changes it by 1, and a keyboard key or a pad by 5.

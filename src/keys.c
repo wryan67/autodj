@@ -99,6 +99,9 @@ static void (*g_jog_hook)(int direction, long long when_us, int midi);
 /* What the dial does in each mode, and the mode it is in now. */
 static int g_dial_modes[DIAL_SLOTS] = {DIAL_JOG, DIAL_NONE, DIAL_NONE};
 static int g_dial_slot;
+/* Keypad presses of the mode button with no other keypad key between them. */
+static int g_mode_row;
+static struct timeval g_mode_row_time;
 static long long g_jog_last_us;
 static long long g_midi_jog_last_us;
 static struct Combo g_cap[MAX_CAPTURE_FD];
@@ -113,7 +116,7 @@ static struct timespec g_raw_kick;    /* last raw-mode request */
 static struct timeval g_press_time;
 static int g_press_seen;
 
-enum { KEY_DEBOUNCE_MS = 30 };
+enum { KEY_DEBOUNCE_MS = 30, MODE_ROW = 10, MODE_ROW_MS = 2000 };
 
 static int mod_bit(int code)
 {
@@ -626,6 +629,7 @@ int keys_open(void)
 
         memcpy(g_dial_modes, jog_only, sizeof g_dial_modes);
         g_dial_slot = 0;
+        g_mode_row = 0;
     }
     for (i = 0; i < 32 && g_nfd < MAX_PADS; i++) {
         char name[256];
@@ -701,6 +705,7 @@ void keys_set_dial_modes(const int *modes)
 {
     int i;
 
+    g_mode_row = 0;
     g_dial_slot = 0;
     for (i = 0; i < DIAL_SLOTS; i++) {
         g_dial_modes[i] = modes ? modes[i] : DIAL_NONE;
@@ -797,6 +802,32 @@ static int press_accepted(const struct timeval *when)
     return ms >= KEY_DEBOUNCE_MS;
 }
 
+/* Ten keypad presses of the mode button in a row set volume, jog, and none
+ * for this run. The file is left as it was, so the next start uses the
+ * saved modes. A press counts when it is within 2 seconds of the previous
+ * one. Any other key starts the count over. */
+static void pad_dial_mode(const struct timeval *when)
+{
+    if (g_mode_row > 0 && timeval_delta_ms(when, &g_mode_row_time) > MODE_ROW_MS) {
+        g_mode_row = 0;
+    }
+    g_mode_row_time = *when;
+    g_mode_row++;
+    if (g_mode_row < MODE_ROW) {
+        next_dial_mode();
+        return;
+    }
+    g_mode_row = 0;
+    g_dial_modes[0] = DIAL_VOLUME;
+    g_dial_modes[1] = DIAL_JOG;
+    g_dial_modes[2] = DIAL_NONE;
+    g_dial_slot = 0;
+    log_info("keys", "dial modes %s, %s, %s until the next start",
+             config_dial_mode_name(DIAL_VOLUME), config_dial_mode_name(DIAL_JOG),
+             config_dial_mode_name(DIAL_NONE));
+    log_dial_mode();
+}
+
 static int is_step_action(int id)
 {
     return id == KEYID_DIAL_FWD || id == KEYID_DIAL_BACK || id == KEYID_VOL_UP ||
@@ -850,6 +881,7 @@ static void step_action(int id, int count, int percent, long long us, int midi)
                id == KEYID_CH_UP) ? 1 : -1;
     int mode;
 
+    g_mode_row = 0;
     if (id == KEYID_LZ_UP || id == KEYID_LZ_DOWN) {
         player_lasers_step(dir, 2 * percent * count);
         return;
@@ -882,6 +914,7 @@ static void step_action(int id, int count, int percent, long long us, int midi)
 
 static void press_action(int id)
 {
+    g_mode_row = 0;
     switch (id) {
     case KEYID_DIAL_MODE:
         next_dial_mode();
@@ -989,6 +1022,11 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
     if (value != 1 || !press_accepted(when)) {
         return;
     }
+    if (id == KEYID_DIAL_MODE) {
+        pad_dial_mode(when);
+        return;
+    }
+    g_mode_row = 0;
     if (id >= 0) {
         press_action(id);
         return;
@@ -1625,6 +1663,7 @@ static void dial_test_modes(int first, int second)
     g_dial_modes[1] = second;
     g_dial_modes[2] = DIAL_NONE;
     g_dial_slot = 0;
+    g_mode_row = 0;
 }
 
 static int kbd_self_test(void)
@@ -2271,6 +2310,240 @@ static int combo_self_test(void)
     return 0;
 }
 
+static int modes_are(int a, int b, int c, int now)
+{
+    return g_dial_modes[0] == a && g_dial_modes[1] == b && g_dial_modes[2] == c &&
+           dial_mode_now() == now;
+}
+
+static void bump_ms(struct timeval *when, int ms)
+{
+    long usec = (long)when->tv_usec + (long)ms * 1000L;
+
+    when->tv_sec += usec / 1000000L;
+    when->tv_usec = (suseconds_t)(usec % 1000000L);
+}
+
+static void mode_press(const Config *cfg, struct timeval *when, int ms, int value)
+{
+    bump_ms(when, ms);
+    dispatch(cfg, KEY_C, value, when);
+}
+
+/* Ten keypad presses of the mode button set volume, jog, and none. The
+ * saved list comes back when the modes are loaded again. */
+static int mode_row_self_test(void)
+{
+    static const int saved[DIAL_SLOTS] = {DIAL_JOG, DIAL_NONE, DIAL_NONE};
+    Config cfg;
+    struct timeval when;
+    int i;
+    int rc = -1;
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.key_pause = KEY_B;
+    cfg.key_dial_mode = KEY_C;
+    cfg.key_dial_fwd = KEY_D;
+    for (i = 0; i < KEYID_COUNT; i++) {
+        cfg.midi_code[i] = -1;
+    }
+    cfg.midi_code[KEYID_DIAL_MODE] = MIDI_NOTE | 37;
+    snprintf(cfg.kbd_dial_mode, sizeof cfg.kbd_dial_mode, "Enter");
+    player_set_volume_percent(40);
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    memset(&when, 0, sizeof when);
+    when.tv_sec = 400;
+
+    for (i = 0; i < 9; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "nine mode presses left dial mode %s",
+                  config_dial_mode_name(dial_mode_now()));
+        goto out;
+    }
+    mode_press(&cfg, &when, 100, 1);
+    if (!modes_are(DIAL_VOLUME, DIAL_JOG, DIAL_NONE, DIAL_VOLUME)) {
+        log_error("keys", "ten mode presses left %s, %s, %s and dial mode %s",
+                  config_dial_mode_name(g_dial_modes[0]),
+                  config_dial_mode_name(g_dial_modes[1]),
+                  config_dial_mode_name(g_dial_modes[2]),
+                  config_dial_mode_name(dial_mode_now()));
+        goto out;
+    }
+    mode_press(&cfg, &when, 100, 1);
+    if (dial_mode_now() != DIAL_JOG || g_dial_modes[0] != DIAL_VOLUME) {
+        log_error("keys", "the press after the row did not move to jog");
+        goto out;
+    }
+    mode_press(&cfg, &when, 100, 1);
+    if (dial_mode_now() != DIAL_VOLUME) {
+        log_error("keys", "dial mode did not skip none after the row");
+        goto out;
+    }
+
+    /* A press more than 2 seconds later starts the count over. */
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    when.tv_sec = 500;
+    when.tv_usec = 0;
+    for (i = 0; i < 9; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    mode_press(&cfg, &when, MODE_ROW_MS + 1, 1);
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "a late mode press changed the saved modes");
+        goto out;
+    }
+    for (i = 0; i < 8; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "nine presses after a gap changed the saved modes");
+        goto out;
+    }
+    mode_press(&cfg, &when, 100, 1);
+    if (!modes_are(DIAL_VOLUME, DIAL_JOG, DIAL_NONE, DIAL_VOLUME)) {
+        log_error("keys", "ten presses after a gap did not set volume, jog, none");
+        goto out;
+    }
+
+    /* A press at exactly 2 seconds still counts. */
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    when.tv_sec = 600;
+    when.tv_usec = 0;
+    for (i = 0; i < 10; i++) {
+        mode_press(&cfg, &when, MODE_ROW_MS, 1);
+    }
+    if (!modes_are(DIAL_VOLUME, DIAL_JOG, DIAL_NONE, DIAL_VOLUME)) {
+        log_error("keys", "presses 2 seconds apart did not set volume, jog, none");
+        goto out;
+    }
+
+    /* A repeat is not a press, and a press inside the 30 ms gap is not either. */
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    when.tv_sec = 700;
+    when.tv_usec = 0;
+    for (i = 0; i < 9; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    mode_press(&cfg, &when, 20, 1);
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "a mode press inside the gap counted");
+        goto out;
+    }
+    mode_press(&cfg, &when, 100, 2);
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "a mode-button repeat changed the saved modes");
+        goto out;
+    }
+    mode_press(&cfg, &when, 30, 1);
+    if (!modes_are(DIAL_VOLUME, DIAL_JOG, DIAL_NONE, DIAL_VOLUME)) {
+        log_error("keys", "the tenth accepted mode press did not set the modes");
+        goto out;
+    }
+
+    /* Another keypad key, or a dial click, starts the count over. */
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    when.tv_sec = 800;
+    when.tv_usec = 0;
+    for (i = 0; i < 9; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    bump_ms(&when, 100);
+    dispatch(&cfg, KEY_B, 1, &when);
+    mode_press(&cfg, &when, 100, 1);
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "another key did not break the mode-button row");
+        goto out;
+    }
+    for (i = 0; i < 8; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    bump_ms(&when, 100);
+    dispatch(&cfg, KEY_D, 1, &when);
+    mode_press(&cfg, &when, 100, 1);
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG) ||
+        player_volume_percent() != 40) {
+        log_error("keys", "a dial click did not break the mode-button row");
+        goto out;
+    }
+
+    /* The keyboard and MIDI mode bindings do not count and do break the row. */
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    for (i = 0; i < 10; i++) {
+        g_press_seen = 0;
+        keys_kbd_dispatch(&cfg, "Enter");
+    }
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "the keyboard mode key changed the saved modes");
+        goto out;
+    }
+    when.tv_sec = 900;
+    when.tv_usec = 0;
+    g_press_seen = 0;
+    for (i = 0; i < 9; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    bump_ms(&when, 100);
+    keys_midi_dispatch(&cfg, MIDI_NOTE | 37, 1, &when);
+    mode_press(&cfg, &when, 100, 1);
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "a MIDI mode key did not break the mode-button row");
+        goto out;
+    }
+    {
+        struct timeval now;
+
+        keys_set_dial_modes(saved);
+        gettimeofday(&now, NULL);
+        when = now;
+        when.tv_sec -= 2;
+        g_press_seen = 0;
+        for (i = 0; i < 9; i++) {
+            mode_press(&cfg, &when, 100, 1);
+        }
+        keys_kbd_dispatch(&cfg, "Enter");
+        g_press_seen = 0;
+        when = now;
+        bump_ms(&when, 100);
+        dispatch(&cfg, KEY_C, 1, &when);
+        if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+            log_error("keys", "the keyboard mode key counted toward the row");
+            goto out;
+        }
+    }
+
+    /* Loading the saved modes drops a partial count. */
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    when.tv_sec = 1000;
+    when.tv_usec = 0;
+    for (i = 0; i < 9; i++) {
+        mode_press(&cfg, &when, 100, 1);
+    }
+    keys_set_dial_modes(saved);
+    g_press_seen = 0;
+    mode_press(&cfg, &when, 100, 1);
+    if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
+        log_error("keys", "reloading dial modes did not restore the saved list");
+        goto out;
+    }
+    rc = 0;
+out:
+    dial_test_modes(DIAL_JOG, DIAL_NONE);
+    g_press_seen = 0;
+    memset(&g_press_time, 0, sizeof g_press_time);
+    player_set_fx(NULL);
+    player_set_volume_percent(100);
+    return rc;
+}
+
 int keys_self_test(void)
 {
     int code = -1;
@@ -2416,7 +2689,7 @@ int keys_self_test(void)
         }
     }
     if (debounce_self_test() != 0 || combo_self_test() != 0 || kbd_self_test() != 0 ||
-        midi_dispatch_self_test() != 0) {
+        midi_dispatch_self_test() != 0 || mode_row_self_test() != 0) {
         return -1;
     }
     return 0;
