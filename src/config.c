@@ -109,47 +109,61 @@ void config_jog_defaults(Config *cfg)
     cfg->jog_spinup_sec = 0.3;
     cfg->jog_grab_sec = 0.02;
     cfg->jog_smooth_sec = 0.01;
+    cfg->jog_midi_turn_sec = 1.8;
+    cfg->jog_midi_clicks = 20;
+    cfg->jog_midi_max_speed = 4.0;
+    cfg->jog_midi_spinup_sec = 0.3;
+    cfg->jog_midi_grab_sec = 0.02;
+    cfg->jog_midi_smooth_sec = 0.01;
+    cfg->jog_midi_set = 0;
 }
 
-static void apply_jog(Config *cfg, const char *key, const char *val)
+/* midi selects [Jog MPD218]. The keypad dial stays in [Jog]. */
+static void apply_jog(Config *cfg, const char *key, const char *val, int midi)
 {
     double v = 0;
+    double *turn = midi ? &cfg->jog_midi_turn_sec : &cfg->jog_turn_sec;
+    int *clicks = midi ? &cfg->jog_midi_clicks : &cfg->jog_clicks;
+    double *max_speed = midi ? &cfg->jog_midi_max_speed : &cfg->jog_max_speed;
+    double *spinup = midi ? &cfg->jog_midi_spinup_sec : &cfg->jog_spinup_sec;
+    double *grab = midi ? &cfg->jog_midi_grab_sec : &cfg->jog_grab_sec;
+    double *smooth = midi ? &cfg->jog_midi_smooth_sec : &cfg->jog_smooth_sec;
 
     if (eq_ci(key, "seconds_per_turn")) {
         if (parse_real(val, JOG_TURN_MIN, JOG_TURN_MAX, &v) != 0) {
             log_warn("autodj", "seconds_per_turn must be from 0.1 to 20, got %s", val);
         } else {
-            cfg->jog_turn_sec = v;
+            *turn = v;
         }
     } else if (eq_ci(key, "clicks_per_turn")) {
         if (parse_real(val, JOG_CLICKS_MIN, JOG_CLICKS_MAX, &v) != 0 || v != (int)v) {
             log_warn("autodj", "clicks_per_turn must be a whole number from 1 to 1000, got %s", val);
         } else {
-            cfg->jog_clicks = (int)v;
+            *clicks = (int)v;
         }
     } else if (eq_ci(key, "max_speed")) {
         if (parse_real(val, JOG_SPEED_MIN, JOG_SPEED_MAX, &v) != 0) {
             log_warn("autodj", "max_speed must be from 0.5 to 20, got %s", val);
         } else {
-            cfg->jog_max_speed = v;
+            *max_speed = v;
         }
     } else if (eq_ci(key, "spinup_time")) {
         if (parse_real(val, 0, JOG_SPINUP_MAX, &v) != 0) {
             log_warn("autodj", "spinup_time must be from 0 to 5 seconds, got %s", val);
         } else {
-            cfg->jog_spinup_sec = v;
+            *spinup = v;
         }
     } else if (eq_ci(key, "grab_time")) {
         if (parse_real(val, 0, JOG_GRAB_MAX, &v) != 0) {
             log_warn("autodj", "grab_time must be from 0 to 1 second, got %s", val);
         } else {
-            cfg->jog_grab_sec = v;
+            *grab = v;
         }
     } else if (eq_ci(key, "smoothing")) {
         if (parse_real(val, 0, JOG_SMOOTH_MAX, &v) != 0) {
             log_warn("autodj", "smoothing must be from 0 to 1 second, got %s", val);
         } else {
-            cfg->jog_smooth_sec = v;
+            *smooth = v;
         }
     } else {
         log_warn("autodj", "unknown jog setting %s", key);
@@ -1120,7 +1134,11 @@ static void apply(Config *cfg, const char *section, const char *key, const char 
         return;
     }
     if (eq_ci(section, "Jog")) {
-        apply_jog(cfg, key, val);
+        apply_jog(cfg, key, val, 0);
+        return;
+    }
+    if (eq_ci(section, "Jog MPD218")) {
+        apply_jog(cfg, key, val, 1);
         return;
     }
     {
@@ -1226,6 +1244,9 @@ int config_load(const char *path, Config *cfg)
                 section[n] = '\0';
             }
             trim(section);
+            if (eq_ci(section, "Jog MPD218")) {
+                cfg->jog_midi_set = 1;
+            }
             continue;
         }
         eq = strchr(line, '=');
@@ -1333,6 +1354,15 @@ int config_load(const char *path, Config *cfg)
                  (double)def.lz_high);
         cfg->fx.lz_low = def.lz_low;
         cfg->fx.lz_high = def.lz_high;
+    }
+    /* No [Jog MPD218] section: the jog knob follows the keypad dial. */
+    if (!cfg->jog_midi_set) {
+        cfg->jog_midi_turn_sec = cfg->jog_turn_sec;
+        cfg->jog_midi_clicks = cfg->jog_clicks;
+        cfg->jog_midi_max_speed = cfg->jog_max_speed;
+        cfg->jog_midi_spinup_sec = cfg->jog_spinup_sec;
+        cfg->jog_midi_grab_sec = cfg->jog_grab_sec;
+        cfg->jog_midi_smooth_sec = cfg->jog_smooth_sec;
     }
     return 0;
 }
@@ -3342,26 +3372,33 @@ static int jog_id(const char *key)
     return -1;
 }
 
-static void jog_value(const Config *cfg, int id, char *dest, size_t n)
+static void jog_value(const Config *cfg, int id, int midi, char *dest, size_t n)
 {
+    double turn = midi ? cfg->jog_midi_turn_sec : cfg->jog_turn_sec;
+    int clicks = midi ? cfg->jog_midi_clicks : cfg->jog_clicks;
+    double max_speed = midi ? cfg->jog_midi_max_speed : cfg->jog_max_speed;
+    double spinup = midi ? cfg->jog_midi_spinup_sec : cfg->jog_spinup_sec;
+    double grab = midi ? cfg->jog_midi_grab_sec : cfg->jog_grab_sec;
+    double smooth = midi ? cfg->jog_midi_smooth_sec : cfg->jog_smooth_sec;
+
     switch (id) {
     case 0:
-        snprintf(dest, n, "%g", cfg->jog_turn_sec);
+        snprintf(dest, n, "%g", turn);
         break;
     case 1:
-        snprintf(dest, n, "%d", cfg->jog_clicks);
+        snprintf(dest, n, "%d", clicks);
         break;
     case 2:
-        snprintf(dest, n, "%g", cfg->jog_max_speed);
+        snprintf(dest, n, "%g", max_speed);
         break;
     case 3:
-        snprintf(dest, n, "%g", cfg->jog_spinup_sec);
+        snprintf(dest, n, "%g", spinup);
         break;
     case 4:
-        snprintf(dest, n, "%g", cfg->jog_grab_sec);
+        snprintf(dest, n, "%g", grab);
         break;
     default:
-        snprintf(dest, n, "%g", cfg->jog_smooth_sec);
+        snprintf(dest, n, "%g", smooth);
         break;
     }
 }
@@ -3704,7 +3741,8 @@ static int ensure_parent(const char *path, char *err, size_t err_n)
     return mkdir_p(dir, err, err_n);
 }
 
-/* Rewrite [Main] and [Keys], or only [Jog] when jog is set. */
+/* Rewrite [Main] and [Keys]. jog 1 rewrites only [Jog]. jog 2 rewrites only
+ * [Jog MPD218]. */
 static int save_sections(const char *path, const Config *cfg, int jog, char *err, size_t err_n)
 {
     static const char *main_names[MAIN_COUNT] = {
@@ -3753,6 +3791,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
     int in_main = 0;
     int in_keys = 0;
     int in_jog = 0;
+    int in_midi_jog = 0;
     int in_fx = -1;
     int in_old_fx = 0;
     int jog_seen[JOG_COUNT] = {0};
@@ -3809,6 +3848,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             in_main = eq_ci(section, "Main");
             in_keys = eq_ci(section, "Keys");
             in_jog = eq_ci(section, "Jog");
+            in_midi_jog = eq_ci(section, "Jog MPD218");
             in_fx = fx_section(section);
             in_old_fx = 0;
             /* Pitch Shift is written again as Chipmunk, or dropped if both are there. */
@@ -3847,10 +3887,11 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             line = next;
             continue;
         }
-        if (jog && in_jog && line_setting_key(line->text, key, sizeof key) &&
+        if (((jog == 1 && in_jog) || (jog == 2 && in_midi_jog)) &&
+            line_setting_key(line->text, key, sizeof key) &&
             (id = jog_id(key)) >= 0) {
             jog_seen[id] = 1;
-            jog_value(cfg, id, value, sizeof value);
+            jog_value(cfg, id, jog == 2, value, sizeof value);
             if (rewrite_value(line, value) != 0) {
                 set_err(err, err_n, "out of memory updating %s", path);
                 goto done;
@@ -4083,8 +4124,10 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
         }
     }
 
-    if (jog) {
-        if (ensure_section(&head, "Jog", &jog_header, &jog_last) != 0) {
+    if (jog == 1 || jog == 2) {
+        const char *jog_name = jog == 2 ? "Jog MPD218" : "Jog";
+
+        if (ensure_section(&head, jog_name, &jog_header, &jog_last) != 0) {
             set_err(err, err_n, "out of memory updating %s", path);
             goto done;
         }
@@ -4094,7 +4137,7 @@ static int save_sections(const char *path, const Config *cfg, int jog, char *err
             if (jog_seen[id]) {
                 continue;
             }
-            jog_value(cfg, id, value, sizeof value);
+            jog_value(cfg, id, jog == 2, value, sizeof value);
             snprintf(text, sizeof text, "%s=%.60s\n", g_jog_names[id], value);
             jog_last = insert_after(&head, jog_last, text);
             if (!jog_last) {
@@ -4810,6 +4853,11 @@ int config_save_jog(const char *path, const Config *cfg, char *err, size_t err_n
     return save_sections(path, cfg, 1, err, err_n);
 }
 
+int config_save_midi_jog(const char *path, const Config *cfg, char *err, size_t err_n)
+{
+    return save_sections(path, cfg, 2, err, err_n);
+}
+
 int config_self_test(void)
 {
     char path[] = "/tmp/autodj-cfg-XXXXXX";
@@ -5198,7 +5246,9 @@ int config_self_test(void)
               fp);
         fclose(fp);
         if (config_load(path4, &cfg) != 0 || cfg.jog_clicks != 24 || cfg.jog_max_speed != 4.0 ||
-            cfg.jog_turn_sec != 1.8 || cfg.jog_smooth_sec != 0.01) {
+            cfg.jog_turn_sec != 1.8 || cfg.jog_smooth_sec != 0.01 ||
+            cfg.jog_midi_set != 0 || cfg.jog_midi_clicks != 24 ||
+            cfg.jog_midi_max_speed != 4.0 || cfg.jog_midi_turn_sec != 1.8) {
             log_error("autodj", "config test parsed unexpected jog values");
             rc = -1;
         } else {
@@ -5211,14 +5261,91 @@ int config_self_test(void)
                 file_count(path4, "clicks_per_turn = 30\n") != 1 ||
                 file_count(path4, "max_speed=4\n") != 1 ||
                 file_count(path4, "spinup_time=0\n") != 1 ||
-                file_count(path4, "[Jog]") != 1 || file_count(path4, "x=1\n") != 1 ||
+                file_count(path4, "[Jog]") != 1 || file_count(path4, "[Jog MPD218]") != 0 ||
+                file_count(path4, "x=1\n") != 1 ||
                 config_load(path4, &cfg) != 0 || cfg.jog_clicks != 30 ||
-                cfg.jog_spinup_sec != 0) {
+                cfg.jog_spinup_sec != 0 || cfg.jog_midi_set != 0 ||
+                cfg.jog_midi_clicks != 30) {
                 log_error("autodj", "config test saved jog values incorrectly");
                 rc = -1;
             }
         }
         remove(path4);
+    }
+    if (rc == 0) {
+        char path4b[] = "/tmp/autodj-cfg-XXXXXX";
+        char err[256];
+
+        fd = mkstemp(path4b);
+        if (fd < 0) {
+            log_error("autodj", "config test could not create a temp file");
+            return -1;
+        }
+        fp = fdopen(fd, "w");
+        if (!fp) {
+            log_error("autodj", "config test could not write a temp file");
+            close(fd);
+            remove(path4b);
+            return -1;
+        }
+        fputs("[Main]\n"
+              "Folder=/tmp\n"
+              "[Jog]\n"
+              "clicks_per_turn = 24\n"
+              "max_speed=5\n"
+              "[Jog MPD218]\n"
+              "clicks_per_turn = 11\n"
+              "[Other]\n"
+              "x=1\n",
+              fp);
+        fclose(fp);
+        if (config_load(path4b, &cfg) != 0 || cfg.jog_clicks != 24 || cfg.jog_max_speed != 5.0 ||
+            cfg.jog_midi_set != 1 || cfg.jog_midi_clicks != 11 ||
+            cfg.jog_midi_max_speed != 4.0 || cfg.jog_midi_turn_sec != 1.8) {
+            log_error("autodj", "config test parsed the MPD218 jog section incorrectly");
+            rc = -1;
+        } else {
+            cfg.jog_clicks = 30;
+            if (config_save_jog(path4b, &cfg, err, sizeof err) != 0 ||
+                file_count(path4b, "[Jog]\n") != 1 ||
+                file_count(path4b, "[Jog MPD218]\n") != 1 ||
+                file_count(path4b, "clicks_per_turn = 30\n") != 1 ||
+                file_count(path4b, "clicks_per_turn = 11\n") != 1 ||
+                file_count(path4b, "x=1\n") != 1 ||
+                config_load(path4b, &cfg) != 0 || cfg.jog_clicks != 30 ||
+                cfg.jog_midi_clicks != 11 || cfg.jog_midi_set != 1) {
+                log_error("autodj", "config test keypad save changed the MPD218 jog");
+                rc = -1;
+            }
+        }
+        if (rc == 0) {
+            cfg.jog_midi_clicks = 40;
+            cfg.jog_midi_spinup_sec = 0.5;
+            if (config_save_midi_jog(path4b, &cfg, err, sizeof err) != 0 ||
+                file_count(path4b, "[Jog]\n") != 1 ||
+                file_count(path4b, "[Jog MPD218]\n") != 1 ||
+                file_count(path4b, "clicks_per_turn = 30\n") != 1 ||
+                file_count(path4b, "clicks_per_turn = 40\n") != 1 ||
+                file_count(path4b, "x=1\n") != 1 ||
+                config_load(path4b, &cfg) != 0 || cfg.jog_clicks != 30 ||
+                cfg.jog_max_speed != 5.0 || cfg.jog_midi_clicks != 40 ||
+                cfg.jog_midi_spinup_sec != 0.5 || cfg.jog_midi_set != 1) {
+                log_error("autodj", "config test MPD218 save changed the keypad jog");
+                rc = -1;
+            }
+        }
+        if (rc == 0) {
+            cfg.jog_clicks = 18;
+            if (config_save_jog(path4b, &cfg, err, sizeof err) != 0 ||
+                config_load(path4b, &cfg) != 0 || cfg.jog_clicks != 18 ||
+                cfg.jog_midi_clicks != 40 || cfg.jog_midi_set != 1 ||
+                file_count(path4b, "clicks_per_turn = 18\n") != 1 ||
+                file_count(path4b, "clicks_per_turn = 40\n") != 1) {
+                log_error("autodj", "config test jog sections did not stay separate");
+                rc = -1;
+            }
+        }
+        remove(path4b);
     }
     if (rc == 0) {
         char path5[] = "/tmp/autodj-cfg-XXXXXX";

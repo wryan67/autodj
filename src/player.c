@@ -74,11 +74,14 @@ static FxParams g_fx_params;
 static atomic_int g_stop;
 static atomic_int g_jog_ticks;
 static atomic_int g_jog_interval_us = (int)(JOG_FIRST_LAG * 1e6);
+static atomic_int g_midi_jog_ticks;
+static atomic_int g_midi_jog_interval_us = (int)(JOG_FIRST_LAG * 1e6);
 static atomic_int g_jog_gen;
 static atomic_int g_speed_milli;
 static atomic_int g_jogging;
 static pthread_mutex_t g_jog_mu = PTHREAD_MUTEX_INITIALIZER;
 static JogSettings g_jog_next = {1.8, 20, 4.0, 0.3, 0.02, 0.01};
+static JogSettings g_jog_midi_next = {1.8, 20, 4.0, 0.3, 0.02, 0.01};
 
 static PlayerSettings g_set;
 static Playlist *g_pl;
@@ -137,6 +140,7 @@ static int g_seen_skip;
 static int g_seen_back;
 static float g_vol = 1.0f;
 static int g_jog_seen;
+static int g_midi_jog_seen;
 static int g_jog_on;
 static double g_jog_left;   /* frames the hand moved that are not played yet */
 static double g_jog_target; /* jog speed in frames per output frame */
@@ -144,7 +148,11 @@ static double g_jog_v;
 static double g_jog_hold;   /* 1 while the hand holds the record */
 static double g_jog_lag;    /* frames to play one click over */
 static uint64_t g_jog_last;
+static JogSettings g_jog_pad = {1.8, 20, 4.0, 0.3, 0.02, 0.01};
+static JogSettings g_jog_midi = {1.8, 20, 4.0, 0.3, 0.02, 0.01};
+/* Settings of whichever device last moved the song. */
 static JogSettings g_jog = {1.8, 20, 4.0, 0.3, 0.02, 0.01};
+static int g_jog_from_midi;
 static double g_rate_shown;
 static int g_jog_seen_gen;
 
@@ -935,13 +943,24 @@ static void service_commands(void)
 
     if (jog_gen != g_jog_seen_gen) {
         pthread_mutex_lock(&g_jog_mu);
-        g_jog = g_jog_next;
+        g_jog_pad = g_jog_next;
+        g_jog_midi = g_jog_midi_next;
         pthread_mutex_unlock(&g_jog_mu);
         g_jog_seen_gen = jog_gen;
+        g_jog = g_jog_from_midi ? g_jog_midi : g_jog_pad;
     }
     if (jog != g_jog_seen) {
+        g_jog = g_jog_pad;
+        g_jog_from_midi = 0;
         jog_clicks(jog - g_jog_seen, atomic_load(&g_jog_interval_us));
         g_jog_seen = jog;
+    }
+    jog = atomic_load(&g_midi_jog_ticks);
+    if (jog != g_midi_jog_seen) {
+        g_jog = g_jog_midi;
+        g_jog_from_midi = 1;
+        jog_clicks(jog - g_midi_jog_seen, atomic_load(&g_midi_jog_interval_us));
+        g_midi_jog_seen = jog;
     }
     if (rewind_ms > 0) {
         apply_rewind(rewind_ms);
@@ -1262,6 +1281,7 @@ int player_start(const PlayerSettings *settings, Playlist *playlist)
     g_seen_back = atomic_load(&g_back_gen);
     atomic_store(&g_rewind_ms, 0);
     g_jog_seen = atomic_load(&g_jog_ticks);
+    g_midi_jog_seen = atomic_load(&g_midi_jog_ticks);
     jog_reset();
     pthread_mutex_lock(&g_jog_mu);
     g_now_name[0] = '\0';
@@ -1408,36 +1428,72 @@ void player_rewind(int ms)
     }
 }
 
-void player_jog(int direction, long long when_us)
+static void jog_note(atomic_int *ticks, atomic_int *interval_slot, long long *last_us,
+                     int *last_dir, double *interval_us, int direction, long long when_us)
 {
-    static long long last_us;
-    static int last_dir;
-    static double interval_us = JOG_FIRST_LAG * 1e6;
-    long long gap = when_us - last_us;
+    long long gap;
 
     if (direction == 0) {
         return;
     }
     direction = direction > 0 ? 1 : -1;
-    if (last_us == 0 || direction != last_dir || gap <= 0 || gap > (long long)(JOG_LAG_MAX * 1e6)) {
-        interval_us = JOG_FIRST_LAG * 1e6;
+    gap = when_us - *last_us;
+    if (*last_us == 0 || direction != *last_dir || gap <= 0 ||
+        gap > (long long)(JOG_LAG_MAX * 1e6)) {
+        *interval_us = JOG_FIRST_LAG * 1e6;
     } else {
         /* USB reports land on a 16 ms grid, so average the gaps. */
-        interval_us = interval_us * 0.5 + (double)gap * 0.5;
+        *interval_us = *interval_us * 0.5 + (double)gap * 0.5;
     }
-    last_us = when_us;
-    last_dir = direction;
-    atomic_store(&g_jog_interval_us, (int)interval_us);
-    atomic_fetch_add(&g_jog_ticks, direction);
+    *last_us = when_us;
+    *last_dir = direction;
+    atomic_store(interval_slot, (int)*interval_us);
+    atomic_fetch_add(ticks, direction);
+}
+
+void player_jog(int direction, long long when_us)
+{
+    static long long last_us;
+    static int last_dir;
+    static double interval_us = JOG_FIRST_LAG * 1e6;
+
+    jog_note(&g_jog_ticks, &g_jog_interval_us, &last_us, &last_dir, &interval_us,
+             direction, when_us);
+}
+
+void player_midi_jog(int direction, long long when_us)
+{
+    static long long last_us;
+    static int last_dir;
+    static double interval_us = JOG_FIRST_LAG * 1e6;
+
+    jog_note(&g_midi_jog_ticks, &g_midi_jog_interval_us, &last_us, &last_dir, &interval_us,
+             direction, when_us);
+}
+
+static int jog_settings_ok(const JogSettings *jog)
+{
+    return jog && jog->clicks > 0 && jog->turn_sec > 0 && jog->max_speed > 0;
 }
 
 void player_set_jog(const JogSettings *jog)
 {
-    if (!jog || jog->clicks <= 0 || jog->turn_sec <= 0 || jog->max_speed <= 0) {
+    if (!jog_settings_ok(jog)) {
         return;
     }
     pthread_mutex_lock(&g_jog_mu);
     g_jog_next = *jog;
+    pthread_mutex_unlock(&g_jog_mu);
+    atomic_fetch_add(&g_jog_gen, 1);
+}
+
+void player_set_midi_jog(const JogSettings *jog)
+{
+    if (!jog_settings_ok(jog)) {
+        return;
+    }
+    pthread_mutex_lock(&g_jog_mu);
+    g_jog_midi_next = *jog;
     pthread_mutex_unlock(&g_jog_mu);
     atomic_fetch_add(&g_jog_gen, 1);
 }

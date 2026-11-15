@@ -480,6 +480,9 @@ int main(int argc, char **argv)
     log_info("autodj", "jog %gs per turn, %d clicks per turn, max speed %gx, spin-up %gs, grab %gs, smoothing %gs",
              cfg.jog_turn_sec, cfg.jog_clicks, cfg.jog_max_speed, cfg.jog_spinup_sec,
              cfg.jog_grab_sec, cfg.jog_smooth_sec);
+    log_info("autodj", "mpd218 jog %gs per turn, %d clicks per turn, max speed %gx, spin-up %gs, grab %gs, smoothing %gs",
+             cfg.jog_midi_turn_sec, cfg.jog_midi_clicks, cfg.jog_midi_max_speed,
+             cfg.jog_midi_spinup_sec, cfg.jog_midi_grab_sec, cfg.jog_midi_smooth_sec);
     {
         JogSettings jog;
 
@@ -490,6 +493,13 @@ int main(int argc, char **argv)
         jog.grab_sec = cfg.jog_grab_sec;
         jog.smooth_sec = cfg.jog_smooth_sec;
         player_set_jog(&jog);
+        jog.turn_sec = cfg.jog_midi_turn_sec;
+        jog.clicks = cfg.jog_midi_clicks;
+        jog.max_speed = cfg.jog_midi_max_speed;
+        jog.spinup_sec = cfg.jog_midi_spinup_sec;
+        jog.grab_sec = cfg.jog_midi_grab_sec;
+        jog.smooth_sec = cfg.jog_midi_smooth_sec;
+        player_set_midi_jog(&jog);
     }
 
     if (check) {

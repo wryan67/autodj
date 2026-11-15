@@ -3343,10 +3343,17 @@ int config_edit(const char *path, const char *sfx_dir)
 }
 
 /*
- * Dial calibration view (autodj --calibrate). Shows the [Jog] settings,
- * counts the clicks of the dial on the remote, measures one turn and a
- * fast spin, and plays a random song so a change can be heard at once.
+ * Dial calibration view (autodj --calibrate). Two tabs: Keypad edits [Jog]
+ * and counts the shortcut remote dial. MPD218 edits [Jog MPD218] and counts
+ * only the jog knob. The other knobs keep their steps. Each tab measures one
+ * turn and a fast spin, and a test song plays so a change can be heard at once.
  */
+
+enum {
+    DIAL_KEYPAD = 0,
+    DIAL_MPD218,
+    DIAL_TAB_COUNT
+};
 
 enum {
     DF_TURN = 0,
@@ -3360,7 +3367,8 @@ enum {
     DF_TEST,
     DF_SAVE,
     DF_CLOSE,
-    DF_COUNT
+    DF_COUNT,
+    DF_TABS
 };
 
 enum {
@@ -3373,7 +3381,7 @@ enum {
 enum {
     DIAL_LABEL_W = 18,
     DIAL_BOX_W = 10,
-    DIAL_MIN_ROWS = 20,
+    DIAL_MIN_ROWS = 22,
     DIAL_MIN_COLS = 60,
     DIAL_SPIN_US = 3000000,
     DIAL_SPIN_WINDOW = 5,
@@ -3387,12 +3395,14 @@ static const char *g_dial_labels[DF_FIELD_COUNT] = {
 
 static const char *g_dial_help[DF_FIELD_COUNT] = {
     "Song time moved by one full turn. More moves further per click.",
-    "Dial clicks in one full turn. Calibrate counts them.",
+    "Clicks in one full turn. Calibrate counts them.",
     "Fastest scratch, times normal speed. Lower tames hard spins.",
     "Seconds to get back to normal speed after you let go.",
     "Seconds for the song to stop under your hand. 0 is instant.",
     "Seconds for the speed to follow your hand. More is smoother."
 };
+
+static const char *g_dial_tabs[DIAL_TAB_COUNT] = {"Keypad", "MPD218"};
 
 static const char *g_dial_buttons[DF_COUNT - DF_FIELD_COUNT] = {
     "[ Calibrate ]", "[ Test ]", "[ Save ]", "[ Close ]"
@@ -3401,8 +3411,9 @@ static const char *g_dial_buttons[DF_COUNT - DF_FIELD_COUNT] = {
 struct Dial {
     const char *path;
     Config cfg;
-    char text[DF_FIELD_COUNT][16];
-    char saved_text[DF_FIELD_COUNT][16];
+    char text[DIAL_TAB_COUNT][DF_FIELD_COUNT][16];
+    char saved_text[DIAL_TAB_COUNT][DF_FIELD_COUNT][16];
+    int tab;
     int focus;
     int cursor;
     int step;
@@ -3410,11 +3421,13 @@ struct Dial {
     int confirm_close;
     int kfd[8];
     int kfd_n;
-    long clicks;
-    long net;
+    int mfd[8];
+    int midi_n;
+    long clicks[DIAL_TAB_COUNT];
+    long net[DIAL_TAB_COUNT];
     long step_net;
-    long long last_us;
-    long long gap_us;
+    long long last_us[DIAL_TAB_COUNT];
+    long long gap_us[DIAL_TAB_COUNT];
     long long spin_start_us;
     long long spin_times[DIAL_MAX_TIMES];
     int spin_n;
@@ -3424,9 +3437,17 @@ struct Dial {
     char status[256];
     /* screen layout */
     int too_small;
+    int tab_r;
+    int tab_c[DIAL_TAB_COUNT];
+    int tab_w[DIAL_TAB_COUNT];
+    int note_r;
     int field_r[DF_FIELD_COUNT];
     int box_c;
+    int status_r;
+    int speed_r;
+    int song_r;
     int button_r;
+    int message_r;
     int button_c[DF_COUNT - DF_FIELD_COUNT];
 };
 
@@ -3440,19 +3461,20 @@ static long long now_us(void)
     return (long long)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
 }
 
-static void dial_hook(int direction, long long when_us)
+static void dial_hook(int direction, long long when_us, int midi)
 {
     struct Dial *d = g_dial;
+    int tab = midi ? DIAL_MPD218 : DIAL_KEYPAD;
 
-    if (!d) {
+    if (!d || d->tab != tab) {
         return;
     }
-    d->clicks++;
-    d->net += direction;
-    if (d->last_us) {
-        d->gap_us = when_us - d->last_us;
+    d->clicks[tab]++;
+    d->net[tab] += direction;
+    if (d->last_us[tab]) {
+        d->gap_us[tab] = when_us - d->last_us[tab];
     }
-    d->last_us = when_us;
+    d->last_us[tab] = when_us;
     if (d->step == DIAL_STEP_TURN) {
         d->step_net += direction;
     } else if (d->step == DIAL_STEP_SPIN_WAIT) {
@@ -3504,14 +3526,14 @@ static void dial_range(int id, char *dest, size_t n)
     snprintf(dest, n, "%s must be %s", g_dial_labels[id], ranges[id]);
 }
 
-/* Read all fields into jog. Returns -1 and names the bad field in status. */
-static int dial_settings(struct Dial *d, JogSettings *jog, int report)
+/* Read one tab's fields into jog. Returns -1 and names the bad field in status. */
+static int dial_settings(struct Dial *d, int tab, JogSettings *jog, int report)
 {
     double v[DF_FIELD_COUNT];
     int i;
 
     for (i = 0; i < DF_FIELD_COUNT; i++) {
-        if (dial_parse(i, d->text[i], &v[i]) != 0) {
+        if (dial_parse(i, d->text[tab][i], &v[i]) != 0) {
             if (report) {
                 dial_range(i, d->status, sizeof d->status);
             }
@@ -3527,16 +3549,44 @@ static int dial_settings(struct Dial *d, JogSettings *jog, int report)
     return 0;
 }
 
+static void dial_push(int tab, const JogSettings *jog)
+{
+    if (tab == DIAL_MPD218) {
+        player_set_midi_jog(jog);
+    } else {
+        player_set_jog(jog);
+    }
+}
+
 static void dial_apply(struct Dial *d)
 {
     JogSettings jog;
 
-    if (dial_settings(d, &jog, 1) == 0) {
-        player_set_jog(&jog);
+    if (dial_settings(d, d->tab, &jog, 1) == 0) {
+        dial_push(d->tab, &jog);
         if (strstr(d->status, " must be ")) {
             d->status[0] = '\0';
         }
     }
+}
+
+/* Push every tab whose numbers are valid. The active tab is reported. */
+static int dial_apply_both(struct Dial *d)
+{
+    int tab;
+
+    for (tab = 0; tab < DIAL_TAB_COUNT; tab++) {
+        JogSettings jog;
+
+        if (dial_settings(d, tab, &jog, tab == d->tab) != 0) {
+            if (tab == d->tab) {
+                return -1;
+            }
+            continue;
+        }
+        dial_push(tab, &jog);
+    }
+    return 0;
 }
 
 static int dial_changed(const struct Dial *d)
@@ -3547,8 +3597,8 @@ static int dial_changed(const struct Dial *d)
         char a[32];
         char b[32];
 
-        trim_copy(a, sizeof a, d->text[i]);
-        trim_copy(b, sizeof b, d->saved_text[i]);
+        trim_copy(a, sizeof a, d->text[d->tab][i]);
+        trim_copy(b, sizeof b, d->saved_text[d->tab][i]);
         if (strcmp(a, b) != 0) {
             return 1;
         }
@@ -3562,11 +3612,26 @@ static void dial_layout(struct Dial *d, int rows, int cols)
     int c;
 
     d->too_small = rows < DIAL_MIN_ROWS || cols < DIAL_MIN_COLS;
+    d->tab_r = 2;
+    c = 3;
+    for (i = 0; i < DIAL_TAB_COUNT; i++) {
+        char label[24];
+
+        snprintf(label, sizeof label, "[ %s ]", g_dial_tabs[i]);
+        d->tab_c[i] = c;
+        d->tab_w[i] = (int)strlen(label);
+        c += d->tab_w[i] + 1;
+    }
+    d->note_r = 3;
     for (i = 0; i < DF_FIELD_COUNT; i++) {
-        d->field_r[i] = 3 + i;
+        d->field_r[i] = 4 + i;
     }
     d->box_c = 3 + DIAL_LABEL_W;
-    d->button_r = 14;
+    d->status_r = 11;
+    d->speed_r = 12;
+    d->song_r = 13;
+    d->button_r = 15;
+    d->message_r = 17;
     c = 3;
     for (i = 0; i < DF_COUNT - DF_FIELD_COUNT; i++) {
         d->button_c[i] = c;
@@ -3593,41 +3658,66 @@ static void dial_draw(struct Dial *d, FILE *fp, int rows, int cols)
         fprintf(fp, "Make the window at least %dx%d.", DIAL_MIN_COLS, DIAL_MIN_ROWS);
         return;
     }
-    draw_hbar(fp, 1, 1, cols, " autodj dial ");
+    draw_hbar(fp, 1, 1, cols, " autodj calibrate ");
+    for (i = 0; i < DIAL_TAB_COUNT; i++) {
+        char label[24];
+
+        snprintf(label, sizeof label, "[ %s ]", g_dial_tabs[i]);
+        draw_button(fp, d->tab_r, d->tab_c[i], label, d->tab == i);
+    }
+    if (d->tab == DIAL_MPD218) {
+        snprintf(line, sizeof line, "MPD218 jog knob. Other knobs keep their steps.");
+    } else {
+        snprintf(line, sizeof line, "Keypad and shortcut remote dial.");
+    }
+    cup(fp, d->note_r, 3);
+    fprintf(fp, "\033[2m%.*s\033[0m", width, line);
     for (i = 0; i < DF_FIELD_COUNT; i++) {
         int help_c = d->box_c + DIAL_BOX_W + 2;
         int help_w = cols - help_c - 1;
+        const char *help = g_dial_help[i];
 
         cup(fp, d->field_r[i], 3);
         fputs(g_dial_labels[i], fp);
-        draw_text_box(fp, d->field_r[i], d->box_c, DIAL_BOX_W, d->text[i],
+        draw_text_box(fp, d->field_r[i], d->box_c, DIAL_BOX_W, d->text[d->tab][i],
                       d->focus == i ? d->cursor : 0, d->focus == i, 1);
+        if (i == DF_CLICKS) {
+            help = d->tab == DIAL_MPD218 ? "Jog knob clicks in one full turn. Calibrate counts them."
+                                         : "Dial clicks in one full turn. Calibrate counts them.";
+        }
         if (help_w > 4) {
             cup(fp, d->field_r[i], help_c);
-            fprintf(fp, "\033[2m%.*s\033[0m", help_w, g_dial_help[i]);
+            fprintf(fp, "\033[2m%.*s\033[0m", help_w, help);
         }
     }
-    if (d->kfd_n == 0) {
-        snprintf(line, sizeof line, "Dial    not available");
-    } else if (d->gap_us > 0 && d->gap_us < 10000000LL) {
-        snprintf(line, sizeof line, "Dial    %ld clicks, net %+ld, last gap %lld ms",
-                 d->clicks, d->net, d->gap_us / 1000);
-    } else {
-        snprintf(line, sizeof line, "Dial    %ld clicks, net %+ld", d->clicks, d->net);
+    {
+        const char *name = d->tab == DIAL_MPD218 ? "Jog" : "Dial";
+        int ready = d->tab == DIAL_MPD218 ? d->midi_n > 0 : d->kfd_n > 0;
+        long long gap = d->gap_us[d->tab];
+
+        if (!ready) {
+            snprintf(line, sizeof line, "%-7s not available", name);
+        } else if (gap > 0 && gap < 10000000LL) {
+            snprintf(line, sizeof line, "%-7s %ld clicks, net %+ld, last gap %lld ms",
+                     name, d->clicks[d->tab], d->net[d->tab], gap / 1000);
+        } else {
+            snprintf(line, sizeof line, "%-7s %ld clicks, net %+ld",
+                     name, d->clicks[d->tab], d->net[d->tab]);
+        }
     }
-    dial_line(fp, 10, width, line);
+    dial_line(fp, d->status_r, width, line);
     if (d->testing) {
         int jogging = 0;
         double speed = player_speed(&jogging);
         char name[256];
 
-        snprintf(line, sizeof line, "Speed   %+.2fx%s", speed, jogging ? "  (dial)" : "");
-        dial_line(fp, 11, width, line);
+        snprintf(line, sizeof line, "Speed   %+.2fx%s", speed, jogging ? "  (jog)" : "");
+        dial_line(fp, d->speed_r, width, line);
         player_now_playing(name, sizeof name);
         snprintf(line, sizeof line, "Song    %s", name[0] ? name : "(loading)");
-        dial_line(fp, 12, width, line);
+        dial_line(fp, d->song_r, width, line);
     } else {
-        dial_line(fp, 11, width, "Speed   test not running");
+        dial_line(fp, d->speed_r, width, "Speed   test not running");
     }
     for (i = 0; i < DF_COUNT - DF_FIELD_COUNT; i++) {
         const char *label = g_dial_buttons[i];
@@ -3639,12 +3729,14 @@ static void dial_draw(struct Dial *d, FILE *fp, int rows, int cols)
     }
     if (d->step == DIAL_STEP_TURN) {
         snprintf(line, sizeof line,
-                 "Step 1 of 2: turn the dial exactly one full turn, then press Enter. "
-                 "Clicks so far: %ld. Esc cancels.", labs(d->step_net));
+                 "Step 1 of 2: turn the %s exactly one full turn, then press Enter. "
+                 "Clicks so far: %ld. Esc cancels.",
+                 d->tab == DIAL_MPD218 ? "jog knob" : "dial", labs(d->step_net));
     } else if (d->step == DIAL_STEP_SPIN_WAIT) {
         snprintf(line, sizeof line,
-                 "Step 2 of 2: spin the dial as fast as you can, for 3 seconds. "
-                 "Timing starts at the first click. Esc cancels.");
+                 "Step 2 of 2: spin the %s as fast as you can, for 3 seconds. "
+                 "Timing starts at the first click. Esc cancels.",
+                 d->tab == DIAL_MPD218 ? "jog knob" : "dial");
     } else if (d->step == DIAL_STEP_SPIN) {
         long long left = DIAL_SPIN_US - (now_us() - d->spin_start_us);
 
@@ -3657,11 +3749,11 @@ static void dial_draw(struct Dial *d, FILE *fp, int rows, int cols)
         int n = wrap_lines(line, width < 95 ? width : 95, lines, 3);
 
         for (i = 0; i < n; i++) {
-            dial_line(fp, 16 + i, width, lines[i]);
+            dial_line(fp, d->message_r + i, width, lines[i]);
         }
     }
     dial_line(fp, rows - 1, width,
-              "Tab/arrows move, Enter presses, Esc closes. Edits apply to the test at once.");
+              "Tab/arrows move, Left/Right switch tabs, Enter, Esc. Edits apply at once.");
     draw_hbar(fp, rows, 1, cols, NULL);
     if (d->focus < DF_FIELD_COUNT) {
         fputs("\033[?25l", fp);
@@ -3707,9 +3799,87 @@ static int dial_render(struct Dial *d)
 
 static void dial_set_focus(struct Dial *d, int id)
 {
-    d->focus = (id % DF_COUNT + DF_COUNT) % DF_COUNT;
-    d->cursor = d->focus < DF_FIELD_COUNT ? (int)strlen(d->text[d->focus]) : 0;
+    if (id != DF_TABS && (id < 0 || id >= DF_COUNT)) {
+        return;
+    }
+    d->focus = id;
+    if (id >= 0 && id < DF_FIELD_COUNT) {
+        d->cursor = (int)strlen(d->text[d->tab][id]);
+    } else {
+        d->cursor = 0;
+    }
     d->confirm_close = 0;
+}
+
+/* Tab and arrows visit the tabs, then the fields, then the buttons, then the tabs. */
+static int dial_neighbor(int focus, int delta)
+{
+    if (delta > 0) {
+        if (focus == DF_TABS) {
+            return DF_TURN;
+        }
+        if (focus == DF_CLOSE) {
+            return DF_TABS;
+        }
+        return focus + 1;
+    }
+    if (focus == DF_TABS) {
+        return DF_CLOSE;
+    }
+    if (focus == DF_TURN) {
+        return DF_TABS;
+    }
+    return focus - 1;
+}
+
+/* Left and right on a button stay on the fields and buttons. */
+static int dial_side(int focus, int delta)
+{
+    int next = focus + delta;
+
+    if (next > DF_CLOSE) {
+        next = DF_TURN;
+    }
+    if (next < DF_TURN) {
+        next = DF_CLOSE;
+    }
+    return next;
+}
+
+static void dial_switch_tab(struct Dial *d, int tab, int focus_field)
+{
+    if (tab < 0) {
+        tab = DIAL_TAB_COUNT - 1;
+    }
+    if (tab >= DIAL_TAB_COUNT) {
+        tab = 0;
+    }
+    if (tab != d->tab || (focus_field && d->step != DIAL_STEP_NONE)) {
+        if (d->step != DIAL_STEP_NONE) {
+            d->step = DIAL_STEP_NONE;
+            snprintf(d->status, sizeof d->status, "Calibration cancelled.");
+        }
+        d->confirm_close = 0;
+    }
+    d->tab = tab;
+    if (focus_field) {
+        dial_set_focus(d, DF_TURN);
+    }
+}
+
+static int dial_tab_at(const struct Dial *d, int x, int y)
+{
+    int i;
+
+    if (y != d->tab_r) {
+        return -1;
+    }
+    for (i = 0; i < DIAL_TAB_COUNT; i++) {
+        if (x >= d->tab_c[i] && x < d->tab_c[i] + d->tab_w[i]) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static void dial_test_stop(struct Dial *d)
@@ -3725,10 +3895,9 @@ static void dial_test_stop(struct Dial *d)
 static void dial_test_start(struct Dial *d)
 {
     PlayerSettings settings;
-    JogSettings jog;
     unsigned rate = 44100;
 
-    if (dial_settings(d, &jog, 1) != 0) {
+    if (dial_apply_both(d) != 0) {
         return;
     }
     if (!d->pl) {
@@ -3759,7 +3928,7 @@ static void dial_test_start(struct Dial *d)
     settings.loudness_lufs = d->cfg.loudness_lufs;
     settings.rate = rate;
     player_set_volume_percent(d->cfg.volume);
-    player_set_jog(&jog);
+    player_set_fx(&d->cfg.fx);
     if (player_start(&settings, d->pl) != 0) {
         audio_close();
         snprintf(d->status, sizeof d->status, "Cannot start playback.");
@@ -3767,7 +3936,7 @@ static void dial_test_start(struct Dial *d)
     }
     d->testing = 1;
     snprintf(d->status, sizeof d->status,
-             "Playing a random song. Turn the dial to scratch; let go to play on.");
+             "Playing a random song. Turn the dial or the jog knob; let go to play on.");
 }
 
 static void dial_spin_done(struct Dial *d)
@@ -3793,7 +3962,7 @@ static void dial_spin_done(struct Dial *d)
     if (fastest <= 0) {
         snprintf(d->status, sizeof d->status,
                  "Clicks per turn set to %s. Too few clicks to measure the spin; "
-                 "Max speed is unchanged.", d->text[DF_CLICKS]);
+                 "Max speed is unchanged.", d->text[d->tab][DF_CLICKS]);
         dial_apply(d);
         return;
     }
@@ -3801,9 +3970,9 @@ static void dial_spin_done(struct Dial *d)
         double turn = 0;
         double clicks = 0;
 
-        if (dial_parse(DF_TURN, d->text[DF_TURN], &turn) != 0 ||
-            dial_parse(DF_CLICKS, d->text[DF_CLICKS], &clicks) != 0) {
-            dial_range(dial_parse(DF_TURN, d->text[DF_TURN], &turn) != 0 ? DF_TURN : DF_CLICKS,
+        if (dial_parse(DF_TURN, d->text[d->tab][DF_TURN], &turn) != 0 ||
+            dial_parse(DF_CLICKS, d->text[d->tab][DF_CLICKS], &clicks) != 0) {
+            dial_range(dial_parse(DF_TURN, d->text[d->tab][DF_TURN], &turn) != 0 ? DF_TURN : DF_CLICKS,
                        d->status, sizeof d->status);
             return;
         }
@@ -3818,10 +3987,10 @@ static void dial_spin_done(struct Dial *d)
         speed = JOG_SPEED_MAX;
     }
     snprintf(text, sizeof text, "%.1f", speed);
-    snprintf(d->text[DF_SPEED], sizeof d->text[DF_SPEED], "%s", text);
+    snprintf(d->text[d->tab][DF_SPEED], sizeof d->text[d->tab][DF_SPEED], "%s", text);
     snprintf(d->status, sizeof d->status,
              "Done. %s clicks per turn. Fastest spin %.0f clicks/s (%.1fx), so Max speed is %s. "
-             "Save to keep it.", d->text[DF_CLICKS], fastest, fastest * per_click, text);
+             "Save to keep it.", d->text[d->tab][DF_CLICKS], fastest, fastest * per_click, text);
     dial_apply(d);
 }
 
@@ -3832,10 +4001,11 @@ static void dial_turn_done(struct Dial *d)
     if (n < JOG_CLICKS_MIN || n > JOG_CLICKS_MAX) {
         d->step = DIAL_STEP_NONE;
         snprintf(d->status, sizeof d->status,
-                 "No clicks counted. Calibrate again and turn the dial before Enter.");
+                 "No clicks counted. Calibrate again and turn the %s before Enter.",
+                 d->tab == DIAL_MPD218 ? "jog knob" : "dial");
         return;
     }
-    snprintf(d->text[DF_CLICKS], sizeof d->text[DF_CLICKS], "%ld", n);
+    snprintf(d->text[d->tab][DF_CLICKS], sizeof d->text[d->tab][DF_CLICKS], "%ld", n);
     d->step = DIAL_STEP_SPIN_WAIT;
     d->spin_n = 0;
 }
@@ -3846,33 +4016,57 @@ static void dial_save(struct Dial *d)
     JogSettings jog;
     char err[512];
 
-    if (dial_settings(d, &jog, 1) != 0) {
+    if (dial_settings(d, d->tab, &jog, 1) != 0) {
         return;
     }
     if (config_load(d->path, &cfg) != 0) {
         snprintf(d->status, sizeof d->status, "Cannot read %.200s. Fix it with autodj --config.", d->path);
         return;
     }
-    cfg.jog_turn_sec = jog.turn_sec;
-    cfg.jog_clicks = jog.clicks;
-    cfg.jog_max_speed = jog.max_speed;
-    cfg.jog_spinup_sec = jog.spinup_sec;
-    cfg.jog_grab_sec = jog.grab_sec;
-    cfg.jog_smooth_sec = jog.smooth_sec;
-    if (config_save_jog(d->path, &cfg, err, sizeof err) != 0) {
-        snprintf(d->status, sizeof d->status, "Save failed: %.200s", err);
-        return;
+    if (d->tab == DIAL_MPD218) {
+        cfg.jog_midi_turn_sec = jog.turn_sec;
+        cfg.jog_midi_clicks = jog.clicks;
+        cfg.jog_midi_max_speed = jog.max_speed;
+        cfg.jog_midi_spinup_sec = jog.spinup_sec;
+        cfg.jog_midi_grab_sec = jog.grab_sec;
+        cfg.jog_midi_smooth_sec = jog.smooth_sec;
+        cfg.jog_midi_set = 1;
+        if (config_save_midi_jog(d->path, &cfg, err, sizeof err) != 0) {
+            snprintf(d->status, sizeof d->status, "Save failed: %.200s", err);
+            return;
+        }
+        snprintf(d->status, sizeof d->status, "Saved the MPD218 jog. Restart autodj to use it.");
+    } else {
+        cfg.jog_turn_sec = jog.turn_sec;
+        cfg.jog_clicks = jog.clicks;
+        cfg.jog_max_speed = jog.max_speed;
+        cfg.jog_spinup_sec = jog.spinup_sec;
+        cfg.jog_grab_sec = jog.grab_sec;
+        cfg.jog_smooth_sec = jog.smooth_sec;
+        if (config_save_jog(d->path, &cfg, err, sizeof err) != 0) {
+            snprintf(d->status, sizeof d->status, "Save failed: %.200s", err);
+            return;
+        }
+        snprintf(d->status, sizeof d->status, "Saved the keypad dial. Restart autodj to use it.");
     }
-    memcpy(d->saved_text, d->text, sizeof d->text);
-    snprintf(d->status, sizeof d->status,
-             "Saved. Restart autodj to use the new dial settings.");
+    memcpy(d->saved_text[d->tab], d->text[d->tab], sizeof d->text[d->tab]);
 }
 
 static int dial_press(struct Dial *d, int id)
 {
     switch (id) {
     case DF_CALIBRATE:
-        if (d->kfd_n == 0) {
+        if (d->tab == DIAL_MPD218) {
+            if (d->midi_n <= 0) {
+                snprintf(d->status, sizeof d->status, "The MPD218 is not available.");
+                return 0;
+            }
+            if (d->cfg.midi_code[KEYID_JOG_UP] < 0 || d->cfg.midi_code[KEYID_JOG_DOWN] < 0) {
+                snprintf(d->status, sizeof d->status,
+                         "Jog up and Jog down have no MIDI binding. Set them with autodj --config.");
+                return 0;
+            }
+        } else if (d->kfd_n == 0) {
             snprintf(d->status, sizeof d->status, "The dial is not available.");
             return 0;
         }
@@ -3930,12 +4124,24 @@ static int dial_hit(const struct Dial *d, int x, int y)
 /* Returns 1 to close the view. */
 static int dial_handle(struct Dial *d, const struct Event *ev)
 {
-    char *text = d->focus < DF_FIELD_COUNT ? d->text[d->focus] : NULL;
+    char *text = d->focus < DF_FIELD_COUNT ? d->text[d->tab][d->focus] : NULL;
     int keep_confirm = 0;
     int rc = 0;
 
     if (ev->kind == EV_QUIT) {
         return 1;
+    }
+    if (ev->kind == EV_MOUSE) {
+        int tab = dial_tab_at(d, ev->x, ev->y);
+
+        if (tab >= 0) {
+            dial_switch_tab(d, tab, 1);
+            return 0;
+        }
+    }
+    if (d->focus == DF_TABS && (ev->kind == EV_LEFT || ev->kind == EV_RIGHT)) {
+        dial_switch_tab(d, d->tab + (ev->kind == EV_RIGHT ? 1 : -1), 0);
+        return 0;
     }
     if (d->step != DIAL_STEP_NONE) {
         if (ev->kind == EV_ESC) {
@@ -3946,6 +4152,9 @@ static int dial_handle(struct Dial *d, const struct Event *ev)
         }
         return 0;
     }
+    if (d->focus == DF_TABS && ev->kind == EV_ENTER) {
+        return 0;
+    }
     switch (ev->kind) {
     case EV_ESC:
         rc = dial_press(d, DF_CLOSE);
@@ -3953,24 +4162,24 @@ static int dial_handle(struct Dial *d, const struct Event *ev)
         break;
     case EV_TAB:
     case EV_DOWN:
-        dial_set_focus(d, d->focus + 1);
+        dial_set_focus(d, dial_neighbor(d->focus, 1));
         break;
     case EV_STAB:
     case EV_UP:
-        dial_set_focus(d, d->focus - 1);
+        dial_set_focus(d, dial_neighbor(d->focus, -1));
         break;
     case EV_LEFT:
         if (text && d->cursor > 0) {
             d->cursor--;
         } else if (!text) {
-            dial_set_focus(d, d->focus - 1);
+            dial_set_focus(d, dial_side(d->focus, -1));
         }
         break;
     case EV_RIGHT:
         if (text && d->cursor < (int)strlen(text)) {
             d->cursor++;
         } else if (!text) {
-            dial_set_focus(d, d->focus + 1);
+            dial_set_focus(d, dial_side(d->focus, 1));
         }
         break;
     case EV_HOME:
@@ -3993,7 +4202,7 @@ static int dial_handle(struct Dial *d, const struct Event *ev)
         break;
     case EV_CHAR:
         if (text && (isdigit((unsigned char)ev->text[0]) || ev->text[0] == '.')) {
-            text_insert(text, sizeof d->text[0], &d->cursor, ev->text);
+            text_insert(text, sizeof d->text[0][0], &d->cursor, ev->text);
             dial_apply(d);
         }
         break;
@@ -4028,7 +4237,8 @@ static int dial_handle(struct Dial *d, const struct Event *ev)
 /* Wait for a terminal event, dial clicks, or a redraw tick. */
 static int dial_wait(struct Dial *d, struct Event *ev, int timeout_ms)
 {
-    struct pollfd pfds[9];
+    struct pollfd pfds[17];
+    int nfd = 0;
     int i;
     int pr;
 
@@ -4044,22 +4254,27 @@ static int dial_wait(struct Dial *d, struct Event *ev, int timeout_ms)
         g_unget = -1;
         return event_from_byte(ev, c);
     }
-    pfds[0].fd = g_tty;
-    pfds[0].events = POLLIN;
-    pfds[0].revents = 0;
-    for (i = 0; i < d->kfd_n; i++) {
-        pfds[1 + i].fd = d->kfd[i];
-        pfds[1 + i].events = POLLIN;
-        pfds[1 + i].revents = 0;
+    pfds[nfd].fd = g_tty;
+    pfds[nfd].events = POLLIN;
+    pfds[nfd].revents = 0;
+    nfd++;
+    for (i = 0; i < d->kfd_n && nfd < 17; i++) {
+        pfds[nfd].fd = d->kfd[i];
+        pfds[nfd].events = POLLIN;
+        pfds[nfd].revents = 0;
+        nfd++;
     }
-    pr = poll(pfds, (nfds_t)(1 + d->kfd_n), timeout_ms);
+    for (i = 0; i < d->midi_n && nfd < 17; i++) {
+        pfds[nfd].fd = d->mfd[i];
+        pfds[nfd].events = POLLIN;
+        pfds[nfd].revents = 0;
+        nfd++;
+    }
+    pr = poll(pfds, (nfds_t)nfd, timeout_ms);
     if (pr < 0) {
         if (errno != EINTR) {
             ev->kind = EV_QUIT;
         }
-        return 0;
-    }
-    if (pr == 0) {
         return 0;
     }
     if (d->kfd_n > 0) {
@@ -4068,6 +4283,19 @@ static int dial_wait(struct Dial *d, struct Event *ev, int timeout_ms)
         if (d->kfd_n == 0) {
             snprintf(d->status, sizeof d->status, "The remote was disconnected.");
         }
+    }
+    if (d->midi_n >= 0) {
+        int n;
+
+        midi_poll(&d->cfg);
+        n = midi_fds(d->mfd, 8);
+        if (d->midi_n > 0 && n == 0) {
+            snprintf(d->status, sizeof d->status, "The MPD218 was disconnected.");
+        }
+        d->midi_n = n;
+    }
+    if (pr == 0) {
+        return 0;
     }
     if (pfds[0].revents & POLLIN) {
         unsigned char c;
@@ -4086,14 +4314,15 @@ static int dial_wait(struct Dial *d, struct Event *ev, int timeout_ms)
     return 0;
 }
 
-static void dial_text(const Config *cfg, char text[DF_FIELD_COUNT][16])
+static void dial_text(char text[DF_FIELD_COUNT][16], double turn, int clicks, double speed,
+                      double spinup, double grab, double smooth)
 {
-    snprintf(text[DF_TURN], 16, "%g", cfg->jog_turn_sec);
-    snprintf(text[DF_CLICKS], 16, "%d", cfg->jog_clicks);
-    snprintf(text[DF_SPEED], 16, "%g", cfg->jog_max_speed);
-    snprintf(text[DF_SPINUP], 16, "%g", cfg->jog_spinup_sec);
-    snprintf(text[DF_GRAB], 16, "%g", cfg->jog_grab_sec);
-    snprintf(text[DF_SMOOTH], 16, "%g", cfg->jog_smooth_sec);
+    snprintf(text[DF_TURN], 16, "%g", turn);
+    snprintf(text[DF_CLICKS], 16, "%d", clicks);
+    snprintf(text[DF_SPEED], 16, "%g", speed);
+    snprintf(text[DF_SPINUP], 16, "%g", spinup);
+    snprintf(text[DF_GRAB], 16, "%g", grab);
+    snprintf(text[DF_SMOOTH], 16, "%g", smooth);
 }
 
 int dial_calibrate(const char *path)
@@ -4109,12 +4338,17 @@ int dial_calibrate(const char *path)
     }
     memset(&d, 0, sizeof d);
     d.path = path;
+    d.focus = DF_TABS;
+    d.midi_n = -1;
     if (config_load(path, &d.cfg) != 0) {
         return -1;
     }
-    dial_text(&d.cfg, d.text);
+    dial_text(d.text[DIAL_KEYPAD], d.cfg.jog_turn_sec, d.cfg.jog_clicks, d.cfg.jog_max_speed,
+              d.cfg.jog_spinup_sec, d.cfg.jog_grab_sec, d.cfg.jog_smooth_sec);
+    dial_text(d.text[DIAL_MPD218], d.cfg.jog_midi_turn_sec, d.cfg.jog_midi_clicks,
+              d.cfg.jog_midi_max_speed, d.cfg.jog_midi_spinup_sec, d.cfg.jog_midi_grab_sec,
+              d.cfg.jog_midi_smooth_sec);
     memcpy(d.saved_text, d.text, sizeof d.text);
-    d.cursor = (int)strlen(d.text[0]);
 
     /* Player and key logs would scribble over the screen. */
     fflush(stderr);
@@ -4128,20 +4362,33 @@ int dial_calibrate(const char *path)
     if (keys_open() == 0) {
         d.kfd_n = keys_fds(d.kfd, 8);
     }
-    if (d.kfd_n == 0) {
-        snprintf(d.status, sizeof d.status,
-                 "No shortcut remote or keypad found. Settings can still be edited and saved.");
-    } else if (keys_grabbed() < d.kfd_n) {
+    d.midi_n = midi_open();
+    if (d.midi_n > 0) {
+        d.midi_n = midi_fds(d.mfd, 8);
+    }
+    if (d.kfd_n > 0 && keys_grabbed() < d.kfd_n) {
         snprintf(d.status, sizeof d.status,
                  "The remote is busy. Stop autodj (it holds the remote), then run --calibrate again.");
         keys_close();
         d.kfd_n = 0;
+    } else if (d.kfd_n == 0 && d.midi_n <= 0) {
+        snprintf(d.status, sizeof d.status,
+                 "No dial or MPD218 found. Settings can still be edited and saved.");
+    } else if (d.kfd_n == 0) {
+        snprintf(d.status, sizeof d.status,
+                 "No shortcut remote or keypad found. The MPD218 jog knob can still be measured.");
     } else if (d.cfg.key_dial_fwd < 0 || d.cfg.key_dial_back < 0) {
         snprintf(d.status, sizeof d.status,
                  "Dial forward and Dial back are not bound. Set them with autodj --config.");
+    } else if (d.midi_n <= 0) {
+        snprintf(d.status, sizeof d.status,
+                 "The MPD218 is not available. The keypad dial can still be measured.");
+    } else if (d.cfg.midi_code[KEYID_JOG_UP] < 0 || d.cfg.midi_code[KEYID_JOG_DOWN] < 0) {
+        snprintf(d.status, sizeof d.status,
+                 "Jog up and Jog down have no MIDI binding. The keypad dial can still be measured.");
     } else {
         snprintf(d.status, sizeof d.status,
-                 "Press Calibrate to measure the dial, or Test to try it on a random song.");
+                 "Press Calibrate to measure this control, or Test to try a random song.");
     }
     g_dial = &d;
     keys_set_jog_hook(dial_hook);
@@ -4176,6 +4423,9 @@ done:
     keys_set_jog_hook(NULL);
     g_dial = NULL;
     dial_test_stop(&d);
+    if (d.midi_n >= 0) {
+        midi_close();
+    }
     keys_close();
     if (d.decoding) {
         decode_shutdown();

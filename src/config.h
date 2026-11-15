@@ -186,6 +186,15 @@ typedef struct Config {
     double jog_spinup_sec; /* back to normal speed after the dial stops */
     double jog_grab_sec;   /* normal playback held back when the dial starts */
     double jog_smooth_sec; /* how quickly the speed follows the dial */
+    /* [Jog MPD218]. The MPD218 jog knob. When jog_midi_set is 0 the file
+     * had no such section, and these match [Jog]. */
+    double jog_midi_turn_sec;
+    int jog_midi_clicks;
+    double jog_midi_max_speed;
+    double jog_midi_spinup_sec;
+    double jog_midi_grab_sec;
+    double jog_midi_smooth_sec;
+    int jog_midi_set;
 } Config;
 
 /* Range for each [Jog] setting. */
@@ -372,6 +381,8 @@ int config_validate_edit(const ConfigEdit *edit, Config *cfg, char *err, size_t 
 int config_save(const char *path, const Config *cfg, char *err, size_t err_n);
 /* Write only the [Jog] settings of cfg into path, keeping every other line. */
 int config_save_jog(const char *path, const Config *cfg, char *err, size_t err_n);
+/* Write only the [Jog MPD218] settings of cfg into path, keeping every other line. */
+int config_save_midi_jog(const char *path, const Config *cfg, char *err, size_t err_n);
 
 int config_self_test(void);
 

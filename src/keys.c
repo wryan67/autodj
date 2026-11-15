@@ -95,11 +95,12 @@ static int g_nfd;
 static int g_remote_kbd[MAX_PADS];  /* the remote's keyboard interface */
 static int g_rep_key = -1;          /* raw button held for repeats */
 static int g_ngrabbed;
-static void (*g_jog_hook)(int direction, long long when_us);
+static void (*g_jog_hook)(int direction, long long when_us, int midi);
 /* What the dial does in each mode, and the mode it is in now. */
 static int g_dial_modes[DIAL_SLOTS] = {DIAL_JOG, DIAL_NONE, DIAL_NONE};
 static int g_dial_slot;
 static long long g_jog_last_us;
+static long long g_midi_jog_last_us;
 static struct Combo g_cap[MAX_CAPTURE_FD];
 /* Raw remote channels by fd, with the buttons held. */
 static unsigned char g_is_raw[MAX_CAPTURE_FD];
@@ -754,7 +755,7 @@ int keys_grabbed(void)
     return g_ngrabbed;
 }
 
-void keys_set_jog_hook(void (*fn)(int direction, long long when_us))
+void keys_set_jog_hook(void (*fn)(int direction, long long when_us, int midi))
 {
     g_jog_hook = fn;
 }
@@ -809,35 +810,40 @@ static int is_step_action(int id)
 /* Jog by count clicks. A knob can report several clicks in one message, so
  * their times are spread back toward the previous one, which keeps the
  * player's measure of the turning speed. */
-static void jog_steps(int dir, int count, long long us)
+static void jog_steps(int dir, int count, long long us, int midi)
 {
-    long long span = us - g_jog_last_us;
+    long long *last_us = midi ? &g_midi_jog_last_us : &g_jog_last_us;
+    long long span = us - *last_us;
     long long step;
     int i;
 
     if (count < 1) {
         count = 1;
     }
-    if (g_jog_last_us <= 0 || span <= 0 || span > 100000) {
+    if (*last_us <= 0 || span <= 0 || span > 100000) {
         span = 8000LL * count;
     }
     step = span / count;
     for (i = 0; i < count; i++) {
         long long t = us - (long long)(count - 1 - i) * step;
 
-        player_jog(dir, t);
+        if (midi) {
+            player_midi_jog(dir, t);
+        } else {
+            player_jog(dir, t);
+        }
         if (g_jog_hook) {
-            g_jog_hook(dir, t);
+            g_jog_hook(dir, t, midi);
         }
     }
-    g_jog_last_us = us;
+    *last_us = us;
 }
 
 /* A dial, volume, jog, reverb, laser, bubbles, or chorus action. percent
  * is the volume per step. The reverb knob, the laser volume, the bubbles
  * volume, and the chorus depth move twice that, so a knob covers its range
  * in 50 steps. Chorus depth is 0 to 10 ms, so one of those steps is 0.2 ms. */
-static void step_action(int id, int count, int percent, long long us)
+static void step_action(int id, int count, int percent, long long us, int midi)
 {
     int dir = (id == KEYID_DIAL_FWD || id == KEYID_VOL_UP || id == KEYID_JOG_UP ||
                id == KEYID_RV_UP || id == KEYID_LZ_UP || id == KEYID_BB_UP ||
@@ -868,7 +874,7 @@ static void step_action(int id, int count, int percent, long long us)
     if (mode == DIAL_VOLUME) {
         player_volume_step(dir, percent * count);
     } else if (mode == DIAL_JOG) {
-        jog_steps(dir, count, us);
+        jog_steps(dir, count, us, midi);
     } else if (mode == DIAL_REVERB) {
         player_reverb_step(dir, 2 * percent * count);
     }
@@ -975,7 +981,7 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
      * repeats them. The keypad and remote change the volume by 1. */
     if (id >= 0 && is_step_action(id)) {
         if (value == 1 || value == 2) {
-            step_action(id, 1, 1, tv_us(when));
+            step_action(id, 1, 1, tv_us(when), 0);
         }
         return;
     }
@@ -1009,9 +1015,9 @@ int keys_midi_dispatch(const struct Config *cfg, int code, int steps, const stru
     /* A knob changes the volume by 1 a step, and a pad by 5 like a key. */
     if (is_step_action(id)) {
         if (midi_is_knob(code)) {
-            step_action(id, steps, 1, tv_us(when));
+            step_action(id, steps, 1, tv_us(when), 1);
         } else {
-            step_action(id, 1, 5, tv_us(when));
+            step_action(id, 1, 5, tv_us(when), 1);
         }
         return 1;
     }
@@ -1183,7 +1189,7 @@ void keys_kbd_dispatch(const struct Config *cfg, const char *name)
     id = kbd_action(cfg, name);
     /* Dial, volume, and jog keys repeat. A keyboard press changes the volume by 5. */
     if (id >= 0 && is_step_action(id)) {
-        step_action(id, 1, 5, tv_us(&when));
+        step_action(id, 1, 5, tv_us(&when), 0);
         return;
     }
     if (!press_accepted(&when)) {

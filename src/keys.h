@@ -23,9 +23,9 @@ void keys_close(void);
 /* How many devices keys_open grabbed. Zero while another program, such
  * as a running autodj, holds them. */
 int keys_grabbed(void);
-/* Also call fn for each dial click that keys_poll passes to player_jog.
- * NULL removes it. */
-void keys_set_jog_hook(void (*fn)(int direction, long long when_us));
+/* Also call fn for each jog click. midi is 0 for the keypad, remote, and
+ * keyboard, and 1 for a MIDI controller. NULL removes it. */
+void keys_set_jog_hook(void (*fn)(int direction, long long when_us, int midi));
 /* The modes the dial_mode key steps through (DIAL_NONE, DIAL_VOLUME, or
  * DIAL_JOG for each of DIAL_SLOTS). The dial starts in the first mode that
  * is not DIAL_NONE. With none, the dial does nothing. keys_open starts it as

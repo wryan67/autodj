@@ -44,12 +44,18 @@ void player_play_led_set(int mode, int pos);
 void player_skip(void);
 void player_previous(void);
 void player_rewind(int ms);
-/* One click of the jog dial. direction is 1 or -1; when_us is the event
- * time in microseconds, used to measure how fast the dial is turning. */
+/* One click of the keypad dial or a keyboard jog key. direction is 1 or
+ * -1; when_us is the event time in microseconds, used to measure how fast
+ * the dial is turning. */
 void player_jog(int direction, long long when_us);
-/* Change the dial behavior. Takes effect within one audio period, so it
- * can be changed while a song plays. */
+/* One click of the MPD218 jog knob. Timed apart from player_jog, so a
+ * click on one device does not change the speed of the other. */
+void player_midi_jog(int direction, long long when_us);
+/* Change the keypad dial behavior. Takes effect within one audio period,
+ * so it can be changed while a song plays. */
 void player_set_jog(const JogSettings *jog);
+/* Change the MPD218 jog knob behavior. Same timing as player_set_jog. */
+void player_set_midi_jog(const JogSettings *jog);
 /* Current playback speed (negative while turning back) and whether the
  * dial is holding the song. */
 double player_speed(int *jogging);
