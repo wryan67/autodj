@@ -102,6 +102,13 @@ static int g_dial_slot;
 /* Keypad presses of the mode button with no other keypad key between them. */
 static int g_mode_row;
 static struct timeval g_mode_row_time;
+/* An accepted press of the mode button, until it is released. The volume
+ * reset fires once, when the hold reaches 5 seconds. */
+static int g_mode_held;
+static int g_mode_hold_fired;
+static int g_mode_held_key;
+static struct timespec g_mode_held_at;
+static struct timeval g_mode_held_when;
 static long long g_jog_last_us;
 static long long g_midi_jog_last_us;
 static struct Combo g_cap[MAX_CAPTURE_FD];
@@ -116,7 +123,13 @@ static struct timespec g_raw_kick;    /* last raw-mode request */
 static struct timeval g_press_time;
 static int g_press_seen;
 
-enum { KEY_DEBOUNCE_MS = 30, MODE_ROW = 10, MODE_ROW_MS = 2000 };
+enum {
+    KEY_DEBOUNCE_MS = 30,
+    MODE_ROW = 10,
+    MODE_ROW_MS = 2000,
+    MODE_HOLD_MS = 5000,
+    VOLUME_RESET = 80
+};
 
 static int mod_bit(int code)
 {
@@ -256,6 +269,13 @@ static int combo_feed(struct Combo *c, const struct input_event *ev, int *value)
             c->lone = -1;
         }
         return -1;
+    }
+    /* A release is reported so a short press of the mode button can be
+     * told from a hold. Other actions still run on the press. */
+    if (ev->value == 0) {
+        c->lone = -1;
+        *value = 0;
+        return (int)ev->code | (c->mods << MOD_SHIFT_BITS);
     }
     if (ev->value != 1 && ev->value != 2) {
         return -1;
@@ -689,6 +709,8 @@ void keys_close(void)
     g_ngrabbed = 0;
     g_raw_wanted = 0;
     g_rep_key = -1;
+    g_mode_held = 0;
+    g_mode_hold_fired = 0;
 }
 
 static int dial_mode_now(void)
@@ -706,6 +728,8 @@ void keys_set_dial_modes(const int *modes)
     int i;
 
     g_mode_row = 0;
+    g_mode_held = 0;
+    g_mode_hold_fired = 0;
     g_dial_slot = 0;
     for (i = 0; i < DIAL_SLOTS; i++) {
         g_dial_modes[i] = modes ? modes[i] : DIAL_NONE;
@@ -749,10 +773,26 @@ static int raw_index(void)
 
 int keys_wait_ms(int max_ms)
 {
-    if (g_rep_key >= 0 && max_ms > RAW_REPEAT_MS) {
-        return RAW_REPEAT_MS;
+    int wait = max_ms;
+
+    if (g_rep_key >= 0 && wait > RAW_REPEAT_MS) {
+        wait = RAW_REPEAT_MS;
     }
-    return max_ms;
+    /* Wake when a mode-button hold reaches 5 seconds. */
+    if (g_mode_held && !g_mode_hold_fired) {
+        struct timespec now;
+        long left;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        left = MODE_HOLD_MS - ms_since(&g_mode_held_at, &now);
+        if (left < 1) {
+            left = 1;
+        }
+        if (left < wait) {
+            wait = (int)left;
+        }
+    }
+    return wait;
 }
 
 int keys_grabbed(void)
@@ -826,6 +866,57 @@ static void pad_dial_mode(const struct timeval *when)
              config_dial_mode_name(DIAL_VOLUME), config_dial_mode_name(DIAL_JOG),
              config_dial_mode_name(DIAL_NONE));
     log_dial_mode();
+}
+
+/* Holding the keypad or shortcut-remote mode button for 5 seconds sets the
+ * volume to 80%. The change is saved with the other volume changes. A
+ * shorter press still moves to the next dial mode, on release. */
+static void mode_reset_volume(void)
+{
+    g_mode_hold_fired = 1;
+    player_set_volume_percent(VOLUME_RESET);
+    log_info("keys", "volume %d%%", VOLUME_RESET);
+}
+
+static int mode_held_long(void)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return ms_since(&g_mode_held_at, &now) >= MODE_HOLD_MS;
+}
+
+static void mode_arm(int key, const struct timeval *when)
+{
+    g_mode_held = 1;
+    g_mode_hold_fired = 0;
+    g_mode_held_key = key;
+    g_mode_held_when = *when;
+    clock_gettime(CLOCK_MONOTONIC, &g_mode_held_at);
+}
+
+/* key is the button that came up. Modifiers can differ from the press. */
+static void mode_release(int key)
+{
+    if (!g_mode_held || (key & KEY_CODE_MASK) != (g_mode_held_key & KEY_CODE_MASK)) {
+        return;
+    }
+    g_mode_held = 0;
+    if (g_mode_hold_fired || mode_held_long()) {
+        if (!g_mode_hold_fired) {
+            mode_reset_volume();
+        }
+        g_mode_hold_fired = 0;
+        return;
+    }
+    pad_dial_mode(&g_mode_held_when);
+}
+
+static void mode_hold_check(void)
+{
+    if (g_mode_held && !g_mode_hold_fired && mode_held_long()) {
+        mode_reset_volume();
+    }
 }
 
 static int is_step_action(int id)
@@ -1018,12 +1109,18 @@ static void dispatch(const struct Config *cfg, int key, int value, const struct 
         }
         return;
     }
+    /* Value 0 is a release. The mode button waits for it, so a hold can
+     * set the volume without also changing the dial mode. */
+    if (value == 0) {
+        mode_release(key);
+        return;
+    }
     /* Value 1 is a press. Key repeat (value 2) does not fire an action. */
     if (value != 1 || !press_accepted(when)) {
         return;
     }
     if (id == KEYID_DIAL_MODE) {
-        pad_dial_mode(when);
+        mode_arm(key, when);
         return;
     }
     g_mode_row = 0;
@@ -1074,6 +1171,10 @@ static void drop_fd(int i)
     memmove(&g_combo[i], &g_combo[i + 1], (size_t)(g_nfd - i - 1) * sizeof g_combo[0]);
     memmove(&g_remote_kbd[i], &g_remote_kbd[i + 1], (size_t)(g_nfd - i - 1) * sizeof g_remote_kbd[0]);
     g_nfd--;
+    /* The release will not arrive. Drop the hold so the volume does not
+     * change after the device is already gone. */
+    g_mode_held = 0;
+    g_mode_hold_fired = 0;
 }
 
 /* Returns the last read result, so a lost device shows as -1. */
@@ -1098,8 +1199,11 @@ static ssize_t poll_raw(const struct Config *cfg, int fd)
                     clock_gettime(CLOCK_MONOTONIC, &g_raw_since);
                     g_raw_repeat = g_raw_since;
                 }
-            } else if (keys[k] == g_rep_key) {
-                g_rep_key = -1;
+            } else {
+                if (keys[k] == g_rep_key) {
+                    g_rep_key = -1;
+                }
+                dispatch(cfg, keys[k], values[k], &when);
             }
         }
     }
@@ -1148,6 +1252,7 @@ void keys_poll(const struct Config *cfg)
         }
     }
     clock_gettime(CLOCK_MONOTONIC, &now);
+    mode_hold_check();
     if (g_rep_key >= 0 && raw_index() < 0) {
         g_rep_key = -1;
     }
@@ -1664,6 +1769,8 @@ static void dial_test_modes(int first, int second)
     g_dial_modes[2] = DIAL_NONE;
     g_dial_slot = 0;
     g_mode_row = 0;
+    g_mode_held = 0;
+    g_mode_hold_fired = 0;
 }
 
 static int kbd_self_test(void)
@@ -2191,6 +2298,7 @@ static int debounce_self_test(void)
     cfg.key_dial_back = KEY_E;
     dial_test_modes(DIAL_JOG, DIAL_VOLUME);
     if (put_key(pipefd[1], 10200, KEY_C, 1) != 0 ||
+        put_key(pipefd[1], 10201, KEY_C, 0) != 0 ||
         put_key(pipefd[1], 10205, KEY_D, 1) != 0 ||
         put_key(pipefd[1], 10206, KEY_D, 1) != 0 ||
         put_key(pipefd[1], 10207, KEY_E, 1) != 0) {
@@ -2288,13 +2396,13 @@ static int combo_self_test(void)
 
     combo_reset(&c);
     if (feed(&c, KEY_LEFTCTRL, 1, &v) != -1 || feed(&c, KEY_Z, 1, &v) != ctrl_z || v != 1 ||
-        feed(&c, KEY_LEFTCTRL, 0, &v) != -1 || feed(&c, KEY_Z, 0, &v) != -1) {
+        feed(&c, KEY_LEFTCTRL, 0, &v) != -1 || feed(&c, KEY_Z, 0, &v) != KEY_Z || v != 0) {
         log_error("keys", "Ctrl+Z did not decode");
         return -1;
     }
     if (feed(&c, KEY_LEFTCTRL, 1, &v) != -1 || feed(&c, KEY_LEFTSHIFT, 1, &v) != -1 ||
         feed(&c, KEY_Z, 1, &v) != ctrl_shift_z || feed(&c, KEY_LEFTCTRL, 0, &v) != -1 ||
-        feed(&c, KEY_LEFTSHIFT, 0, &v) != -1 || feed(&c, KEY_Z, 0, &v) != -1) {
+        feed(&c, KEY_LEFTSHIFT, 0, &v) != -1 || feed(&c, KEY_Z, 0, &v) != KEY_Z || v != 0) {
         log_error("keys", "Ctrl+Shift+Z did not decode");
         return -1;
     }
@@ -2328,6 +2436,10 @@ static void mode_press(const Config *cfg, struct timeval *when, int ms, int valu
 {
     bump_ms(when, ms);
     dispatch(cfg, KEY_C, value, when);
+    /* A short press changes the mode when the button is released. */
+    if (value == 1) {
+        dispatch(cfg, KEY_C, 0, when);
+    }
 }
 
 /* Ten keypad presses of the mode button set volume, jog, and none. The
@@ -2513,8 +2625,63 @@ static int mode_row_self_test(void)
         when = now;
         bump_ms(&when, 100);
         dispatch(&cfg, KEY_C, 1, &when);
+        dispatch(&cfg, KEY_C, 0, &when);
         if (!modes_are(DIAL_JOG, DIAL_NONE, DIAL_NONE, DIAL_JOG)) {
             log_error("keys", "the keyboard mode key counted toward the row");
+            goto out;
+        }
+    }
+
+    /* Four seconds is still a mode press. Five seconds sets the volume
+     * to 80% and leaves the dial mode alone. */
+    {
+        static const int both[DIAL_SLOTS] = {DIAL_VOLUME, DIAL_JOG, DIAL_NONE};
+
+        keys_set_dial_modes(both);
+        player_set_volume_percent(40);
+        g_press_seen = 0;
+        when.tv_sec = 1100;
+        when.tv_usec = 0;
+        dispatch(&cfg, KEY_C, 1, &when);
+        g_mode_held_at.tv_sec -= 4;
+        mode_hold_check();
+        dispatch(&cfg, KEY_C, 0, &when);
+        if (dial_mode_now() != DIAL_JOG || player_volume_percent() != 40 ||
+            g_dial_modes[0] != DIAL_VOLUME) {
+            log_error("keys", "a 4 second mode hold left mode %s and volume %d",
+                      config_dial_mode_name(dial_mode_now()), player_volume_percent());
+            goto out;
+        }
+
+        keys_set_dial_modes(both);
+        player_set_volume_percent(40);
+        g_press_seen = 0;
+        when.tv_sec = 1200;
+        when.tv_usec = 0;
+        dispatch(&cfg, KEY_C, 1, &when);
+        if (dial_mode_now() != DIAL_VOLUME || player_volume_percent() != 40) {
+            log_error("keys", "the mode button changed the mode before it was released");
+            goto out;
+        }
+        g_mode_held_at.tv_sec -= 5;
+        mode_hold_check();
+        if (!modes_are(DIAL_VOLUME, DIAL_JOG, DIAL_NONE, DIAL_VOLUME) ||
+            player_volume_percent() != 80) {
+            log_error("keys", "a 5 second mode hold left mode %s and volume %d",
+                      config_dial_mode_name(dial_mode_now()), player_volume_percent());
+            goto out;
+        }
+        dispatch(&cfg, KEY_C, 0, &when);
+        if (!modes_are(DIAL_VOLUME, DIAL_JOG, DIAL_NONE, DIAL_VOLUME) ||
+            player_volume_percent() != 80) {
+            log_error("keys", "releasing the mode button after the hold changed the mode");
+            goto out;
+        }
+        mode_press(&cfg, &when, 100, 1);
+        if (dial_mode_now() != DIAL_JOG || g_dial_modes[0] != DIAL_VOLUME ||
+            player_volume_percent() != 80) {
+            log_error("keys", "a short press after the hold left mode %s and volume %d",
+                      config_dial_mode_name(dial_mode_now()), player_volume_percent());
             goto out;
         }
     }
@@ -2537,6 +2704,8 @@ static int mode_row_self_test(void)
     rc = 0;
 out:
     dial_test_modes(DIAL_JOG, DIAL_NONE);
+    g_mode_held = 0;
+    g_mode_hold_fired = 0;
     g_press_seen = 0;
     memset(&g_press_time, 0, sizeof g_press_time);
     player_set_fx(NULL);

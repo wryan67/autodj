@@ -30,7 +30,9 @@ void keys_set_jog_hook(void (*fn)(int direction, long long when_us, int midi));
  * DIAL_JOG for each of DIAL_SLOTS). The dial starts in the first mode that
  * is not DIAL_NONE. With none, the dial does nothing. keys_open starts it as
  * a jog wheel. Ten keypad presses of the mode button in a row replace these
- * with volume, jog, and none until the next start. That change is not saved. */
+ * with volume, jog, and none until the next start. That change is not saved.
+ * Holding that button for 5 seconds sets the volume to 80%. A shorter
+ * press still moves to the next mode. */
 void keys_set_dial_modes(const int *modes);
 /* Run the action bound to a MIDI control (see midi.h). steps is the size
  * of a knob turn. Returns 1 when a binding matched. */

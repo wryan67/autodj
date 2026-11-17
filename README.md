@@ -234,7 +234,7 @@ Seconds. Default `5`. Pause slows the current song to a stop over this many seco
 Seconds. Default `5`. Resume brings the song back up to full speed over this many seconds.
 
 `volume`  
-Percent from 0 to 100. Default `100`. In volume mode the shortcut remote's dial changes it in steps of 1, and a keyboard volume key changes it in steps of 5. Each change is written back into this file, so the next boot starts at the last volume.
+Percent from 0 to 100. Default `100`. In volume mode the shortcut remote's dial changes it in steps of 1, and a keyboard volume key changes it in steps of 5. Each change is written back into this file, so the next boot starts at the last volume. Holding the keypad or shortcut-remote mode button for 5 seconds sets it to 80%. See `dial_mode`.
 
 `loudness`  
 `true` or `false`. Default `true`. Each file is measured from start to finish and then played at one steady gain so tracks match each other. This is a level change only. It does not compress the song.
@@ -302,7 +302,7 @@ The dial. It is a volume knob or a jog wheel, depending on the dial mode (see `d
 The old names `jog_forward` and `jog_back` are still read. `autodj --config` writes them back under the new names.
 
 `dial_mode`  
-Press to move the dial to its next mode, as set by `dial_mode_1` to `dial_mode_3` in `[Main]`. The editor calls it Next dial mode. The log shows the mode after each switch. Ten presses of the keypad or shortcut-remote mode button in a row, each within 2 seconds of the last and with no other keypad or remote key between them, set the modes to volume, jog, and none for this run and start on volume. That is not written into the file. The next start uses the saved modes. The keyboard and MIDI mode bindings still only move to the next mode.
+Press to move the dial to its next mode, as set by `dial_mode_1` to `dial_mode_3` in `[Main]`. The editor calls it Next dial mode. The log shows the mode after each switch. Ten presses of the keypad or shortcut-remote mode button in a row, each within 2 seconds of the last and with no other keypad or remote key between them, set the modes to volume, jog, and none for this run and start on volume. That is not written into the file. The next start uses the saved modes. Hold that same button for 5 seconds to set the volume to 80%. The volume changes when the 5 seconds are up. Letting go after that leaves the dial mode as it was. Letting go sooner moves to the next mode. The new volume is saved, the same way a turn of the dial is. The keyboard and MIDI mode bindings still only move to the next mode.
 
 `volume_up`, `volume_down`  
 Raise or lower the volume, whatever mode the dial is in. A keypad or remote key, or a knob step, changes it by 1, and a keyboard key or a pad by 5.
