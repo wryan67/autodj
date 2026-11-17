@@ -204,20 +204,6 @@ static int lock_instance(void)
     return 0;
 }
 
-static void remember_volume(const char *path, Config *cfg)
-{
-    int volume = player_volume_percent();
-
-    if (volume == cfg->volume) {
-        return;
-    }
-    if (config_save_volume(path, volume) != 0) {
-        return;
-    }
-    cfg->volume = volume;
-    cfg->volume_set = 1;
-}
-
 /* The laser knob moves level in [Lasers]. Leave the file alone until it moves. */
 static void remember_lasers(const char *path, Config *cfg)
 {
@@ -432,6 +418,7 @@ int main(int argc, char **argv)
             cfg.volume_set = 1;
         }
     }
+    /* The file is the startup volume. A dial change lasts for this run. */
     player_set_volume_percent(cfg.volume);
     player_set_fx(&cfg.fx);
     log_info("autodj", "keys pause/resume %s, skip %s, previous %s",
@@ -622,14 +609,12 @@ int main(int argc, char **argv)
         keys_poll(&cfg);
         midi_poll(&cfg);
         keys_kbd_poll(&cfg);
-        remember_volume(path, &cfg);
         remember_lasers(path, &cfg);
         remember_bubbles(path, &cfg);
         remember_chorus(path, &cfg);
         playlist_flush(pl);
     }
 
-    remember_volume(path, &cfg);
     remember_lasers(path, &cfg);
     remember_bubbles(path, &cfg);
     remember_chorus(path, &cfg);

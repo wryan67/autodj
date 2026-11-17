@@ -869,8 +869,8 @@ static void pad_dial_mode(const struct timeval *when)
 }
 
 /* Holding the keypad or shortcut-remote mode button for 5 seconds sets the
- * volume to 80%. The change is saved with the other volume changes. A
- * shorter press still moves to the next dial mode, on release. */
+ * volume to 80% for this run. A shorter press still moves to the next dial
+ * mode, on release. */
 static void mode_reset_volume(void)
 {
     g_mode_hold_fired = 1;
