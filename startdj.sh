@@ -1,9 +1,9 @@
 #!/bin/ksh
 
 # The BLSTR jack is the output. PipeWire calls it "Built-in Audio Pro"
-# until WirePlumber renames it "BLSTR DAC".
+# until WirePlumber renames it "BLSTR DAC". On startup that sink is 80%.
 # A Bluetooth receiver (b06t3, KT-08UP, MEGABLAST) supersedes it
-# while connected. Do not start autodj on Dummy Output.
+# while connected, and those are set to 81%. Do not start autodj on Dummy Output.
 #
 # ksh execs the last command, so this process becomes autodj.
 # The volume watcher is a separate process and holds a lock.
@@ -30,12 +30,20 @@ sink_ids() {
   '
 }
 
-set_bt_volume() {
-  ids=$(sink_ids "$bt_re")
+set_sink_volume() {
+  ids=$(sink_ids "$1")
   for id in $ids; do
     wpctl set-mute "$id" 0
-    wpctl set-volume "$id" 81%
+    wpctl set-volume "$id" "$2"
   done
+}
+
+set_bt_volume() {
+  set_sink_volume "$bt_re" 81%
+}
+
+set_jack_volume() {
+  set_sink_volume "$jack_re" 80%
 }
 
 # The receiver comes up muted, and sometimes reports 0 just after connect.
@@ -80,6 +88,12 @@ fi
 while [ -z "$(sink_ids "$jack_re")" ]; do
   sleep 1
 done
+
+# WirePlumber restores the last sink volume as the node appears.
+# Set 80% after that, then once more in case the restore lands late.
+set_jack_volume
+sleep 1
+set_jack_volume
 
 if [ -n "$(sink_ids "$bt_re")" ]; then
   sleep 5
